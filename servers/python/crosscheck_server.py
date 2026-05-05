@@ -21,6 +21,7 @@ import json
 import os
 import random
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -295,41 +296,121 @@ def _cache_evict_if_needed() -> None:
 
 
 # ------------------------------------------------------------
-# Session state (cross-call accounting, opt-in via session_id)
+# SQLite session memory + claim-list v0 (cross-call state)
 # ------------------------------------------------------------
 _SESSION_ID_RE = re.compile(r"[^A-Za-z0-9._-]")
+_DB_LOCK = threading.Lock()
+_DB_INIT_DONE = False
 
 
-def _session_dir() -> Path:
-    raw = CFG.get("session_dir") or ".crosscheck/sessions"
+def _db_path() -> Path:
+    raw = CFG.get("session_db") or ".crosscheck/sessions.sqlite3"
     p = Path(str(raw))
     return p if p.is_absolute() else (ROOT / p)
 
 
-def _session_path(session_id: str) -> Path:
-    safe = _SESSION_ID_RE.sub("", session_id)[:64] or "default"
-    return _session_dir() / f"{safe}.json"
+def _db_conn() -> sqlite3.Connection:
+    p = _db_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(p), timeout=10.0, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+def _db_init() -> None:
+    global _DB_INIT_DONE
+    if _DB_INIT_DONE:
+        return
+    with _DB_LOCK:
+        if _DB_INIT_DONE:
+            return
+        with _db_conn() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS sessions (
+                  session_id TEXT PRIMARY KEY,
+                  started_at INTEGER NOT NULL,
+                  last_at    INTEGER,
+                  calls      INTEGER NOT NULL DEFAULT 0,
+                  wall_ms    INTEGER NOT NULL DEFAULT 0,
+                  cache_hits INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS claims (
+                  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                  session_id     TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+                  text           TEXT NOT NULL,
+                  provider       TEXT,
+                  confidence     REAL,
+                  citations_json TEXT,
+                  kind           TEXT,
+                  created_at     INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_claims_session ON claims(session_id);
+
+                CREATE TABLE IF NOT EXISTS claim_links (
+                  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                  src_id     INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+                  dst_id     INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+                  kind       TEXT    NOT NULL CHECK (kind IN ('supports','attacks')),
+                  created_at INTEGER NOT NULL,
+                  UNIQUE(src_id, dst_id, kind)
+                );
+                CREATE INDEX IF NOT EXISTS idx_links_src ON claim_links(src_id);
+                CREATE INDEX IF NOT EXISTS idx_links_dst ON claim_links(dst_id);
+                """
+            )
+        _DB_INIT_DONE = True
+
+
+def _safe_session_id(session_id: str) -> str:
+    return _SESSION_ID_RE.sub("", session_id)[:64] or "default"
 
 
 def _session_load(session_id: str | None) -> dict | None:
     if not session_id:
         return None
-    p = _session_path(session_id)
-    if p.exists():
-        try:
-            return json.loads(p.read_text())
-        except Exception:
-            pass
-    return {"session_id": session_id, "calls": 0, "wall_ms": 0,
-            "cache_hits": 0, "started_at": int(time.time())}
+    sid = _safe_session_id(session_id)
+    _db_init()
+    with _db_conn() as conn:
+        row = conn.execute(
+            "SELECT session_id, started_at, last_at, calls, wall_ms, cache_hits "
+            "FROM sessions WHERE session_id = ?",
+            (sid,),
+        ).fetchone()
+        if row is None:
+            now = int(time.time())
+            conn.execute(
+                "INSERT INTO sessions(session_id, started_at, calls, wall_ms, cache_hits) "
+                "VALUES (?, ?, 0, 0, 0)",
+                (sid, now),
+            )
+            return {"session_id": sid, "started_at": now, "last_at": None,
+                    "calls": 0, "wall_ms": 0, "cache_hits": 0}
+        return {k: row[k] for k in row.keys()}
 
 
 def _session_save(state: dict | None) -> None:
     if not state or not state.get("session_id"):
         return
-    p = _session_path(state["session_id"])
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(state, separators=(",", ":")))
+    _db_init()
+    with _db_conn() as conn:
+        conn.execute(
+            "INSERT INTO sessions(session_id, started_at, last_at, calls, wall_ms, cache_hits) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET "
+            "  last_at=excluded.last_at, calls=excluded.calls, "
+            "  wall_ms=excluded.wall_ms, cache_hits=excluded.cache_hits",
+            (state["session_id"],
+             int(state.get("started_at") or time.time()),
+             int(state.get("last_at") or time.time()),
+             int(state.get("calls", 0)),
+             int(state.get("wall_ms", 0)),
+             int(state.get("cache_hits", 0))),
+        )
 
 
 def _session_record(state: dict | None, answers: list[dict], call_started: float) -> None:
@@ -340,6 +421,72 @@ def _session_record(state: dict | None, answers: list[dict], call_started: float
     state["wall_ms"]    = int(state.get("wall_ms", 0))    + elapsed_ms
     state["cache_hits"] = int(state.get("cache_hits", 0)) + sum(1 for a in answers if a.get("cache_hit"))
     state["last_at"]    = int(time.time())
+
+
+# ------------------------------------------------------------
+# Claim-list v0 (consensus / dissent / open_question / support)
+# ------------------------------------------------------------
+_CLAIM_KINDS = ("consensus", "dissent", "open_question", "support")
+_LINK_KINDS = ("supports", "attacks")
+
+
+def _claim_add(session_id: str, text: str, *, provider: str | None = None,
+               confidence: float | None = None, citations: list[str] | None = None,
+               kind: str | None = None) -> int:
+    sid = _safe_session_id(session_id)
+    _session_load(sid)  # ensure session row exists
+    if kind is not None and kind not in _CLAIM_KINDS:
+        raise ValueError(f"unknown claim kind: {kind!r}")
+    cit = json.dumps(citations or [], separators=(",", ":")) if citations else None
+    with _db_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO claims(session_id, text, provider, confidence, citations_json, kind, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (sid, text, provider, confidence, cit, kind, int(time.time())),
+        )
+        return int(cur.lastrowid)
+
+
+def _claim_link(src_id: int, dst_id: int, kind: str) -> None:
+    if kind not in _LINK_KINDS:
+        raise ValueError(f"unknown link kind: {kind!r}")
+    with _db_conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO claim_links(src_id, dst_id, kind, created_at) VALUES (?, ?, ?, ?)",
+            (int(src_id), int(dst_id), kind, int(time.time())),
+        )
+
+
+def _session_claims(session_id: str) -> list[dict]:
+    sid = _safe_session_id(session_id)
+    _db_init()
+    with _db_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, session_id, text, provider, confidence, citations_json, kind, created_at "
+            "FROM claims WHERE session_id = ? ORDER BY id",
+            (sid,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = {k: r[k] for k in r.keys()}
+            d["citations"] = json.loads(d.pop("citations_json") or "[]")
+            out.append(d)
+        return out
+
+
+def _session_claim_links(session_id: str) -> list[dict]:
+    sid = _safe_session_id(session_id)
+    _db_init()
+    with _db_conn() as conn:
+        rows = conn.execute(
+            "SELECT cl.id, cl.src_id, cl.dst_id, cl.kind, cl.created_at "
+            "FROM claim_links cl "
+            "JOIN claims c ON c.id = cl.src_id "
+            "WHERE c.session_id = ? "
+            "ORDER BY cl.id",
+            (sid,),
+        ).fetchall()
+        return [{k: r[k] for k in r.keys()} for r in rows]
 
 
 # ------------------------------------------------------------

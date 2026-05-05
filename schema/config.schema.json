@@ -59,10 +59,10 @@
         "dir":         { "type": "string",  "default": ".crosscheck/cache" }
       }
     },
-    "session_dir": {
+    "session_db": {
       "type": "string",
-      "default": ".crosscheck/sessions",
-      "description": "Where per-session usage state is persisted (calls/wall_ms/cache_hits keyed by session_id)."
+      "default": ".crosscheck/sessions.sqlite3",
+      "description": "SQLite database for session state (calls/wall_ms/cache_hits/claims/claim_links). Created on first use; migrated forward via CREATE IF NOT EXISTS."
     },
     "retries": {
       "type": "object",

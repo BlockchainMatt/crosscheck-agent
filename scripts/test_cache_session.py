@@ -33,7 +33,8 @@ def main() -> int:
         srv.CFG = dict(srv.CFG)
         srv.CFG["cache"] = {"enabled": True, "ttl_seconds": 3600, "max_entries": 100,
                             "dir": str(tmp / "cache")}
-        srv.CFG["session_dir"] = str(tmp / "sessions")
+        srv.CFG["session_db"] = str(tmp / "sessions.sqlite3")
+        srv._DB_INIT_DONE = False
         srv.CFG["log_transcripts"] = False
         srv.CFG["max_time_seconds"] = 5
         srv.CFG["token_cap"] = 1024

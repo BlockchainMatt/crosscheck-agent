@@ -14,7 +14,7 @@
     "max_entries": 5000,
     "dir": ".crosscheck/cache"
   },
-  "session_dir": ".crosscheck/sessions",
+  "session_db": ".crosscheck/sessions.sqlite3",
   "retries": {
     "max_attempts": 3,
     "backoff_base_s": 0.75
