@@ -7,5 +7,12 @@
   "moderator": "anthropic",
   "temperature": 0.4,
   "log_transcripts": true,
-  "transcript_dir": ".crosscheck/transcripts"
+  "transcript_dir": ".crosscheck/transcripts",
+  "cache": {
+    "enabled": true,
+    "ttl_seconds": 604800,
+    "max_entries": 5000,
+    "dir": ".crosscheck/cache"
+  },
+  "session_dir": ".crosscheck/sessions"
 }

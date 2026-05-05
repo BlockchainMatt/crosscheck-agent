@@ -16,8 +16,10 @@ plus `urllib.request` for HTTP, so `python3 crosscheck_server.py` just works.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -63,6 +65,135 @@ def _resolve_transcript_dir(cfg: dict[str, Any]) -> Path:
     return p if p.is_absolute() else (ROOT / p)
 
 TRANSCRIPT_DIR = _resolve_transcript_dir(CFG)
+
+
+# ------------------------------------------------------------
+# Disk cache (exact-match, SHA256 of canonicalized request)
+# ------------------------------------------------------------
+def _cache_cfg() -> dict:
+    return CFG.get("cache") or {}
+
+
+def _cache_enabled() -> bool:
+    return bool(_cache_cfg().get("enabled", True))
+
+
+def _cache_dir() -> Path:
+    raw = _cache_cfg().get("dir") or ".crosscheck/cache"
+    p = Path(str(raw))
+    return p if p.is_absolute() else (ROOT / p)
+
+
+def _cache_key(provider_name: str, model: str, messages: list[dict], max_tokens: int, temperature: float) -> str:
+    payload = json.dumps(
+        {
+            "p":    provider_name,
+            "m":    model,
+            "msgs": messages,
+            "mt":   max_tokens,
+            "t":    round(float(temperature), 4),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _cache_path(key: str) -> Path:
+    return _cache_dir() / key[:2] / f"{key}.json"
+
+
+def _cache_get(key: str) -> dict | None:
+    if not _cache_enabled():
+        return None
+    p = _cache_path(key)
+    if not p.exists():
+        return None
+    ttl = int(_cache_cfg().get("ttl_seconds", 604800))
+    if ttl > 0 and (time.time() - p.stat().st_mtime) > ttl:
+        return None
+    try:
+        data = json.loads(p.read_text())
+        # Touch mtime so LRU keeps frequently-read entries.
+        os.utime(p, None)
+        return data
+    except Exception:
+        return None
+
+
+def _cache_put(key: str, value: dict) -> None:
+    if not _cache_enabled():
+        return
+    p = _cache_path(key)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(value, separators=(",", ":")))
+    _cache_evict_if_needed()
+
+
+def _cache_evict_if_needed() -> None:
+    max_entries = int(_cache_cfg().get("max_entries", 5000))
+    if max_entries <= 0:
+        return
+    base = _cache_dir()
+    if not base.exists():
+        return
+    entries = [(p.stat().st_mtime, p) for p in base.rglob("*.json")]
+    if len(entries) <= max_entries:
+        return
+    entries.sort()  # oldest first
+    for _, p in entries[: len(entries) - max_entries]:
+        try:
+            p.unlink()
+        except Exception:
+            pass
+
+
+# ------------------------------------------------------------
+# Session state (cross-call accounting, opt-in via session_id)
+# ------------------------------------------------------------
+_SESSION_ID_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _session_dir() -> Path:
+    raw = CFG.get("session_dir") or ".crosscheck/sessions"
+    p = Path(str(raw))
+    return p if p.is_absolute() else (ROOT / p)
+
+
+def _session_path(session_id: str) -> Path:
+    safe = _SESSION_ID_RE.sub("", session_id)[:64] or "default"
+    return _session_dir() / f"{safe}.json"
+
+
+def _session_load(session_id: str | None) -> dict | None:
+    if not session_id:
+        return None
+    p = _session_path(session_id)
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            pass
+    return {"session_id": session_id, "calls": 0, "wall_ms": 0,
+            "cache_hits": 0, "started_at": int(time.time())}
+
+
+def _session_save(state: dict | None) -> None:
+    if not state or not state.get("session_id"):
+        return
+    p = _session_path(state["session_id"])
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(state, separators=(",", ":")))
+
+
+def _session_record(state: dict | None, answers: list[dict], call_started: float) -> None:
+    if not state:
+        return
+    elapsed_ms = int((time.monotonic() - call_started) * 1000)
+    state["calls"]      = int(state.get("calls", 0))      + len(answers)
+    state["wall_ms"]    = int(state.get("wall_ms", 0))    + elapsed_ms
+    state["cache_hits"] = int(state.get("cache_hits", 0)) + sum(1 for a in answers if a.get("cache_hit"))
+    state["last_at"]    = int(time.time())
 
 
 # ------------------------------------------------------------
@@ -238,12 +369,37 @@ def _time_left(deadline: float) -> float:
 def _ask_one(p: Provider, messages: list[dict], deadline: float, max_tokens: int) -> dict:
     temp = float(CFG.get("temperature", 0.4))
     if _time_left(deadline) <= 0:
-        return {"provider": p.name, "model": p.model, "error": "time budget exhausted"}
+        return {"provider": p.name, "model": p.model, "error": "time budget exhausted",
+                "cache_hit": False, "elapsed_ms": 0}
+
+    key = _cache_key(p.name, p.model, messages, max_tokens, temp)
+    cached = _cache_get(key)
+    if cached is not None:
+        return {"provider": p.name, "model": p.model, "response": cached["text"],
+                "cache_hit": True, "elapsed_ms": 0}
+
+    started = time.monotonic()
     try:
         out = p.send(messages, max_tokens, temp)
-        return {"provider": p.name, "model": p.model, "response": out}
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        _cache_put(key, {"text": out, "stored_at": int(time.time())})
+        return {"provider": p.name, "model": p.model, "response": out,
+                "cache_hit": False, "elapsed_ms": elapsed_ms}
     except Exception as e:
-        return {"provider": p.name, "model": p.model, "error": str(e)}
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return {"provider": p.name, "model": p.model, "error": str(e),
+                "cache_hit": False, "elapsed_ms": elapsed_ms}
+
+
+def _budget_summary(call_started: float, deadline: float, answers: list[dict]) -> dict:
+    return {
+        "wall_used_ms":      int((time.monotonic() - call_started) * 1000),
+        "wall_remaining_ms": int(max(0.0, deadline - time.monotonic()) * 1000),
+        "max_time_seconds":  int(CFG.get("max_time_seconds", 120)),
+        "token_cap":         int(CFG.get("token_cap", 8000)),
+        "cache_hits":        sum(1 for a in answers if a.get("cache_hit")),
+        "provider_calls":    len(answers),
+    }
 
 def _ask_many_parallel(providers: list[Provider], messages: list[dict], deadline: float, max_tokens: int) -> list[dict]:
     if len(providers) <= 1:
@@ -339,10 +495,18 @@ def tool_confer(args: dict) -> dict:
         messages.append({"role": "user", "content": f"CONTEXT:\n{context}"})
     messages.append({"role": "user", "content": question})
 
+    call_started = time.monotonic()
     deadline = _deadline()
     per_call = _per_call_tokens(len(selected))
+    session = _session_load(args.get("session_id"))
     answers = _ask_many_parallel(selected, messages, deadline, per_call)
-    result = {"tool": "confer", "question": question, "answers": answers}
+    _session_record(session, answers, call_started)
+    _session_save(session)
+
+    result = {"tool": "confer", "question": question, "answers": answers,
+              "budget": _budget_summary(call_started, deadline, answers)}
+    if session:
+        result["session"] = session
     if unknown:
         result["skipped_unknown_providers"] = unknown
     path = write_transcript("confer", result)
@@ -365,10 +529,12 @@ def tool_debate(args: dict) -> dict:
         }
 
     max_rounds = int(args.get("max_rounds", CFG.get("max_rounds", 3)))
+    call_started = time.monotonic()
     deadline = _deadline()
     transcript: list[dict] = []
     shared_context = context
     per_call = _per_call_tokens(max(1, max_rounds) * len(selected) + 1)
+    session = _session_load(args.get("session_id"))
 
     for rnd in range(1, max_rounds + 1):
         if _time_left(deadline) <= 1:
@@ -412,13 +578,20 @@ def tool_debate(args: dict) -> dict:
         ]
         synthesis = _ask_one(moderator, synth_messages, deadline, per_call)
 
+    all_answers = transcript + ([synthesis] if synthesis else [])
+    _session_record(session, all_answers, call_started)
+    _session_save(session)
+
     result = {
         "tool": "debate",
         "topic": topic,
         "rounds_completed": max((e["round"] for e in transcript), default=0),
         "transcript": transcript,
         "synthesis": synthesis,
+        "budget": _budget_summary(call_started, deadline, all_answers),
     }
+    if session:
+        result["session"] = session
     if unknown:
         result["skipped_unknown_providers"] = unknown
     result["transcript_path"] = write_transcript("debate", result)
@@ -439,6 +612,7 @@ def tool_plan(args: dict) -> dict:
         "context": args.get("context", ""),
         "providers": args.get("providers"),
         "moderator": args.get("moderator"),
+        "session_id": args.get("session_id"),
     })
 
 
@@ -454,6 +628,7 @@ def tool_review(args: dict) -> dict:
     return tool_confer({
         "question": question,
         "providers": args.get("providers"),
+        "session_id": args.get("session_id"),
     })
 
 

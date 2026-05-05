@@ -47,6 +47,22 @@
       "type": "string",
       "default": ".crosscheck/transcripts",
       "description": "Directory to write JSON transcripts into (relative to repo root unless absolute)."
+    },
+    "cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Exact-match disk cache for provider responses.",
+      "properties": {
+        "enabled":     { "type": "boolean", "default": true },
+        "ttl_seconds": { "type": "integer", "minimum": 0, "default": 604800, "description": "0 disables expiry." },
+        "max_entries": { "type": "integer", "minimum": 0, "default": 5000,  "description": "0 disables LRU eviction." },
+        "dir":         { "type": "string",  "default": ".crosscheck/cache" }
+      }
+    },
+    "session_dir": {
+      "type": "string",
+      "default": ".crosscheck/sessions",
+      "description": "Where per-session usage state is persisted (calls/wall_ms/cache_hits keyed by session_id)."
     }
   },
   "required": ["max_rounds", "token_cap", "max_time_seconds", "providers", "moderator"]

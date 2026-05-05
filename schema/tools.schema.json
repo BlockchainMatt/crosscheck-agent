@@ -12,17 +12,45 @@
       "type": "object",
       "description": "One provider's response (or its failure mode) for a single turn.",
       "properties": {
-        "provider": { "type": "string" },
-        "model":    { "type": "string" },
-        "response": { "type": "string", "description": "The provider's text response. Mutually exclusive with `error`." },
-        "error":    { "type": "string", "description": "Failure reason. Mutually exclusive with `response`." },
-        "round":    { "type": "integer", "minimum": 1, "description": "Debate round number, when applicable." }
+        "provider":   { "type": "string" },
+        "model":      { "type": "string" },
+        "response":   { "type": "string", "description": "The provider's text response. Mutually exclusive with `error`." },
+        "error":      { "type": "string", "description": "Failure reason. Mutually exclusive with `response`." },
+        "round":      { "type": "integer", "minimum": 1, "description": "Debate round number, when applicable." },
+        "cache_hit":  { "type": "boolean", "description": "True if the response was served from the exact-match disk cache." },
+        "elapsed_ms": { "type": "integer", "minimum": 0, "description": "Wall-clock time the provider took (0 on cache hit)." }
       },
       "required": ["provider", "model"],
       "oneOf": [
         { "required": ["response"], "not": { "required": ["error"] } },
         { "required": ["error"],    "not": { "required": ["response"] } }
       ]
+    },
+    "BudgetSummary": {
+      "type": "object",
+      "description": "Per-call budget remaining at the moment the response was assembled.",
+      "properties": {
+        "wall_used_ms":      { "type": "integer", "minimum": 0 },
+        "wall_remaining_ms": { "type": "integer", "minimum": 0 },
+        "max_time_seconds":  { "type": "integer", "minimum": 1 },
+        "token_cap":         { "type": "integer", "minimum": 1 },
+        "cache_hits":        { "type": "integer", "minimum": 0 },
+        "provider_calls":    { "type": "integer", "minimum": 0 }
+      },
+      "required": ["wall_used_ms", "wall_remaining_ms", "max_time_seconds", "token_cap"]
+    },
+    "SessionSummary": {
+      "type": "object",
+      "description": "Cumulative state for a session_id across calls.",
+      "properties": {
+        "session_id": { "type": "string" },
+        "calls":      { "type": "integer", "minimum": 0 },
+        "wall_ms":    { "type": "integer", "minimum": 0 },
+        "cache_hits": { "type": "integer", "minimum": 0 },
+        "started_at": { "type": "integer" },
+        "last_at":    { "type": "integer" }
+      },
+      "required": ["session_id", "calls", "wall_ms", "cache_hits"]
     },
     "ProviderErrorEnvelope": {
       "type": "object",
@@ -73,9 +101,10 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "question":  { "type": "string", "description": "The question or prompt." },
-          "context":   { "type": "string", "description": "Optional shared context." },
-          "providers": { "$ref": "#/$defs/ProviderArrayArg" }
+          "question":   { "type": "string", "description": "The question or prompt." },
+          "context":    { "type": "string", "description": "Optional shared context." },
+          "providers":  { "$ref": "#/$defs/ProviderArrayArg" },
+          "session_id": { "type": "string", "description": "Optional id to accumulate usage across calls." }
         },
         "required": ["question"]
       },
@@ -87,6 +116,8 @@
               "tool":     { "const": "confer" },
               "question": { "type": "string" },
               "answers":  { "type": "array", "items": { "$ref": "#/$defs/ProviderAnswer" } },
+              "budget":   { "$ref": "#/$defs/BudgetSummary" },
+              "session":  { "$ref": "#/$defs/SessionSummary" },
               "transcript_path":           { "type": "string" },
               "transcript":                { "type": "string", "description": "Backwards-compatible alias for transcript_path." },
               "skipped_unknown_providers": { "type": "array", "items": { "type": "string" } }
@@ -111,7 +142,8 @@
             "description": "Ad-hoc subset of provider names (e.g. ['openai','gemini','xai']). Omit to use the configured active set. Call list_providers first if you're unsure which names are available. Needs at least 2."
           },
           "max_rounds": { "type": "integer", "minimum": 1 },
-          "moderator":  { "type": "string", "description": "Provider name to run the synthesis round. Defaults to config.moderator." }
+          "moderator":  { "type": "string", "description": "Provider name to run the synthesis round. Defaults to config.moderator." },
+          "session_id": { "type": "string", "description": "Optional id to accumulate usage across calls." }
         },
         "required": ["topic"]
       },
@@ -125,6 +157,8 @@
               "rounds_completed": { "type": "integer", "minimum": 0 },
               "transcript":       { "type": "array", "items": { "$ref": "#/$defs/ProviderAnswer" } },
               "synthesis":        { "anyOf": [{ "$ref": "#/$defs/ProviderAnswer" }, { "type": "null" }] },
+              "budget":           { "$ref": "#/$defs/BudgetSummary" },
+              "session":          { "$ref": "#/$defs/SessionSummary" },
               "transcript_path":  { "type": ["string", "null"] },
               "skipped_unknown_providers": { "type": "array", "items": { "type": "string" } }
             },
@@ -148,7 +182,8 @@
             "items": { "type": "string" },
             "description": "Ad-hoc subset of provider names (e.g. ['openai','gemini','xai']). Omit to use the configured active set. Call list_providers first if you're unsure which names are available. Needs at least 2."
           },
-          "moderator":   { "type": "string" }
+          "moderator":   { "type": "string" },
+          "session_id":  { "type": "string", "description": "Optional id to accumulate usage across calls." }
         },
         "required": ["goal"]
       },
@@ -160,9 +195,10 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "snippet":   { "type": "string" },
-          "intent":    { "type": "string" },
-          "providers": { "$ref": "#/$defs/ProviderArrayArg" }
+          "snippet":    { "type": "string" },
+          "intent":     { "type": "string" },
+          "providers":  { "$ref": "#/$defs/ProviderArrayArg" },
+          "session_id": { "type": "string", "description": "Optional id to accumulate usage across calls." }
         },
         "required": ["snippet"]
       },
