@@ -30,26 +30,7 @@ __pycache__/
 venv/
 .pytest_cache/
 
-# Node / TypeScript
-node_modules/
-dist/
-build/
-*.tsbuildinfo
-.npm/
-.pnpm-store/
-
-# Rust
-target/
-Cargo.lock
-
-# Perl
-blib/
-_build/
-Build
-MYMETA.*
-*.bs
-*.o
-
 # Logs
 *.log
 logs/
+CLAUDE.md

@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "crosscheck-agent tool surface",
+  "description": "Single source of truth for the tools exposed over MCP (JSON-RPC 2.0 over stdio). Inputs are enforced at the server boundary; outputs are documented here and will be validated in P1.",
+  "$defs": {
+    "ProviderArrayArg": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Ad-hoc subset of provider names (e.g. ['openai','gemini','xai']). Omit to use the configured active set. Call list_providers first if you're unsure which names are available."
+    },
+    "ProviderAnswer": {
+      "type": "object",
+      "description": "One provider's response (or its failure mode) for a single turn.",
+      "properties": {
+        "provider": { "type": "string" },
+        "model":    { "type": "string" },
+        "response": { "type": "string", "description": "The provider's text response. Mutually exclusive with `error`." },
+        "error":    { "type": "string", "description": "Failure reason. Mutually exclusive with `response`." },
+        "round":    { "type": "integer", "minimum": 1, "description": "Debate round number, when applicable." }
+      },
+      "required": ["provider", "model"],
+      "oneOf": [
+        { "required": ["response"], "not": { "required": ["error"] } },
+        { "required": ["error"],    "not": { "required": ["response"] } }
+      ]
+    },
+    "ProviderErrorEnvelope": {
+      "type": "object",
+      "description": "Returned when the caller asked for providers that aren't available; helps Claude self-correct.",
+      "properties": {
+        "error":                { "type": "string" },
+        "unknown":              { "type": "array", "items": { "type": "string" } },
+        "needs_api_key_in_env": { "type": "array", "items": { "type": "string" } },
+        "unrecognised_names":   { "type": "array", "items": { "type": "string" } },
+        "available_now":        { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["error"]
+    }
+  },
+  "tools": {
+    "list_providers": {
+      "description": "List every provider the server knows about and whether each is currently usable (has an API key in .env). Call this first to discover who's on the panel.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name":      { "type": "string" },
+                "available": { "type": "boolean" },
+                "active":    { "type": "boolean" },
+                "model":     { "type": ["string", "null"] }
+              },
+              "required": ["name", "available", "active", "model"]
+            }
+          },
+          "moderator_default": { "type": ["string", "null"] },
+          "usage_hint":        { "type": "string" }
+        },
+        "required": ["providers", "usage_hint"]
+      }
+    },
+    "confer": {
+      "description": "Ask one or more LLMs the same question and return their answers in parallel.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "question":  { "type": "string", "description": "The question or prompt." },
+          "context":   { "type": "string", "description": "Optional shared context." },
+          "providers": { "$ref": "#/$defs/ProviderArrayArg" }
+        },
+        "required": ["question"]
+      },
+      "output": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "tool":     { "const": "confer" },
+              "question": { "type": "string" },
+              "answers":  { "type": "array", "items": { "$ref": "#/$defs/ProviderAnswer" } },
+              "transcript_path":           { "type": "string" },
+              "transcript":                { "type": "string", "description": "Backwards-compatible alias for transcript_path." },
+              "skipped_unknown_providers": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["tool", "question", "answers"]
+          },
+          { "$ref": "#/$defs/ProviderErrorEnvelope" }
+        ]
+      }
+    },
+    "debate": {
+      "description": "Run a bounded multi-round debate across LLMs; moderator synthesises the result.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "topic":      { "type": "string" },
+          "context":    { "type": "string" },
+          "providers":  {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Ad-hoc subset of provider names (e.g. ['openai','gemini','xai']). Omit to use the configured active set. Call list_providers first if you're unsure which names are available. Needs at least 2."
+          },
+          "max_rounds": { "type": "integer", "minimum": 1 },
+          "moderator":  { "type": "string", "description": "Provider name to run the synthesis round. Defaults to config.moderator." }
+        },
+        "required": ["topic"]
+      },
+      "output": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "tool":             { "const": "debate" },
+              "topic":            { "type": "string" },
+              "rounds_completed": { "type": "integer", "minimum": 0 },
+              "transcript":       { "type": "array", "items": { "$ref": "#/$defs/ProviderAnswer" } },
+              "synthesis":        { "anyOf": [{ "$ref": "#/$defs/ProviderAnswer" }, { "type": "null" }] },
+              "transcript_path":  { "type": ["string", "null"] },
+              "skipped_unknown_providers": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["tool", "topic", "rounds_completed", "transcript"]
+          },
+          { "$ref": "#/$defs/ProviderErrorEnvelope" }
+        ]
+      }
+    },
+    "plan": {
+      "description": "Collaborative planning across LLMs with risks + alternatives.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "goal":        { "type": "string" },
+          "constraints": { "type": "string" },
+          "context":     { "type": "string" },
+          "providers":   {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Ad-hoc subset of provider names (e.g. ['openai','gemini','xai']). Omit to use the configured active set. Call list_providers first if you're unsure which names are available. Needs at least 2."
+          },
+          "moderator":   { "type": "string" }
+        },
+        "required": ["goal"]
+      },
+      "output": { "$ref": "#/tools/debate/output" }
+    },
+    "review": {
+      "description": "Peer-review a code snippet or proposal across one or more LLMs.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "snippet":   { "type": "string" },
+          "intent":    { "type": "string" },
+          "providers": { "$ref": "#/$defs/ProviderArrayArg" }
+        },
+        "required": ["snippet"]
+      },
+      "output": { "$ref": "#/tools/confer/output" }
+    }
+  }
+}

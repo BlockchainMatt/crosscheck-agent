@@ -77,9 +77,21 @@ def main(argv: list[str]) -> int:
             )
             + "\n"
         )
+        # confer without `question` should be rejected by the boundary validator.
+        proc.stdin.write(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "tools/call",
+                    "params": {"name": "confer", "arguments": {}},
+                }
+            )
+            + "\n"
+        )
         proc.stdin.flush()
 
-        resps = _read_responses(proc, {1, 2, 3}, timeout_s=5.0)
+        resps = _read_responses(proc, {1, 2, 3, 4}, timeout_s=5.0)
 
         init = resps[1].get("result") or {}
         proto = init.get("protocolVersion")
@@ -107,6 +119,10 @@ def main(argv: list[str]) -> int:
             _die("list_providers payload missing 'providers'")
         if not isinstance(payload.get("providers"), list):
             _die("list_providers payload 'providers' is not a list")
+
+        bad = resps[4].get("error") or {}
+        if bad.get("code") != -32602:
+            _die(f"confer({{}}) should reject missing required arg with -32602, got: {resps[4]!r}")
 
         return 0
     finally:

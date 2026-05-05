@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "crosscheck.config.json"
 CONFIG_EXAMPLE = ROOT / "crosscheck.config.example.json"
 ENV_PATH = ROOT / ".env"
+SCHEMA_PATH = ROOT / "schema" / "tools.schema.json"
 
 
 # ------------------------------------------------------------
@@ -459,80 +460,75 @@ def tool_review(args: dict) -> dict:
 # ------------------------------------------------------------
 # MCP server (JSON-RPC 2.0 over stdio)
 # ------------------------------------------------------------
-_PROVIDER_ARG_DESCRIPTION = (
-    "Ad-hoc subset of provider names (e.g. ['openai','gemini','xai']). "
-    "Omit to use the configured active set. Call list_providers first if "
-    "you're unsure which names are available."
-)
-
-TOOLS = {
-    "list_providers": {
-        "description": "List every provider the server knows about and whether each is currently usable (has an API key in .env). Call this first to discover who's on the panel.",
-        "inputSchema": {"type": "object", "properties": {}},
-        "handler": tool_list_providers,
-    },
-    "confer": {
-        "description": "Ask one or more LLMs the same question and return their answers in parallel.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "question":  {"type": "string", "description": "The question or prompt."},
-                "context":   {"type": "string", "description": "Optional shared context."},
-                "providers": {"type": "array", "items": {"type": "string"},
-                              "description": _PROVIDER_ARG_DESCRIPTION},
-            },
-            "required": ["question"],
-        },
-        "handler": tool_confer,
-    },
-    "debate": {
-        "description": "Run a bounded multi-round debate across LLMs; moderator synthesises the result.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "topic":      {"type": "string"},
-                "context":    {"type": "string"},
-                "providers":  {"type": "array", "items": {"type": "string"},
-                               "description": _PROVIDER_ARG_DESCRIPTION + " Needs at least 2."},
-                "max_rounds": {"type": "integer"},
-                "moderator":  {"type": "string",
-                               "description": "Provider name to run the synthesis round. Defaults to config.moderator."},
-            },
-            "required": ["topic"],
-        },
-        "handler": tool_debate,
-    },
-    "plan": {
-        "description": "Collaborative planning across LLMs with risks + alternatives.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "goal":        {"type": "string"},
-                "constraints": {"type": "string"},
-                "context":     {"type": "string"},
-                "providers":   {"type": "array", "items": {"type": "string"},
-                                "description": _PROVIDER_ARG_DESCRIPTION + " Needs at least 2."},
-                "moderator":   {"type": "string"},
-            },
-            "required": ["goal"],
-        },
-        "handler": tool_plan,
-    },
-    "review": {
-        "description": "Peer-review a code snippet or proposal across one or more LLMs.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "snippet":   {"type": "string"},
-                "intent":    {"type": "string"},
-                "providers": {"type": "array", "items": {"type": "string"},
-                              "description": _PROVIDER_ARG_DESCRIPTION},
-            },
-            "required": ["snippet"],
-        },
-        "handler": tool_review,
-    },
+_HANDLERS: dict[str, Callable[[dict], dict]] = {
+    "list_providers": tool_list_providers,
+    "confer":         tool_confer,
+    "debate":         tool_debate,
+    "plan":           tool_plan,
+    "review":         tool_review,
 }
+
+
+def _resolve_refs(node: Any, root: Any) -> Any:
+    """Inline `#/...` $ref pointers so each tool's input schema is self-contained."""
+    if isinstance(node, dict):
+        if list(node.keys()) == ["$ref"]:
+            ref = node["$ref"]
+            if not ref.startswith("#/"):
+                return node
+            target = root
+            for part in ref[2:].split("/"):
+                target = target[part]
+            return _resolve_refs(target, root)
+        return {k: _resolve_refs(v, root) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_resolve_refs(v, root) for v in node]
+    return node
+
+
+def _load_tools() -> dict[str, dict]:
+    spec = json.loads(SCHEMA_PATH.read_text())
+    out: dict[str, dict] = {}
+    for name, body in spec["tools"].items():
+        if name not in _HANDLERS:
+            continue
+        out[name] = {
+            "description": body["description"],
+            "inputSchema": _resolve_refs(body["input"], spec),
+            "handler":     _HANDLERS[name],
+        }
+    return out
+
+
+def _validate_input(name: str, schema: dict, args: dict) -> str | None:
+    """Stdlib-only input check at the boundary. Returns None on success."""
+    if schema.get("type") != "object" or not isinstance(args, dict):
+        return None
+    props = schema.get("properties") or {}
+    required = schema.get("required") or []
+    for r in required:
+        if r not in args:
+            return f"{name}: missing required argument '{r}'"
+    if schema.get("additionalProperties") is False:
+        for k in args:
+            if k not in props:
+                return f"{name}: unknown argument '{k}'"
+    py_types = {"string": str, "integer": int, "boolean": bool, "array": list, "object": dict, "number": (int, float)}
+    for k, v in args.items():
+        ps = props.get(k) or {}
+        t = ps.get("type")
+        if isinstance(t, str) and t in py_types and not isinstance(v, py_types[t]):
+            # `bool` is a subclass of `int`; reject it for integer fields.
+            if not (t == "integer" and isinstance(v, bool)):
+                if isinstance(v, py_types[t]):
+                    continue
+            return f"{name}: argument '{k}' must be {t}"
+        if t == "integer" and "minimum" in ps and isinstance(v, int) and v < ps["minimum"]:
+            return f"{name}: argument '{k}' must be >= {ps['minimum']}"
+    return None
+
+
+TOOLS = _load_tools()
 
 
 def rpc_result(id_: Any, result: Any) -> dict:
@@ -569,6 +565,9 @@ def handle(req: dict) -> dict | None:
         tool = TOOLS.get(name)
         if tool is None:
             return rpc_error(id_, -32601, f"unknown tool: {name}")
+        err = _validate_input(name, tool["inputSchema"], args)
+        if err:
+            return rpc_error(id_, -32602, err)
         try:
             out = tool["handler"](args)
             return rpc_result(id_, {"content": [{"type": "text", "text": json.dumps(out, indent=2)}]})

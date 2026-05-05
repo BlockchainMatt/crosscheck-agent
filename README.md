@@ -1,21 +1,19 @@
 # crosscheck-agent
 
 Confer with multiple LLMs from inside Claude Code. `crosscheck-agent` is a
-compact, polyglot MCP server that lets Claude ask peers from other model
-families (GPT, Grok, Gemini, Mistral, Groq, DeepSeek) to reason, debate,
-plan, and peer-review — then hands the synthesised answer back to Claude.
+compact MCP server that lets Claude ask peers from other model families
+(GPT, Grok, Gemini, Mistral, Groq, DeepSeek) to reason, debate, plan, and
+peer-review — then hands the synthesised answer back to Claude.
 
-Pick any runtime that matches your stack: **Python**, **TypeScript**,
-**Rust**, or **Perl**. All four implementations expose the same tool
-surface and read the same config file, so swapping runtimes is zero-friction.
-
-Why did I include different languages? So they can't tell you where you work that it isn't supported because it doesn't fit in your stack. Does it matter? Not really. Is that a corny requirement? Probably. But I did it so you didn't have to justify it. 
+The server is **Python, stdlib-only** — no external dependencies, no build
+step. (Earlier versions shipped TypeScript/Rust/Perl mirrors; those have
+been dropped to remove the 4× maintenance tax. Python is canonical.)
 
 ```
        ┌──────────────┐
 Claude │ Claude Code  │     MCP      ┌────────────────────────┐
  tool  │  (your IDE)  │ ───────────▶ │  crosscheck-agent MCP  │
- call  │              │   stdio      │  (py / ts / rs / pl)   │
+ call  │              │   stdio      │       (Python)         │
        └──────────────┘              └───────────┬────────────┘
                                                  │ HTTPS
                                                  ▼
@@ -117,21 +115,11 @@ cd crosscheck-agent
 # 1. Interactive setup — writes .env + crosscheck.config.json
 bash scripts/setup.sh
 
-# 2. Pick a runtime (only do one):
-#    Python — no deps
-python3 servers/python/crosscheck_server.py   # sanity-check
+# 2. Sanity-check the server starts
+python3 servers/python/crosscheck_server.py
+
+# 3. Register with Claude Code
 claude mcp add crosscheck -- python3 "$PWD/servers/python/crosscheck_server.py"
-
-#    TypeScript
-( cd servers/typescript && npm install && npm run build )
-claude mcp add crosscheck -- node "$PWD/servers/typescript/dist/index.js"
-
-#    Rust
-( cd servers/rust && cargo build --release )
-claude mcp add crosscheck -- "$PWD/servers/rust/target/release/crosscheck-agent-rs"
-
-#    Perl
-claude mcp add crosscheck -- perl "$PWD/servers/perl/crosscheck_server.pl"
 ```
 
 Then inside Claude Code:
@@ -140,6 +128,8 @@ Then inside Claude Code:
 /mcp
 # call confer / debate / plan / review
 ```
+
+Requires Python 3.10+. No `pip install` needed.
 
 ## Tuning limits from the terminal
 
@@ -231,26 +221,21 @@ crosscheck-agent/
 │   ├── setup.sh            # interactive wizard
 │   └── crosscheck          # config + providers CLI
 └── servers/
-    ├── python/             # stdlib-only MCP server
-    ├── typescript/         # Node 20+ MCP server
-    ├── rust/               # tokio + reqwest
-    └── perl/               # HTTP::Tiny + JSON::PP
+    └── python/             # stdlib-only MCP server (canonical)
 ```
 
 ## Security
 
 - `.env` is gitignored. The setup wizard chmods it to `600`.
 - The `crosscheck` CLI never prints API keys, only whether they exist.
-- Every runtime reads keys at startup, never writes them anywhere but stderr
-  on an HTTP error (which may echo the remote error payload — be mindful if
-  you pipe logs to third-party tools).
+- Keys are read at startup and never written anywhere except stderr on an
+  HTTP error (which may echo the remote error payload — be mindful if you
+  pipe logs to third-party tools).
 
 ## Contributing
 
-Issues and PRs welcome. The Python implementation is the reference — any
-behavioural change should land there first, then be mirrored across the
-other three runtimes. Keep the tool surface (`confer`, `debate`, `plan`,
-`review`) stable and dependency-light.
+Issues and PRs welcome. Keep the tool surface (`confer`, `debate`, `plan`,
+`review`, `list_providers`) stable and dependency-light. Python stdlib only.
 
 ## Credits
 
