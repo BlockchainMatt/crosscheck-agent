@@ -105,10 +105,12 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "question":   { "type": "string", "description": "The question or prompt." },
-          "context":    { "type": "string", "description": "Optional shared context." },
-          "providers":  { "$ref": "#/$defs/ProviderArrayArg" },
-          "session_id": { "type": "string", "description": "Optional id to accumulate usage across calls." }
+          "question":         { "type": "string", "description": "The question or prompt." },
+          "context":          { "type": "string", "description": "Optional shared context." },
+          "providers":        { "$ref": "#/$defs/ProviderArrayArg" },
+          "session_id":       { "type": "string", "description": "Optional id to accumulate usage across calls." },
+          "untrusted_input":  { "type": "boolean", "default": false,
+                                "description": "When true, treat `context` and `question` as untrusted: wrap in tags, neutralize obvious injection phrases, instruct panelists to treat as data only." }
         },
         "required": ["question"]
       },
@@ -199,10 +201,12 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "snippet":    { "type": "string" },
-          "intent":     { "type": "string" },
-          "providers":  { "$ref": "#/$defs/ProviderArrayArg" },
-          "session_id": { "type": "string", "description": "Optional id to accumulate usage across calls." }
+          "snippet":         { "type": "string" },
+          "intent":          { "type": "string" },
+          "providers":       { "$ref": "#/$defs/ProviderArrayArg" },
+          "session_id":      { "type": "string", "description": "Optional id to accumulate usage across calls." },
+          "untrusted_input": { "type": "boolean", "default": false,
+                               "description": "When true, treat the snippet as untrusted: wrap in tags, neutralize obvious injection phrases, instruct panelists to treat as data only. Use for snippets from outside contributors, user submissions, or anything you wouldn't run as a script." }
         },
         "required": ["snippet"]
       },

@@ -86,6 +86,31 @@
         "required": ["capacity", "refill_per_sec"]
       },
       "description": "Per-provider leaky-bucket rate limit; the special key `default` applies to any provider without an entry."
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Regex-based PII/secret scrubbing applied to event traces and persisted transcripts.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "patterns_extra": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Extra regex patterns to redact (e.g. internal account ids)."
+        }
+      }
+    },
+    "provider_allowlist": {
+      "type": ["array", "null"],
+      "items": { "type": "string" },
+      "default": null,
+      "description": "If set, only these providers may be invoked even when the caller requests others. Null = no restriction."
+    },
+    "events_log": {
+      "type": "string",
+      "default": ".crosscheck/events.ndjson",
+      "description": "Path to the ndjson event trace (one structured event per line)."
     }
   },
   "required": ["max_rounds", "token_cap", "max_time_seconds", "providers", "moderator"]

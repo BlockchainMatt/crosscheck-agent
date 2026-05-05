@@ -25,3 +25,6 @@ jobs:
 
       - name: Resilience offline test (retries, errors, rate limiter)
         run: python3 scripts/test_resilience.py
+
+      - name: Safety + observability offline test (redaction, allowlist, untrusted, ndjson)
+        run: python3 scripts/test_safety.py

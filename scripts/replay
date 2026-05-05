@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Pretty-print and filter the crosscheck-agent ndjson event log.
+
+Usage:
+  scripts/replay                  # all events from configured path, newest last
+  scripts/replay --tail 50        # last 50 events
+  scripts/replay --tool debate    # only events for the debate tool
+  scripts/replay --provider gemini
+  scripts/replay --kind provider_call --since 1h
+  scripts/replay --jsonl          # raw ndjson (no formatting), filtered
+
+The events log is configured by `events_log` in crosscheck.config.json.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_LOG = ".crosscheck/events.ndjson"
+
+
+def _resolve_log() -> Path:
+    cfg_path = ROOT / "crosscheck.config.json"
+    log_rel = DEFAULT_LOG
+    if cfg_path.exists():
+        try:
+            cfg = json.loads(cfg_path.read_text())
+            log_rel = cfg.get("events_log") or DEFAULT_LOG
+        except Exception:
+            pass
+    p = Path(log_rel)
+    return p if p.is_absolute() else (ROOT / p)
+
+
+_DURATION_RE = re.compile(r"^(\d+)([smhd]?)$")
+
+
+def _parse_since(value: str) -> int:
+    """Parse '30s', '5m', '2h', '1d', or absolute ms."""
+    m = _DURATION_RE.match(value.strip())
+    if not m:
+        raise argparse.ArgumentTypeError(f"unparseable duration: {value!r}")
+    n, unit = int(m.group(1)), m.group(2) or ""
+    mult = {"": 1, "s": 1000, "m": 60_000, "h": 3_600_000, "d": 86_400_000}[unit]
+    if unit == "":
+        return n  # treat as raw ms
+    return int(time.time() * 1000) - n * mult
+
+
+def _fmt_ts(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%H:%M:%S.%f")[:-3]
+
+
+def _fmt_event(rec: dict) -> str:
+    kind = rec.get("kind", "?")
+    parts = [f"{_fmt_ts(rec.get('ts', 0))}", f"[{kind}]"]
+    for k in ("tool", "provider", "model", "session_id"):
+        if k in rec and rec[k] is not None:
+            parts.append(f"{k}={rec[k]}")
+    if rec.get("cache_hit") is True:
+        parts.append("CACHE_HIT")
+    if "error_kind" in rec:
+        parts.append(f"err={rec['error_kind']}")
+    if "elapsed_ms" in rec:
+        parts.append(f"{rec['elapsed_ms']}ms")
+    if "attempts" in rec and rec["attempts"] > 1:
+        parts.append(f"attempts={rec['attempts']}")
+    if kind == "tool_end":
+        for k in ("provider_calls", "cache_hits", "wall_used_ms", "rounds_completed"):
+            if k in rec:
+                parts.append(f"{k}={rec[k]}")
+    return " ".join(parts)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    ap.add_argument("--log", default=None, help="Path to ndjson log (default: from config).")
+    ap.add_argument("--tail", type=int, default=0, help="Show only the last N events.")
+    ap.add_argument("--kind", help="Filter by event kind (tool_start, tool_end, provider_call).")
+    ap.add_argument("--tool", help="Filter by tool name (confer, debate, plan, review).")
+    ap.add_argument("--provider", help="Filter by provider name.")
+    ap.add_argument("--session", help="Filter by session_id.")
+    ap.add_argument("--since", type=_parse_since, help="Only events newer than this (e.g. 30s, 5m, 2h).")
+    ap.add_argument("--jsonl", action="store_true", help="Print raw ndjson lines instead of formatted output.")
+    args = ap.parse_args()
+
+    log = Path(args.log) if args.log else _resolve_log()
+    if not log.exists():
+        print(f"no events log at {log}", file=sys.stderr)
+        return 1
+
+    events: list[dict] = []
+    with log.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if args.since is not None and rec.get("ts", 0) < args.since:
+                continue
+            if args.kind and rec.get("kind") != args.kind:
+                continue
+            if args.tool and rec.get("tool") != args.tool:
+                continue
+            if args.provider and rec.get("provider") != args.provider:
+                continue
+            if args.session and rec.get("session_id") != args.session:
+                continue
+            events.append(rec)
+
+    if args.tail > 0:
+        events = events[-args.tail:]
+
+    for rec in events:
+        if args.jsonl:
+            print(json.dumps(rec, separators=(",", ":")))
+        else:
+            print(_fmt_event(rec))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

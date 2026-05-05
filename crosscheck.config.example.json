@@ -21,5 +21,11 @@
   },
   "rate_limits": {
     "default": {"capacity": 5, "refill_per_sec": 5}
-  }
+  },
+  "redaction": {
+    "enabled": true,
+    "patterns_extra": []
+  },
+  "provider_allowlist": null,
+  "events_log": ".crosscheck/events.ndjson"
 }
