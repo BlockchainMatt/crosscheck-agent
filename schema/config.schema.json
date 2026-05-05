@@ -63,6 +63,29 @@
       "type": "string",
       "default": ".crosscheck/sessions",
       "description": "Where per-session usage state is persisted (calls/wall_ms/cache_hits keyed by session_id)."
+    },
+    "retries": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Retry policy for transient HTTP errors (429, 5xx, network, timeout).",
+      "properties": {
+        "max_attempts":    { "type": "integer", "minimum": 1, "default": 3 },
+        "backoff_base_s":  { "type": "number",  "minimum": 0, "default": 0.75,
+                             "description": "Base for jittered exponential backoff: base * 2^(attempt-1) + jitter." }
+      }
+    },
+    "rate_limits": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "capacity":       { "type": "number", "minimum": 1 },
+          "refill_per_sec": { "type": "number", "minimum": 0.01 }
+        },
+        "required": ["capacity", "refill_per_sec"]
+      },
+      "description": "Per-provider leaky-bucket rate limit; the special key `default` applies to any provider without an entry."
     }
   },
   "required": ["max_rounds", "token_cap", "max_time_seconds", "providers", "moderator"]

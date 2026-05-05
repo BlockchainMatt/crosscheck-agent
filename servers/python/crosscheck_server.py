@@ -19,8 +19,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -202,8 +204,42 @@ def _session_record(state: dict | None, answers: list[dict], call_started: float
 @dataclass
 class Provider:
     name: str
-    send: Callable[[list[dict], int, float], str]
+    # send(messages, max_tokens, temperature) -> (text, attempts_used)
+    send: Callable[[list[dict], int, float], tuple[str, int]]
     model: str
+
+
+class ProviderError(RuntimeError):
+    """Classified provider failure. `kind` drives retry policy and reporting."""
+
+    KINDS = ("auth", "rate_limit", "server", "client", "timeout", "network", "parse")
+
+    def __init__(self, kind: str, message: str, *, status: int | None = None,
+                 transient: bool = False, retry_after_s: float | None = None) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.status = status
+        self.transient = transient
+        self.retry_after_s = retry_after_s
+
+
+def _classify_http_error(e: urllib.error.HTTPError) -> ProviderError:
+    body = e.read().decode("utf-8", "ignore")
+    msg = f"HTTP {e.code}: {body[:512]}"
+    retry_after = None
+    try:
+        ra = e.headers.get("Retry-After") if e.headers else None
+        if ra:
+            retry_after = float(ra)
+    except Exception:
+        retry_after = None
+    if e.code in (401, 403):
+        return ProviderError("auth", msg, status=e.code, transient=False)
+    if e.code == 429:
+        return ProviderError("rate_limit", msg, status=e.code, transient=True, retry_after_s=retry_after)
+    if 500 <= e.code <= 599:
+        return ProviderError("server", msg, status=e.code, transient=True, retry_after_s=retry_after)
+    return ProviderError("client", msg, status=e.code, transient=False)
 
 
 def _http_post(url: str, headers: dict, body: dict, timeout: float) -> dict:
@@ -215,16 +251,121 @@ def _http_post(url: str, headers: dict, body: dict, timeout: float) -> dict:
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            raw = resp.read().decode("utf-8")
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ProviderError("parse", f"non-JSON response: {raw[:200]}") from e
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"HTTP {e.code}: {e.read().decode('utf-8', 'ignore')}") from e
+        raise _classify_http_error(e) from e
+    except urllib.error.URLError as e:
+        reason = getattr(e, "reason", str(e))
+        if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
+            raise ProviderError("timeout", f"network timeout: {reason}", transient=True) from e
+        raise ProviderError("network", f"network error: {reason}", transient=True) from e
 
 
-def _is_openai_reasoning_model(model: str) -> bool:
-    # GPT-5 and the o-series are reasoning models: they require
-    # max_completion_tokens (not max_tokens) and reject custom temperature.
-    m = model.lower()
-    return m.startswith("gpt-5") or m.startswith("o1") or m.startswith("o3") or m.startswith("o4")
+def _retry_cfg() -> dict:
+    return CFG.get("retries") or {}
+
+
+def _http_post_resilient(url: str, headers: dict, body: dict, timeout: float, deadline: float) -> tuple[dict, int]:
+    """POST with jittered exponential backoff on transient errors. Returns (response, attempts)."""
+    max_attempts = max(1, int(_retry_cfg().get("max_attempts", 3)))
+    base = float(_retry_cfg().get("backoff_base_s", 0.75))
+    last_err: ProviderError | None = None
+    for attempt in range(1, max_attempts + 1):
+        time_left = max(0.0, deadline - time.monotonic())
+        if time_left < 0.5:
+            raise ProviderError("timeout", "deadline reached before request",
+                                transient=False) from last_err
+        call_timeout = min(timeout, max(1.0, time_left))
+        try:
+            return _http_post(url, headers, body, call_timeout), attempt
+        except ProviderError as e:
+            last_err = e
+            if not e.transient or attempt >= max_attempts:
+                raise
+            backoff = e.retry_after_s if e.retry_after_s is not None else base * (2 ** (attempt - 1))
+            backoff += random.random() * base  # jitter
+            backoff = min(backoff, max(0.0, deadline - time.monotonic() - 0.5))
+            if backoff <= 0:
+                raise
+            time.sleep(backoff)
+    # Unreachable: loop either returns or raises.
+    raise last_err or ProviderError("network", "exhausted retries", transient=False)
+
+
+# ------------------------------------------------------------
+# Per-provider rate limiting (token bucket, leaky)
+# ------------------------------------------------------------
+@dataclass
+class _Bucket:
+    capacity: float
+    refill_per_sec: float
+    tokens: float = field(init=False)
+    last: float = field(init=False)
+    lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+
+    def __post_init__(self) -> None:
+        self.tokens = self.capacity
+        self.last = time.monotonic()
+
+    def acquire(self, deadline: float) -> bool:
+        while True:
+            with self.lock:
+                now = time.monotonic()
+                self.tokens = min(self.capacity, self.tokens + (now - self.last) * self.refill_per_sec)
+                self.last = now
+                if self.tokens >= 1:
+                    self.tokens -= 1
+                    return True
+                wait = (1.0 - self.tokens) / max(self.refill_per_sec, 1e-6)
+            if (deadline - time.monotonic()) <= wait + 0.05:
+                return False
+            time.sleep(min(wait, 0.25))
+
+
+_BUCKETS: dict[str, _Bucket] = {}
+_BUCKETS_LOCK = threading.Lock()
+
+
+def _bucket_for(provider_name: str) -> _Bucket:
+    rl = (CFG.get("rate_limits") or {})
+    spec = rl.get(provider_name) or rl.get("default") or {"capacity": 5, "refill_per_sec": 5}
+    cap = float(spec.get("capacity", 5))
+    refill = float(spec.get("refill_per_sec", cap))
+    with _BUCKETS_LOCK:
+        b = _BUCKETS.get(provider_name)
+        if b is None or b.capacity != cap or b.refill_per_sec != refill:
+            b = _Bucket(capacity=cap, refill_per_sec=refill)
+            _BUCKETS[provider_name] = b
+        return b
+
+
+# ------------------------------------------------------------
+# Provider capability matrix
+# ------------------------------------------------------------
+PROVIDER_CAPS: dict[str, dict[str, Any]] = {
+    "anthropic": {"family": "anthropic",   "system_role": "separate", "supports_temperature": True},
+    "openai":    {"family": "openai_chat", "system_role": "inline",   "supports_temperature": "model",
+                  "reasoning_prefixes": ("gpt-5", "o1", "o3", "o4")},
+    "xai":       {"family": "openai_chat", "system_role": "inline",   "supports_temperature": True},
+    "mistral":   {"family": "openai_chat", "system_role": "inline",   "supports_temperature": True},
+    "groq":      {"family": "openai_chat", "system_role": "inline",   "supports_temperature": True},
+    "deepseek":  {"family": "openai_chat", "system_role": "inline",   "supports_temperature": True},
+    "gemini":    {"family": "gemini",      "system_role": "separate", "supports_temperature": True},
+}
+
+
+def _supports_temperature(provider_name: str, model: str) -> bool:
+    caps = PROVIDER_CAPS.get(provider_name, {})
+    flag = caps.get("supports_temperature", True)
+    if flag == "model":
+        prefixes = caps.get("reasoning_prefixes", ())
+        m = model.lower()
+        return not any(m.startswith(p) for p in prefixes)
+    return bool(flag)
 
 
 def openai_compatible(name: str, url: str, key_env: str, model_env: str, default_model: str) -> Provider | None:
@@ -232,24 +373,28 @@ def openai_compatible(name: str, url: str, key_env: str, model_env: str, default
     if not key:
         return None
     model = ENV.get(model_env, default_model)
-    # Only openai.com hosts reasoning models; Grok/Mistral/Groq/DeepSeek use legacy params.
-    is_openai = "api.openai.com" in url
 
-    def send(messages: list[dict], max_tokens: int, temperature: float) -> str:
+    def send(messages: list[dict], max_tokens: int, temperature: float) -> tuple[str, int]:
         body: dict = {"model": model, "messages": messages}
-        if is_openai and _is_openai_reasoning_model(model):
-            body["max_completion_tokens"] = max_tokens
-            # Reasoning models only accept temperature=1 (default); omit entirely.
-        else:
+        if _supports_temperature(name, model):
             body["max_tokens"] = max_tokens
             body["temperature"] = temperature
-        resp = _http_post(
-            url,
-            {"Authorization": f"Bearer {key}"},
-            body,
-            timeout=CFG.get("max_time_seconds", 120),
+        else:
+            # Reasoning models reject `temperature` and need `max_completion_tokens`.
+            body["max_completion_tokens"] = max_tokens
+        deadline = _deadline()
+        if not _bucket_for(name).acquire(deadline):
+            raise ProviderError("rate_limit", f"{name}: local rate limiter timed out",
+                                transient=False)
+        resp, attempts = _http_post_resilient(
+            url, {"Authorization": f"Bearer {key}"}, body,
+            timeout=CFG.get("max_time_seconds", 120), deadline=deadline,
         )
-        return resp["choices"][0]["message"]["content"]
+        try:
+            text = resp["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as e:
+            raise ProviderError("parse", f"{name}: unexpected response shape: {str(resp)[:200]}") from e
+        return text, attempts
 
     return Provider(name=name, send=send, model=model)
 
@@ -260,25 +405,27 @@ def anthropic_provider() -> Provider | None:
         return None
     model = ENV.get("ANTHROPIC_MODEL", "claude-opus-4-5")
 
-    def send(messages: list[dict], max_tokens: int, temperature: float) -> str:
-        # Anthropic needs system separated and role=assistant/user alternation.
+    def send(messages: list[dict], max_tokens: int, temperature: float) -> tuple[str, int]:
         system = next((m["content"] for m in messages if m["role"] == "system"), None)
         convo = [m for m in messages if m["role"] != "system"]
-        body = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": convo,
-        }
+        body = {"model": model, "max_tokens": max_tokens, "temperature": temperature,
+                "messages": convo}
         if system:
             body["system"] = system
-        resp = _http_post(
+        deadline = _deadline()
+        if not _bucket_for("anthropic").acquire(deadline):
+            raise ProviderError("rate_limit", "anthropic: local rate limiter timed out",
+                                transient=False)
+        resp, attempts = _http_post_resilient(
             "https://api.anthropic.com/v1/messages",
-            {"x-api-key": key, "anthropic-version": "2023-06-01"},
-            body,
-            timeout=CFG.get("max_time_seconds", 120),
+            {"x-api-key": key, "anthropic-version": "2023-06-01"}, body,
+            timeout=CFG.get("max_time_seconds", 120), deadline=deadline,
         )
-        return "".join(block.get("text", "") for block in resp.get("content", []))
+        try:
+            text = "".join(block.get("text", "") for block in resp.get("content", []))
+        except Exception as e:
+            raise ProviderError("parse", f"anthropic: unexpected response shape: {str(resp)[:200]}") from e
+        return text, attempts
 
     return Provider(name="anthropic", send=send, model=model)
 
@@ -289,7 +436,7 @@ def gemini_provider() -> Provider | None:
         return None
     model = ENV.get("GEMINI_MODEL", "gemini-2.5-pro")
 
-    def send(messages: list[dict], max_tokens: int, temperature: float) -> str:
+    def send(messages: list[dict], max_tokens: int, temperature: float) -> tuple[str, int]:
         contents = []
         system = None
         for m in messages:
@@ -304,12 +451,22 @@ def gemini_provider() -> Provider | None:
         }
         if system:
             body["systemInstruction"] = {"parts": [{"text": system}]}
+        deadline = _deadline()
+        if not _bucket_for("gemini").acquire(deadline):
+            raise ProviderError("rate_limit", "gemini: local rate limiter timed out",
+                                transient=False)
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-        resp = _http_post(url, {}, body, timeout=CFG.get("max_time_seconds", 120))
+        resp, attempts = _http_post_resilient(
+            url, {}, body, timeout=CFG.get("max_time_seconds", 120), deadline=deadline
+        )
         cands = resp.get("candidates", [])
         if not cands:
-            return ""
-        return "".join(p.get("text", "") for p in cands[0]["content"]["parts"])
+            return "", attempts
+        try:
+            text = "".join(p.get("text", "") for p in cands[0]["content"]["parts"])
+        except Exception as e:
+            raise ProviderError("parse", f"gemini: unexpected response shape: {str(resp)[:200]}") from e
+        return text, attempts
 
     return Provider(name="gemini", send=send, model=model)
 
@@ -370,25 +527,39 @@ def _ask_one(p: Provider, messages: list[dict], deadline: float, max_tokens: int
     temp = float(CFG.get("temperature", 0.4))
     if _time_left(deadline) <= 0:
         return {"provider": p.name, "model": p.model, "error": "time budget exhausted",
-                "cache_hit": False, "elapsed_ms": 0}
+                "error_kind": "timeout", "cache_hit": False, "elapsed_ms": 0, "attempts": 0}
 
     key = _cache_key(p.name, p.model, messages, max_tokens, temp)
     cached = _cache_get(key)
     if cached is not None:
         return {"provider": p.name, "model": p.model, "response": cached["text"],
-                "cache_hit": True, "elapsed_ms": 0}
+                "cache_hit": True, "elapsed_ms": 0, "attempts": 0}
 
     started = time.monotonic()
     try:
-        out = p.send(messages, max_tokens, temp)
+        result = p.send(messages, max_tokens, temp)
+        # Tolerate provider stubs that return a plain string (test fixtures).
+        if isinstance(result, tuple):
+            out, attempts = result
+        else:
+            out, attempts = result, 1
         elapsed_ms = int((time.monotonic() - started) * 1000)
         _cache_put(key, {"text": out, "stored_at": int(time.time())})
         return {"provider": p.name, "model": p.model, "response": out,
-                "cache_hit": False, "elapsed_ms": elapsed_ms}
+                "cache_hit": False, "elapsed_ms": elapsed_ms, "attempts": attempts}
+    except ProviderError as e:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        ans = {"provider": p.name, "model": p.model, "error": str(e),
+               "error_kind": e.kind, "cache_hit": False,
+               "elapsed_ms": elapsed_ms, "attempts": 0}
+        if e.retry_after_s is not None:
+            ans["retry_after_s"] = e.retry_after_s
+        return ans
     except Exception as e:
         elapsed_ms = int((time.monotonic() - started) * 1000)
         return {"provider": p.name, "model": p.model, "error": str(e),
-                "cache_hit": False, "elapsed_ms": elapsed_ms}
+                "error_kind": "other", "cache_hit": False,
+                "elapsed_ms": elapsed_ms, "attempts": 0}
 
 
 def _budget_summary(call_started: float, deadline: float, answers: list[dict]) -> dict:

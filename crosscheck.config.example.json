@@ -14,5 +14,12 @@
     "max_entries": 5000,
     "dir": ".crosscheck/cache"
   },
-  "session_dir": ".crosscheck/sessions"
+  "session_dir": ".crosscheck/sessions",
+  "retries": {
+    "max_attempts": 3,
+    "backoff_base_s": 0.75
+  },
+  "rate_limits": {
+    "default": {"capacity": 5, "refill_per_sec": 5}
+  }
 }

@@ -12,13 +12,17 @@
       "type": "object",
       "description": "One provider's response (or its failure mode) for a single turn.",
       "properties": {
-        "provider":   { "type": "string" },
-        "model":      { "type": "string" },
-        "response":   { "type": "string", "description": "The provider's text response. Mutually exclusive with `error`." },
-        "error":      { "type": "string", "description": "Failure reason. Mutually exclusive with `response`." },
-        "round":      { "type": "integer", "minimum": 1, "description": "Debate round number, when applicable." },
-        "cache_hit":  { "type": "boolean", "description": "True if the response was served from the exact-match disk cache." },
-        "elapsed_ms": { "type": "integer", "minimum": 0, "description": "Wall-clock time the provider took (0 on cache hit)." }
+        "provider":      { "type": "string" },
+        "model":         { "type": "string" },
+        "response":      { "type": "string", "description": "The provider's text response. Mutually exclusive with `error`." },
+        "error":         { "type": "string", "description": "Failure reason. Mutually exclusive with `response`." },
+        "error_kind":    { "type": "string", "enum": ["auth", "rate_limit", "server", "client", "timeout", "network", "parse", "other"],
+                           "description": "Classified failure mode; drives retry policy and reporting." },
+        "retry_after_s": { "type": "number", "minimum": 0, "description": "When the upstream sent a Retry-After header." },
+        "round":         { "type": "integer", "minimum": 1, "description": "Debate round number, when applicable." },
+        "cache_hit":     { "type": "boolean", "description": "True if the response was served from the exact-match disk cache." },
+        "elapsed_ms":    { "type": "integer", "minimum": 0, "description": "Wall-clock time the provider took (0 on cache hit)." },
+        "attempts":      { "type": "integer", "minimum": 0, "description": "Number of HTTP attempts made (1 = first try succeeded)." }
       },
       "required": ["provider", "model"],
       "oneOf": [
