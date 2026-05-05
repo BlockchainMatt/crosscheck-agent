@@ -1068,6 +1068,8 @@ def tool_debate(args: dict) -> dict:
     moderator_name = args.get("moderator") or CFG.get("moderator", "anthropic")
     moderator = ALL_PROVIDERS.get(moderator_name) or (selected[0] if selected else None)
     synthesis = None
+    synthesis_structured: dict | None = None
+    synthesis_errors: list[str] = []
     if moderator and _time_left(deadline) > 1:
         condensed = "\n\n".join(
             f"[{e['provider']} — round {e['round']}]\n{e.get('response','(error)')}"
@@ -1077,11 +1079,42 @@ def tool_debate(args: dict) -> dict:
             {"role": "system", "content": "You are the moderator. Synthesise the debate into a single grounded recommendation."},
             {"role": "user", "content": f"TOPIC: {topic}\n\nTRANSCRIPT:\n{condensed}"},
         ]
-        synthesis = _ask_one(moderator, synth_messages, deadline, per_call)
+        if bool(args.get("structured", False)):
+            obj, ans, errs = _request_structured(
+                moderator, synth_messages, _structured_synthesis_schema(),
+                per_call, deadline, max_retries=1,
+            )
+            synthesis = ans
+            synthesis_structured = obj
+            synthesis_errors = errs
+        else:
+            synthesis = _ask_one(moderator, synth_messages, deadline, per_call)
 
     all_answers = transcript + ([synthesis] if synthesis else [])
     _session_record(session, all_answers, call_started)
     _session_save(session)
+
+    # Persist claims when both session and structured synthesis are available.
+    if session and synthesis_structured and isinstance(synthesis_structured, dict):
+        try:
+            sid = session["session_id"]
+            cons_text = synthesis_structured.get("consensus")
+            if cons_text:
+                _claim_add(sid, cons_text, provider=moderator_name,
+                           confidence=float(synthesis_structured.get("weighted_confidence") or 0),
+                           kind="consensus")
+            for kc in synthesis_structured.get("key_claims") or []:
+                _claim_add(sid, kc.get("claim", ""), provider=moderator_name,
+                           confidence=float(kc.get("confidence") or 0),
+                           kind="support")
+            for d in synthesis_structured.get("dissent") or []:
+                _claim_add(sid, d.get("claim", ""),
+                           provider=",".join(d.get("providers") or []) or moderator_name,
+                           kind="dissent")
+            for q in synthesis_structured.get("open_questions") or []:
+                _claim_add(sid, q, provider=moderator_name, kind="open_question")
+        except Exception:
+            pass  # Persistence is best-effort; don't break the response.
 
     result = {
         "tool": "debate",
@@ -1091,6 +1124,10 @@ def tool_debate(args: dict) -> dict:
         "synthesis": synthesis,
         "budget": _budget_summary(call_started, deadline, all_answers),
     }
+    if synthesis_structured is not None:
+        result["synthesis_structured"] = synthesis_structured
+    if synthesis_errors:
+        result["synthesis_errors"] = synthesis_errors
     if session:
         result["session"] = session
     if unknown:
@@ -1120,6 +1157,7 @@ def tool_plan(args: dict) -> dict:
         "providers": args.get("providers"),
         "moderator": args.get("moderator"),
         "session_id": args.get("session_id"),
+        "structured": bool(args.get("structured", False)),
     })
 
 
@@ -1169,7 +1207,7 @@ def _resolve_refs(node: Any, root: Any) -> Any:
     return node
 
 
-def _load_tools() -> dict[str, dict]:
+def _load_tools() -> tuple[dict[str, dict], dict]:
     spec = json.loads(SCHEMA_PATH.read_text())
     out: dict[str, dict] = {}
     for name, body in spec["tools"].items():
@@ -1180,7 +1218,191 @@ def _load_tools() -> dict[str, dict]:
             "inputSchema": _resolve_refs(body["input"], spec),
             "handler":     _HANDLERS[name],
         }
-    return out
+    return out, spec
+
+
+# ------------------------------------------------------------
+# Output validator (subset of JSON Schema, stdlib-only)
+# ------------------------------------------------------------
+def _validate(value: Any, schema: dict, path: str = "") -> list[str]:
+    """Validate `value` against a JSON-Schema-ish dict. Returns a list of
+    human-readable error messages; empty list = valid.
+
+    Supported keywords: type, enum, const, properties, required,
+    additionalProperties, items, minimum, maximum, minLength, minItems,
+    anyOf, oneOf. $ref is best-effort (resolves into the loaded tools schema)."""
+    errs: list[str] = []
+    if "$ref" in schema and len(schema) == 1:
+        ref = schema["$ref"]
+        try:
+            target = _resolve_refs({"$ref": ref}, _SCHEMA_DOC)
+            return _validate(value, target, path)
+        except Exception:
+            return errs  # silently skip unresolved refs
+
+    if "anyOf" in schema:
+        sub_errs = [_validate(value, s, path) for s in schema["anyOf"]]
+        if not any(len(e) == 0 for e in sub_errs):
+            errs.append(f"{path or '<root>'}: did not match anyOf")
+            return errs
+        return errs
+    if "oneOf" in schema:
+        passed = sum(1 for s in schema["oneOf"] if not _validate(value, s, path))
+        if passed != 1:
+            errs.append(f"{path or '<root>'}: matched {passed} of oneOf, expected 1")
+            return errs
+        return errs
+
+    if "const" in schema and value != schema["const"]:
+        errs.append(f"{path or '<root>'}: expected const {schema['const']!r}, got {value!r}")
+        return errs
+
+    if "type" in schema:
+        t = schema["type"]
+        types = t if isinstance(t, list) else [t]
+
+        def _matches(v: Any, tt: str) -> bool:
+            if tt == "string":  return isinstance(v, str)
+            if tt == "integer": return isinstance(v, int) and not isinstance(v, bool)
+            if tt == "number":  return (isinstance(v, (int, float)) and not isinstance(v, bool))
+            if tt == "boolean": return isinstance(v, bool)
+            if tt == "array":   return isinstance(v, list)
+            if tt == "object":  return isinstance(v, dict)
+            if tt == "null":    return v is None
+            return False
+
+        if not any(_matches(value, tt) for tt in types):
+            errs.append(f"{path or '<root>'}: expected type {t}, got {type(value).__name__}")
+            return errs
+
+    if isinstance(value, str):
+        if "enum" in schema and value not in schema["enum"]:
+            errs.append(f"{path or '<root>'}: value {value!r} not in enum")
+        if "minLength" in schema and len(value) < schema["minLength"]:
+            errs.append(f"{path or '<root>'}: shorter than minLength {schema['minLength']}")
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if "minimum" in schema and value < schema["minimum"]:
+            errs.append(f"{path or '<root>'}: {value} < minimum {schema['minimum']}")
+        if "maximum" in schema and value > schema["maximum"]:
+            errs.append(f"{path or '<root>'}: {value} > maximum {schema['maximum']}")
+
+    if isinstance(value, list):
+        if "minItems" in schema and len(value) < schema["minItems"]:
+            errs.append(f"{path or '<root>'}: fewer items than minItems {schema['minItems']}")
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for i, v in enumerate(value):
+                errs.extend(_validate(v, item_schema, f"{path}[{i}]"))
+
+    if isinstance(value, dict):
+        props = schema.get("properties") or {}
+        for r in schema.get("required") or []:
+            if r not in value:
+                errs.append(f"{path or '<root>'}: missing required key {r!r}")
+        if schema.get("additionalProperties") is False:
+            for k in value:
+                if k not in props:
+                    errs.append(f"{path or '<root>'}: unknown key {k!r}")
+        for k, v in value.items():
+            ps = props.get(k)
+            if ps:
+                errs.extend(_validate(v, ps, f"{path}.{k}" if path else str(k)))
+
+    return errs
+
+
+def _extract_json(text: str) -> Any | None:
+    """Pull a JSON object/array from free text. Tolerates markdown fences and prose."""
+    if not isinstance(text, str):
+        return None
+    s = text.strip()
+    if not s:
+        return None
+    # 1. Direct parse.
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        pass
+    # 2. ```json ... ``` fenced block.
+    m = re.search(r"```(?:json)?\s*\n(.*?)\n```", s, flags=re.DOTALL | re.IGNORECASE)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+    # 3. First balanced {...} or [...].
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = s.find(opener)
+        if start < 0:
+            continue
+        depth = 0
+        in_str = False
+        esc = False
+        for i, ch in enumerate(s[start:], start=start):
+            if esc:
+                esc = False
+                continue
+            if ch == "\\":
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == opener:
+                depth += 1
+            elif ch == closer:
+                depth -= 1
+                if depth == 0:
+                    candidate = s[start:i + 1]
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        break
+    return None
+
+
+def _request_structured(p: "Provider", base_messages: list[dict], schema: dict,
+                        max_tokens: int, deadline: float, max_retries: int = 1
+                        ) -> tuple[Any | None, dict, list[str]]:
+    """Ask provider for JSON matching `schema`. Validate; retry once on failure
+    with the errors fed back in the prompt. Returns (parsed_or_None, raw_answer, errors)."""
+    sys_idx = next((i for i, m in enumerate(base_messages) if m.get("role") == "system"), None)
+    schema_text = json.dumps(schema, separators=(",", ":"))
+    instr = (
+        "\n\nReturn ONLY a single JSON object matching this schema. "
+        "No commentary, no markdown fences, no prose around it.\n"
+        f"SCHEMA:\n{schema_text}"
+    )
+    last_answer: dict = {}
+    last_errs: list[str] = []
+    for attempt in range(max_retries + 1):
+        msgs = [dict(m) for m in base_messages]
+        if sys_idx is not None:
+            msgs[sys_idx]["content"] = msgs[sys_idx]["content"] + instr
+        else:
+            msgs.insert(0, {"role": "system", "content": instr.strip()})
+        if attempt > 0 and last_errs:
+            msgs.append({"role": "user",
+                         "content": "Your previous response failed validation:\n- "
+                                    + "\n- ".join(last_errs[:5])
+                                    + "\nFix the issues and re-emit valid JSON only."})
+        ans = _ask_one(p, msgs, deadline, max_tokens)
+        last_answer = ans
+        if "error" in ans:
+            return None, ans, [f"provider error: {ans.get('error_kind', 'other')}: {ans['error']}"]
+        text = ans.get("response", "")
+        obj = _extract_json(text)
+        if obj is None:
+            last_errs = ["could not parse JSON from response"]
+            continue
+        errs = _validate(obj, schema)
+        if not errs:
+            return obj, ans, []
+        last_errs = errs
+    return None, last_answer, last_errs
 
 
 def _validate_input(name: str, schema: dict, args: dict) -> str | None:
@@ -1211,7 +1433,11 @@ def _validate_input(name: str, schema: dict, args: dict) -> str | None:
     return None
 
 
-TOOLS = _load_tools()
+TOOLS, _SCHEMA_DOC = _load_tools()
+
+
+def _structured_synthesis_schema() -> dict:
+    return _SCHEMA_DOC["$defs"]["StructuredSynthesis"]
 
 
 def rpc_result(id_: Any, result: Any) -> dict:

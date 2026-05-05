@@ -43,6 +43,45 @@
       },
       "required": ["wall_used_ms", "wall_remaining_ms", "max_time_seconds", "token_cap"]
     },
+    "StructuredSynthesis": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Schema-validated synthesis output produced by the moderator/synthesizer role.",
+      "properties": {
+        "consensus":           { "type": "string", "description": "What the panel converged on." },
+        "weighted_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "key_claims": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "claim":      { "type": "string" },
+              "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+              "supporters": { "type": "array", "items": { "type": "string" } },
+              "dissenters": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["claim", "confidence"]
+          }
+        },
+        "dissent": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "claim":     { "type": "string" },
+              "providers": { "type": "array", "items": { "type": "string" } },
+              "rationale": { "type": "string" }
+            },
+            "required": ["claim", "providers"]
+          }
+        },
+        "citations":      { "type": "array", "items": { "type": "string" } },
+        "open_questions": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["consensus", "weighted_confidence", "key_claims"]
+    },
     "SessionSummary": {
       "type": "object",
       "description": "Cumulative state for a session_id across calls.",
@@ -149,7 +188,9 @@
           },
           "max_rounds": { "type": "integer", "minimum": 1 },
           "moderator":  { "type": "string", "description": "Provider name to run the synthesis round. Defaults to config.moderator." },
-          "session_id": { "type": "string", "description": "Optional id to accumulate usage across calls." }
+          "session_id": { "type": "string", "description": "Optional id to accumulate usage across calls." },
+          "structured": { "type": "boolean", "default": false,
+                          "description": "If true, the moderator must emit a JSON object matching StructuredSynthesis. Validated server-side; one retry on failure with the validation errors fed back." }
         },
         "required": ["topic"]
       },
@@ -163,6 +204,9 @@
               "rounds_completed": { "type": "integer", "minimum": 0 },
               "transcript":       { "type": "array", "items": { "$ref": "#/$defs/ProviderAnswer" } },
               "synthesis":        { "anyOf": [{ "$ref": "#/$defs/ProviderAnswer" }, { "type": "null" }] },
+              "synthesis_structured": { "anyOf": [{ "$ref": "#/$defs/StructuredSynthesis" }, { "type": "null" }] },
+              "synthesis_errors":     { "type": "array", "items": { "type": "string" },
+                                        "description": "Validation errors when structured=true and the synthesizer's output didn't match the schema after retry." },
               "budget":           { "$ref": "#/$defs/BudgetSummary" },
               "session":          { "$ref": "#/$defs/SessionSummary" },
               "transcript_path":  { "type": ["string", "null"] },
@@ -189,7 +233,9 @@
             "description": "Ad-hoc subset of provider names (e.g. ['openai','gemini','xai']). Omit to use the configured active set. Call list_providers first if you're unsure which names are available. Needs at least 2."
           },
           "moderator":   { "type": "string" },
-          "session_id":  { "type": "string", "description": "Optional id to accumulate usage across calls." }
+          "session_id":  { "type": "string", "description": "Optional id to accumulate usage across calls." },
+          "structured":  { "type": "boolean", "default": false,
+                           "description": "If true, the moderator emits a JSON object matching StructuredSynthesis (validated server-side)." }
         },
         "required": ["goal"]
       },
