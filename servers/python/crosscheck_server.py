@@ -1447,6 +1447,214 @@ def tool_coordinate(args: dict) -> dict:
 
 
 # ------------------------------------------------------------
+# Solve: iterative propose -> verify -> retry, with a sandboxed verifier
+# ------------------------------------------------------------
+def _verify_proposal(verifier: dict, proposal: str) -> dict:
+    """Run a verifier against a proposal. Returns a dict matching the verification
+    sub-schema (passed/kind/exit_code/stdout/stderr/elapsed_ms/error)."""
+    kind = verifier.get("kind")
+    started = time.monotonic()
+
+    if kind == "regex_response":
+        pat = str(verifier.get("pattern", ""))
+        flags = re.IGNORECASE if verifier.get("case_insensitive") else 0
+        try:
+            ok = re.search(pat, proposal, flags=flags) is not None
+        except re.error as e:
+            return {"passed": False, "kind": "regex_response",
+                    "stdout": "", "stderr": "",
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
+                    "error": f"bad regex: {e}"}
+        return {"passed": ok, "kind": "regex_response",
+                "stdout": proposal[:512], "stderr": "",
+                "elapsed_ms": int((time.monotonic() - started) * 1000)}
+
+    if kind == "shell":
+        import subprocess
+        cmd = verifier.get("cmd")
+        if not isinstance(cmd, list) or not cmd:
+            return {"passed": False, "kind": "shell", "stdout": "", "stderr": "",
+                    "elapsed_ms": 0, "error": "cmd must be a non-empty argv array"}
+        timeout_s = float(verifier.get("timeout_s", 10))
+        mem_mb = int(verifier.get("memory_mb", 256))
+        expect_exit = int(verifier.get("expect_exit_code", 0))
+        expect_contains = verifier.get("expect_stdout_contains")
+        expect_regex = verifier.get("expect_stdout_regex")
+
+        def _preexec() -> None:  # pragma: no cover (Unix-only path)
+            try:
+                import resource
+                addr_limit = mem_mb * 1024 * 1024
+                resource.setrlimit(resource.RLIMIT_AS, (addr_limit, addr_limit))
+                resource.setrlimit(resource.RLIMIT_CPU, (int(timeout_s) + 5, int(timeout_s) + 5))
+            except Exception:
+                pass
+            try:
+                os.setsid()  # isolate from parent process group
+            except Exception:
+                pass
+
+        # Run in an isolated tmp cwd; never inherit parent env beyond minimum.
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="crosscheck-solve-") as cwd:
+            try:
+                cp = subprocess.run(
+                    cmd,
+                    input=proposal,
+                    text=True,
+                    capture_output=True,
+                    timeout=timeout_s,
+                    cwd=cwd,
+                    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                         "LANG": "C.UTF-8", "HOME": cwd},
+                    preexec_fn=_preexec if sys.platform != "win32" else None,  # type: ignore[arg-type]
+                )
+            except subprocess.TimeoutExpired as e:
+                return {"passed": False, "kind": "shell",
+                        "exit_code": None,
+                        "stdout": (e.stdout or "")[-1024:] if isinstance(e.stdout, str) else "",
+                        "stderr": (e.stderr or "")[-1024:] if isinstance(e.stderr, str) else "",
+                        "elapsed_ms": int((time.monotonic() - started) * 1000),
+                        "error": f"timeout after {timeout_s}s"}
+            except FileNotFoundError as e:
+                return {"passed": False, "kind": "shell", "exit_code": None,
+                        "stdout": "", "stderr": "",
+                        "elapsed_ms": int((time.monotonic() - started) * 1000),
+                        "error": f"command not found: {e.filename or cmd[0]}"}
+            except Exception as e:
+                return {"passed": False, "kind": "shell", "exit_code": None,
+                        "stdout": "", "stderr": "",
+                        "elapsed_ms": int((time.monotonic() - started) * 1000),
+                        "error": f"{type(e).__name__}: {e}"}
+
+            stdout = (cp.stdout or "")[-2048:]
+            stderr = (cp.stderr or "")[-2048:]
+            ok = (cp.returncode == expect_exit)
+            if ok and isinstance(expect_contains, str):
+                ok = expect_contains in stdout
+            if ok and isinstance(expect_regex, str):
+                try:
+                    ok = re.search(expect_regex, stdout) is not None
+                except re.error:
+                    ok = False
+            ans = {"passed": ok, "kind": "shell",
+                   "exit_code": cp.returncode,
+                   "stdout": stdout, "stderr": stderr,
+                   "elapsed_ms": int((time.monotonic() - started) * 1000)}
+            if not ok:
+                bits = []
+                if cp.returncode != expect_exit:
+                    bits.append(f"exit_code={cp.returncode} (expected {expect_exit})")
+                if isinstance(expect_contains, str) and expect_contains not in stdout:
+                    bits.append(f"stdout missing substring {expect_contains!r}")
+                if isinstance(expect_regex, str):
+                    bits.append(f"stdout did not match /{expect_regex}/")
+                ans["error"] = "; ".join(bits) or "verifier rejected the proposal"
+            return ans
+
+    return {"passed": False, "kind": str(kind),
+            "stdout": "", "stderr": "", "elapsed_ms": 0,
+            "error": f"unknown verifier kind: {kind!r}"}
+
+
+def tool_solve(args: dict) -> dict:
+    problem: str = args["problem"]
+    verifier: dict = args["verifier"]
+    context: str = args.get("context", "")
+    max_attempts = max(1, int(args.get("max_attempts", 3)))
+
+    selected, unknown = _resolve_providers(args.get("providers"))
+    selected, blocked = _filter_by_allowlist(selected)
+    if not selected:
+        if unknown:
+            return _unknown_provider_error(unknown)
+        if blocked:
+            return {"error": "no providers survive the allowlist for solve",
+                    "blocked": blocked, "allowlist": _allowlist()}
+        return {"error": "no active providers have API keys in .env"}
+
+    call_started = time.monotonic()
+    deadline = _deadline()
+    session = _session_load(args.get("session_id"))
+    per_call = _per_call_tokens(max_attempts)
+
+    system_msg = (
+        "You are solving a problem step-by-step. Produce ONLY the literal solution "
+        "(code, command, or text) with no commentary, no markdown fences, no preamble. "
+        "Your output is fed directly to a verifier."
+    )
+    user_block = problem if not context else f"CONTEXT:\n{context}\n\nPROBLEM:\n{problem}"
+
+    attempts: list[dict] = []
+    answers_collected: list[dict] = []
+    solved = False
+    final_proposal: str | None = None
+    winning_provider: str | None = None
+    last_verification: dict | None = None
+
+    for i in range(1, max_attempts + 1):
+        if _time_left(deadline) <= 1:
+            break
+        provider = selected[(i - 1) % len(selected)]
+        msgs = [{"role": "system", "content": system_msg},
+                {"role": "user", "content": user_block}]
+        if last_verification is not None and not last_verification.get("passed"):
+            err = last_verification.get("error") or "verification failed"
+            stdout_tail = last_verification.get("stdout", "")[-512:]
+            stderr_tail = last_verification.get("stderr", "")[-512:]
+            feedback = (f"Previous attempt FAILED verification: {err}\n"
+                        f"stdout (last 512 chars):\n{stdout_tail}\n"
+                        f"stderr (last 512 chars):\n{stderr_tail}\n"
+                        f"Re-emit the FULL solution. No commentary.")
+            msgs.append({"role": "user", "content": feedback})
+
+        attempt_started = time.monotonic()
+        ans = _ask_one(provider, msgs, deadline, per_call)
+        answers_collected.append(ans)
+        if "error" in ans:
+            attempts.append({
+                "attempt": i, "provider": provider.name, "model": provider.model,
+                "proposal": "", "elapsed_ms": int((time.monotonic() - attempt_started) * 1000),
+                "verification": {"passed": False, "kind": str(verifier.get("kind", "")),
+                                 "stdout": "", "stderr": "", "elapsed_ms": 0,
+                                 "error": "no proposal: provider error"},
+                "error": ans.get("error", "provider error"),
+            })
+            continue
+
+        proposal = (ans.get("response") or "").strip()
+        verification = _verify_proposal(verifier, proposal)
+        attempts.append({
+            "attempt": i, "provider": provider.name, "model": provider.model,
+            "proposal": proposal,
+            "verification": verification,
+            "elapsed_ms": int((time.monotonic() - attempt_started) * 1000),
+        })
+        last_verification = verification
+        if verification.get("passed"):
+            solved = True
+            final_proposal = proposal
+            winning_provider = provider.name
+            break
+
+    _session_record(session, answers_collected, call_started)
+    _session_save(session)
+
+    result = {
+        "tool": "solve",
+        "problem": problem,
+        "solved": solved,
+        "attempts": attempts,
+        "final_proposal": final_proposal,
+        "winning_provider": winning_provider,
+        "budget": _budget_summary(call_started, deadline, answers_collected),
+    }
+    if session:
+        result["session"] = session
+    return result
+
+
+# ------------------------------------------------------------
 # Bench: rule-based goldens + provider scoring
 # ------------------------------------------------------------
 def _bench_goldens_dir(override: str | None = None) -> Path:
@@ -1837,6 +2045,7 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "triangulate":    tool_triangulate,
     "delegate":       tool_delegate,
     "bench":          tool_bench,
+    "solve":          tool_solve,
 }
 
 

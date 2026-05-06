@@ -121,6 +121,51 @@
       },
       "required": ["session_id", "calls", "wall_ms", "cache_hits"]
     },
+    "SolveVerifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How to decide whether a proposal solves the problem. Either run a sandboxed subprocess (kind=shell) or pattern-match the proposal text (kind=regex_response).",
+      "properties": {
+        "kind":            { "type": "string", "enum": ["shell", "regex_response"] },
+        "cmd":             { "type": "array", "items": { "type": "string" },
+                             "description": "argv for kind=shell. The proposal is fed to stdin." },
+        "expect_exit_code": { "type": "integer", "default": 0 },
+        "expect_stdout_contains": { "type": "string" },
+        "expect_stdout_regex":    { "type": "string" },
+        "timeout_s":       { "type": "number", "minimum": 0.1, "default": 10 },
+        "memory_mb":       { "type": "integer", "minimum": 16, "default": 256,
+                             "description": "Soft RLIMIT_AS cap on Unix; ignored on platforms without resource module." },
+        "pattern":         { "type": "string", "description": "regex for kind=regex_response" },
+        "case_insensitive": { "type": "boolean", "default": false }
+      },
+      "required": ["kind"]
+    },
+    "Verifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A rule-based check that runs against a provider's response text.",
+      "properties": {
+        "kind":             { "type": "string",
+                              "enum": ["contains", "not_contains", "regex_match",
+                                       "contains_any", "contains_all", "min_length"] },
+        "value":            { "type": ["string", "integer"] },
+        "values":           { "type": "array", "items": { "type": "string" } },
+        "case_insensitive": { "type": "boolean", "default": false }
+      },
+      "required": ["kind"]
+    },
+    "Golden": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A bench fixture: an input + the rule-based assertions a passing answer must satisfy.",
+      "properties": {
+        "name":      { "type": "string" },
+        "tool_call": { "type": "string", "enum": ["confer", "review"] },
+        "args":      { "type": "object", "description": "Args forwarded to the inner tool. The `providers` field is overridden per provider under bench." },
+        "verifiers": { "type": "array", "items": { "$ref": "#/$defs/Verifier" }, "minItems": 1 }
+      },
+      "required": ["name", "tool_call", "args", "verifiers"]
+    },
     "ProviderErrorEnvelope": {
       "type": "object",
       "description": "Returned when the caller asked for providers that aren't available; helps Claude self-correct.",
@@ -318,32 +363,6 @@
         ]
       }
     },
-    "Verifier": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "A rule-based check that runs against a provider's response text.",
-      "properties": {
-        "kind":             { "type": "string",
-                              "enum": ["contains", "not_contains", "regex_match",
-                                       "contains_any", "contains_all", "min_length"] },
-        "value":            { "type": ["string", "integer"] },
-        "values":           { "type": "array", "items": { "type": "string" } },
-        "case_insensitive": { "type": "boolean", "default": false }
-      },
-      "required": ["kind"]
-    },
-    "Golden": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "A bench fixture: an input + the rule-based assertions a passing answer must satisfy.",
-      "properties": {
-        "name":      { "type": "string" },
-        "tool_call": { "type": "string", "enum": ["confer", "review"] },
-        "args":      { "type": "object", "description": "Args forwarded to the inner tool. The `providers` field is overridden per provider under bench." },
-        "verifiers": { "type": "array", "items": { "$ref": "#/$defs/Verifier" }, "minItems": 1 }
-      },
-      "required": ["name", "tool_call", "args", "verifiers"]
-    },
     "delegate": {
       "description": "Cross-model tool delegation with an explicit handshake. Run a delegable tool (confer or review) against a single named provider, with quota tracking by session_id and by requesting provider. Useful for capability handoffs (\"route this code review to provider X\") and for bounded multi-step plans where one model decides who answers a sub-question.",
       "input": {
@@ -433,6 +452,71 @@
               "transcript_path":  { "type": ["string", "null"] }
             },
             "required": ["tool", "question", "consensus", "panel", "providers_used"]
+          },
+          { "$ref": "#/$defs/ProviderErrorEnvelope" }
+        ]
+      }
+    },
+    "solve": {
+      "description": "Iteratively propose -> verify -> retry. The provider drafts a solution; the verifier (sandboxed shell command or regex on the proposal text) accepts or rejects it; on rejection the verifier output is fed back to the provider for one more pass, up to max_attempts. Returns the winning proposal (when solved) plus every attempt's record. NOTE: the 'sandbox' is a process timeout + soft memory cap — it is not network-isolation. Treat verifier commands as untrusted code execution and only run trusted scripts.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "problem":      { "type": "string", "description": "The task to solve. The provider's response IS the proposal." },
+          "verifier":     { "$ref": "#/$defs/SolveVerifier" },
+          "providers":    { "$ref": "#/$defs/ProviderArrayArg",
+                            "description": "Panel to draw from. Attempts rotate through providers; once exhausted the loop wraps." },
+          "max_attempts": { "type": "integer", "minimum": 1, "default": 3 },
+          "context":      { "type": "string" },
+          "session_id":   { "type": "string" }
+        },
+        "required": ["problem", "verifier"]
+      },
+      "output": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "tool":           { "const": "solve" },
+              "problem":        { "type": "string" },
+              "solved":         { "type": "boolean" },
+              "final_proposal": { "type": ["string", "null"] },
+              "winning_provider": { "type": ["string", "null"] },
+              "attempts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "attempt":  { "type": "integer", "minimum": 1 },
+                    "provider": { "type": "string" },
+                    "model":    { "type": "string" },
+                    "proposal": { "type": "string" },
+                    "verification": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "passed":    { "type": "boolean" },
+                        "kind":      { "type": "string" },
+                        "exit_code": { "type": ["integer", "null"] },
+                        "stdout":    { "type": "string" },
+                        "stderr":    { "type": "string" },
+                        "elapsed_ms": { "type": "integer", "minimum": 0 },
+                        "error":     { "type": "string" }
+                      },
+                      "required": ["passed", "kind"]
+                    },
+                    "elapsed_ms": { "type": "integer", "minimum": 0 },
+                    "error":      { "type": "string" }
+                  },
+                  "required": ["attempt", "provider", "verification"]
+                }
+              },
+              "budget":  { "$ref": "#/$defs/BudgetSummary" },
+              "session": { "$ref": "#/$defs/SessionSummary" }
+            },
+            "required": ["tool", "problem", "solved", "attempts"]
           },
           { "$ref": "#/$defs/ProviderErrorEnvelope" }
         ]
