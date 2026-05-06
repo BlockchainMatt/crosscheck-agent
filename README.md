@@ -36,6 +36,10 @@ Claude │ Claude Code  │     MCP      ┌────────────
 | `triangulate`    | Run a coordinate flow and return **consensus + minority report** plus per-provider weights drawn from accumulated bench / critic-ballot win-rate. The "give me one answer, but be honest about disagreement" tool. |
 | `delegate`       | Cross-model handshake: route a `confer` or `review` call through one named provider, with quota tracking by `session_id` and by requesting provider. Refused calls return `accepted: false` with a structured `reason` and the live quota envelope. |
 | `bench`          | Run repo-scoped goldens (`*.json` in `.crosscheck/goldens/`) against a panel; rule-based verifiers (contains / regex_match / contains_any / contains_all / not_contains / min_length) score each provider, and the win-rate feeds `triangulate`'s weights. |
+| `solve`          | Iterative **propose → verify → retry**. Provider drafts a literal solution; a `shell` (sandboxed subprocess: timeout, RLIMIT_AS, RLIMIT_CPU, isolated tmpdir) or `regex_response` verifier accepts or rejects; failures feed back to the next attempt. Pass `target_path` to also get a unified-diff `patch` preview (file is never modified). |
+| `fetch`          | Retrieve a URL with **deny-by-default allowlist** (`fetch.url_allowlist` prefix list) and persist a sha256-keyed snapshot under `.crosscheck/evidence/`. Cached on repeat unless `force_refresh: true`. Use to ground claims with reproducible evidence. |
+| `pick`           | **Multi-criteria decision-making.** Each provider scores every option on every criterion (0..1); the tool aggregates with criterion weights, returns a ranked list, and surfaces the top-K cross-provider disagreements as `dissent_deltas`. |
+| `scoreboard`     | Read-only snapshot: per-provider weight + wins/losses/abstains + delegations, plus `totals` for sessions/claims/links/delegations and (optional) the last N redacted event lines. The data the UI panel reads. |
 
 ### Ad-hoc panels
 

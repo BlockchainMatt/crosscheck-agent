@@ -55,3 +55,6 @@ jobs:
 
       - name: Pick (MCDA + dissent deltas) offline test
         run: python3 scripts/test_pick.py
+
+      - name: Scoreboard + solve patch-preview offline test
+        run: python3 scripts/test_scoreboard_patch.py

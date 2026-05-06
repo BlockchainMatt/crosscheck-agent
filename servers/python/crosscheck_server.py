@@ -1528,6 +1528,90 @@ def tool_coordinate(args: dict) -> dict:
 
 
 # ------------------------------------------------------------
+# Scoreboard: read-only snapshot of provider stats + activity totals
+# ------------------------------------------------------------
+def tool_scoreboard(args: dict) -> dict:
+    top_k = max(1, int(args.get("top_k", 20)))
+    recent_limit = max(0, int(args.get("recent_limit", 0)))
+    _db_init()
+
+    rows: list[dict] = []
+    totals = {"sessions": 0, "claims": 0, "claim_links": 0, "delegations": 0}
+    deleg_acc: dict[str, int] = {}
+    deleg_ref: dict[str, int] = {}
+
+    with _db_conn() as conn:
+        for r in conn.execute(
+            "SELECT provider, wins, losses, abstains, last_at FROM provider_stats"
+        ).fetchall():
+            committed = int(r["wins"]) + int(r["losses"])
+            weight = (int(r["wins"]) / committed) if committed > 0 else 1.0
+            rows.append({
+                "provider":  r["provider"],
+                "weight":    round(weight, 4),
+                "wins":      int(r["wins"]),
+                "losses":    int(r["losses"]),
+                "abstains":  int(r["abstains"]),
+                "last_at":   r["last_at"],
+            })
+        for r in conn.execute(
+            "SELECT requester AS who, accepted, COUNT(*) AS n FROM delegations "
+            "WHERE requester IS NOT NULL GROUP BY requester, accepted"
+        ).fetchall():
+            who = str(r["who"])
+            n = int(r["n"])
+            if int(r["accepted"]) == 1:
+                deleg_acc[who] = deleg_acc.get(who, 0) + n
+            else:
+                deleg_ref[who] = deleg_ref.get(who, 0) + n
+        for r in rows:
+            r["delegations_accepted"] = deleg_acc.get(r["provider"], 0)
+            r["delegations_refused"]  = deleg_ref.get(r["provider"], 0)
+        # Add providers that only show up via delegations but never as ballot stats.
+        seen = {r["provider"] for r in rows}
+        for who in set(deleg_acc) | set(deleg_ref):
+            if who not in seen:
+                rows.append({
+                    "provider": who, "weight": 1.0,
+                    "wins": 0, "losses": 0, "abstains": 0, "last_at": None,
+                    "delegations_accepted": deleg_acc.get(who, 0),
+                    "delegations_refused":  deleg_ref.get(who, 0),
+                })
+
+        for table, key in (("sessions", "sessions"), ("claims", "claims"),
+                           ("claim_links", "claim_links"), ("delegations", "delegations")):
+            try:
+                row = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()
+                totals[key] = int(row["n"])
+            except sqlite3.OperationalError:
+                totals[key] = 0
+
+    rows.sort(key=lambda r: (-r["weight"], -(r["wins"] + r["losses"]), r["provider"]))
+    rows = rows[:top_k]
+
+    recent_events: list[dict] = []
+    if recent_limit > 0:
+        ev_path = _events_path()
+        if ev_path.exists():
+            try:
+                lines = ev_path.read_text(encoding="utf-8").splitlines()
+                for line in lines[-recent_limit:]:
+                    try:
+                        recent_events.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+            except Exception:
+                pass
+
+    return {
+        "tool": "scoreboard",
+        "providers": rows,
+        "totals": totals,
+        "recent_events": recent_events,
+    }
+
+
+# ------------------------------------------------------------
 # Pick: multi-criteria decision-making across the panel
 # ------------------------------------------------------------
 def _pick_scores_schema() -> dict:
@@ -2030,6 +2114,26 @@ def tool_solve(args: dict) -> dict:
     _session_record(session, answers_collected, call_started)
     _session_save(session)
 
+    patch: str | None = None
+    target_path = args.get("target_path")
+    if solved and final_proposal is not None and target_path:
+        try:
+            import difflib
+            tp = Path(str(target_path))
+            tp_abs = tp if tp.is_absolute() else (ROOT / tp)
+            current = tp_abs.read_text(encoding="utf-8") if tp_abs.exists() else ""
+            new = final_proposal if final_proposal.endswith("\n") else final_proposal + "\n"
+            current_lines = current.splitlines(keepends=True)
+            new_lines = new.splitlines(keepends=True)
+            label_old = str(target_path) if tp_abs.exists() else f"{target_path} (new file)"
+            patch = "".join(difflib.unified_diff(
+                current_lines, new_lines,
+                fromfile=label_old, tofile=str(target_path),
+                n=3,
+            ))
+        except Exception:
+            patch = None
+
     result = {
         "tool": "solve",
         "problem": problem,
@@ -2039,6 +2143,9 @@ def tool_solve(args: dict) -> dict:
         "winning_provider": winning_provider,
         "budget": _budget_summary(call_started, deadline, answers_collected),
     }
+    if target_path:
+        result["target_path"] = str(target_path)
+        result["patch"] = patch
     if session:
         result["session"] = session
     return result
@@ -2438,6 +2545,7 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "solve":          tool_solve,
     "fetch":          tool_fetch,
     "pick":           tool_pick,
+    "scoreboard":     tool_scoreboard,
 }
 
 

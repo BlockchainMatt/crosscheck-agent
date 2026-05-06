@@ -502,7 +502,9 @@
                             "description": "Panel to draw from. Attempts rotate through providers; once exhausted the loop wraps." },
           "max_attempts": { "type": "integer", "minimum": 1, "default": 3 },
           "context":      { "type": "string" },
-          "session_id":   { "type": "string" }
+          "session_id":   { "type": "string" },
+          "target_path":  { "type": "string",
+                            "description": "Optional. When the proposal is a complete replacement file, set this to the absolute or repo-relative path of the file the proposal would replace. On a solved attempt, the result includes a `patch` field with a unified diff (current vs. proposal). The file is NOT modified — preview only." }
         },
         "required": ["problem", "verifier"]
       },
@@ -516,6 +518,9 @@
               "solved":         { "type": "boolean" },
               "final_proposal": { "type": ["string", "null"] },
               "winning_provider": { "type": ["string", "null"] },
+              "patch":          { "type": ["string", "null"],
+                                  "description": "Unified diff (current target_path vs final_proposal). Present only when solved=true and target_path was given." },
+              "target_path":    { "type": ["string", "null"] },
               "attempts": {
                 "type": "array",
                 "items": {
@@ -691,6 +696,57 @@
           },
           { "$ref": "#/$defs/ProviderErrorEnvelope" }
         ]
+      }
+    },
+    "scoreboard": {
+      "description": "Read-only snapshot of accumulated provider performance and recent activity. Surfaces the per-repo win-rate that triangulate uses for weights, plus delegation counters and totals so a UI can render a 'who's winning here' panel.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "top_k": { "type": "integer", "minimum": 1, "default": 20,
+                     "description": "Cap the number of providers in the leaderboard." },
+          "recent_limit": { "type": "integer", "minimum": 0, "default": 0,
+                            "description": "If > 0, include the last N event lines from events_log (post-redaction)." }
+        }
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "tool": { "const": "scoreboard" },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "provider":              { "type": "string" },
+                "weight":                { "type": "number", "minimum": 0, "maximum": 1 },
+                "wins":                  { "type": "integer", "minimum": 0 },
+                "losses":                { "type": "integer", "minimum": 0 },
+                "abstains":              { "type": "integer", "minimum": 0 },
+                "last_at":               { "type": ["integer", "null"] },
+                "delegations_accepted":  { "type": "integer", "minimum": 0 },
+                "delegations_refused":   { "type": "integer", "minimum": 0 }
+              },
+              "required": ["provider", "weight", "wins", "losses", "abstains"]
+            }
+          },
+          "totals": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "sessions":     { "type": "integer", "minimum": 0 },
+              "claims":       { "type": "integer", "minimum": 0 },
+              "claim_links":  { "type": "integer", "minimum": 0 },
+              "delegations":  { "type": "integer", "minimum": 0 }
+            },
+            "required": ["sessions", "claims", "claim_links", "delegations"]
+          },
+          "recent_events": { "type": "array",
+                             "items": { "type": "object", "additionalProperties": true } }
+        },
+        "required": ["tool", "providers", "totals"]
       }
     },
     "fetch": {
