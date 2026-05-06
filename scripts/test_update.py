@@ -44,6 +44,7 @@ def main() -> int:
         Path(srv.CFG["update_cache_path"]).unlink(missing_ok=True)
 
         orig_remote = srv._remote_main_sha
+        orig_rel = srv._git_relationship
         srv._remote_main_sha = lambda timeout=3.0: sha
         try:
             r = srv.tool_update_crosscheck({})
@@ -51,30 +52,83 @@ def main() -> int:
             assert r["update_available"] is False
             assert r["current_sha"] == sha[:12]
             assert r["latest_sha"]  == sha[:12]
+            assert r["relationship"] == "equal"
             cached = json.loads(Path(srv.CFG["update_cache_path"]).read_text())
             assert cached["update_available"] is False
         finally:
             srv._remote_main_sha = orig_remote
 
-        # ---- 3. update_available when remote SHA differs and apply=false ----
+        # ---- 3. update_available: stub _git_relationship to report 'behind'  ----
         srv._UPDATE_CHECKED = False
         srv._UPDATE_NOTICE = None
         Path(srv.CFG["update_cache_path"]).unlink(missing_ok=True)
         FAKE_REMOTE = "deadbeef" + sha[8:]
 
         srv._remote_main_sha = lambda timeout=3.0: FAKE_REMOTE
+        srv._git_relationship = lambda l, r: ("behind", 0, 3)
         try:
             r = srv.tool_update_crosscheck({})
             assert r["status"] == "update_available",      f"expected update_available, got {r}"
             assert r["update_available"] is True
+            assert r["relationship"] == "behind"
+            assert r["behind"] == 3
             assert "next_step" in r
-            assert r["current_sha"] == sha[:12]
-            assert r["latest_sha"]  == FAKE_REMOTE[:12]
             cached = json.loads(Path(srv.CFG["update_cache_path"]).read_text())
             assert cached["update_available"] is True
             assert "notice" in cached and cached["notice"]["update_available"] is True
+            assert cached["notice"]["behind_count"] == 3
         finally:
             srv._remote_main_sha = orig_remote
+            srv._git_relationship = orig_rel
+
+        # ---- 3b. local_ahead: differing SHA but local is ahead -> NO upgrade ----
+        srv._UPDATE_CHECKED = False
+        srv._UPDATE_NOTICE = None
+        Path(srv.CFG["update_cache_path"]).unlink(missing_ok=True)
+        srv._remote_main_sha = lambda timeout=3.0: FAKE_REMOTE
+        srv._git_relationship = lambda l, r: ("ahead", 5, 0)
+        try:
+            r = srv.tool_update_crosscheck({})
+            assert r["status"] == "local_ahead",           f"expected local_ahead, got {r}"
+            assert r["update_available"] is False
+            assert r["ahead"] == 5
+            assert "ahead" in r["next_step"].lower()
+            cached = json.loads(Path(srv.CFG["update_cache_path"]).read_text())
+            assert cached["update_available"] is False
+            assert "notice" not in cached
+        finally:
+            srv._remote_main_sha = orig_remote
+            srv._git_relationship = orig_rel
+
+        # ---- 3c. diverged: both ahead and behind -> refuse ----
+        srv._UPDATE_CHECKED = False
+        srv._UPDATE_NOTICE = None
+        Path(srv.CFG["update_cache_path"]).unlink(missing_ok=True)
+        srv._remote_main_sha = lambda timeout=3.0: FAKE_REMOTE
+        srv._git_relationship = lambda l, r: ("diverged", 2, 4)
+        try:
+            r = srv.tool_update_crosscheck({})
+            assert r["status"] == "diverged",              f"expected diverged, got {r}"
+            assert r["update_available"] is False
+            assert r["ahead"] == 2 and r["behind"] == 4
+            assert "diverged" in r["next_step"].lower() or "manual" in r["next_step"].lower()
+        finally:
+            srv._remote_main_sha = orig_remote
+            srv._git_relationship = orig_rel
+
+        # ---- 3d. unknown ancestry: refuse, surface error ----
+        srv._UPDATE_CHECKED = False
+        srv._UPDATE_NOTICE = None
+        Path(srv.CFG["update_cache_path"]).unlink(missing_ok=True)
+        srv._remote_main_sha = lambda timeout=3.0: FAKE_REMOTE
+        srv._git_relationship = lambda l, r: ("unknown", None, None)
+        try:
+            r = srv.tool_update_crosscheck({})
+            assert r["status"] == "error"
+            assert "ancestry" in r["reason"]
+        finally:
+            srv._remote_main_sha = orig_remote
+            srv._git_relationship = orig_rel
 
         # ---- 4. apply=true success path (subprocess.run stubbed for `git pull` only) ----
         Path(srv.CFG["update_cache_path"]).unlink(missing_ok=True)
@@ -95,12 +149,14 @@ def main() -> int:
             return orig_subprocess_run(cmd, **kw)
 
         srv._remote_main_sha = lambda timeout=3.0: FAKE_REMOTE
+        srv._git_relationship = lambda l, r: ("behind", 0, 7)
         subprocess.run = selective_run
         try:
             r = srv.tool_update_crosscheck({"apply": True})
         finally:
             subprocess.run = orig_subprocess_run
             srv._remote_main_sha = orig_remote
+            srv._git_relationship = orig_rel
         assert r["status"] == "updated",                  f"expected updated, got {r}"
         assert r["restart_required"] is True
         assert "restart" in r["restart_instructions"].lower()
@@ -117,12 +173,14 @@ def main() -> int:
                 return FakeCPFail()
             return orig_subprocess_run(cmd, **kw)
         srv._remote_main_sha = lambda timeout=3.0: FAKE_REMOTE
+        srv._git_relationship = lambda l, r: ("behind", 0, 7)
         subprocess.run = selective_fail
         try:
             r = srv.tool_update_crosscheck({"apply": True})
         finally:
             subprocess.run = orig_subprocess_run
             srv._remote_main_sha = orig_remote
+            srv._git_relationship = orig_rel
         assert r["status"] == "pull_failed"
         assert r["exit_code"] == 1
         assert "fast-forward" in r["stderr"]
@@ -145,7 +203,8 @@ def main() -> int:
             "update_available": True,
             "current_sha": sha,
             "latest_sha":  FAKE_REMOTE,
-            "notice": srv._build_update_notice(sha, FAKE_REMOTE),
+            "relationship": "behind", "ahead": 0, "behind": 7,
+            "notice": srv._build_update_notice(sha, FAKE_REMOTE, behind_count=7),
         }
         Path(srv.CFG["update_cache_path"]).write_text(json.dumps(seeded))
 
@@ -184,12 +243,14 @@ def main() -> int:
         srv._UPDATE_NOTICE = None
         Path(srv.CFG["update_cache_path"]).write_text(json.dumps(seeded))
         srv._remote_main_sha = lambda timeout=3.0: FAKE_REMOTE
+        srv._git_relationship = lambda l, r: ("behind", 0, 7)
         try:
             req = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                    "params": {"name": "update_crosscheck", "arguments": {}}}
             resp = srv.handle(req)
         finally:
             srv._remote_main_sha = orig_remote
+            srv._git_relationship = orig_rel
         payload = json.loads(resp["result"]["content"][0]["text"])
         assert "update_notice" not in payload,             "update_crosscheck must not nest a notice in itself"
         assert payload["status"] == "update_available"

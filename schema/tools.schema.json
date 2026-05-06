@@ -713,7 +713,11 @@
         "properties": {
           "tool":              { "const": "update_crosscheck" },
           "status":            { "type": "string",
-                                 "enum": ["up_to_date", "update_available", "updated", "pull_failed", "error"] },
+                                 "enum": ["up_to_date", "update_available", "local_ahead", "diverged", "updated", "pull_failed", "error"] },
+          "relationship":      { "type": "string",
+                                 "enum": ["equal", "ahead", "behind", "diverged", "unknown"] },
+          "ahead":             { "type": ["integer", "null"], "minimum": 0 },
+          "behind":            { "type": ["integer", "null"], "minimum": 0 },
           "current_sha":       { "type": "string" },
           "latest_sha":        { "type": "string" },
           "new_sha":           { "type": "string" },

@@ -1598,44 +1598,90 @@ def _write_update_cache(payload: dict) -> None:
         pass
 
 
-def _build_update_notice(local: str, remote: str) -> dict:
+def _build_update_notice(local: str, remote: str, behind_count: int | None = None) -> dict:
+    behind_phrase = (f"You are {behind_count} commit(s) behind."
+                     if isinstance(behind_count, int) and behind_count > 0
+                     else f"Your local HEAD is {local[:8]}; remote is {remote[:8]}.")
     return {
         "update_available": True,
         "current_sha": local[:12],
         "latest_sha":  remote[:12],
+        "behind_count": behind_count,
         "remote_url":  _UPDATE_REMOTE_URL,
         "message": (
-            f"crosscheck-agent: a newer version is available "
-            f"({local[:8]} -> {remote[:8]}). To upgrade, call the "
-            f"`update_crosscheck` tool with apply=true; the user must then "
-            f"restart Claude Code (or the MCP connection) to load the new code. "
+            f"crosscheck-agent: a newer version is available. {behind_phrase} "
+            f"To upgrade, call `update_crosscheck` with apply=true; the user must "
+            f"then restart Claude Code (or the MCP connection) to load the new code. "
             f"Ask the user before applying."
         ),
         "ask_user": True,
     }
 
 
+def _git_run(args: list[str], timeout: float = 5.0) -> tuple[int, str, str]:
+    import subprocess
+    try:
+        cp = subprocess.run(args, cwd=str(ROOT),
+                            capture_output=True, text=True, timeout=timeout)
+        return cp.returncode, (cp.stdout or ""), (cp.stderr or "")
+    except Exception as e:
+        return -1, "", str(e)
+
+
+def _git_relationship(local_sha: str, remote_sha: str) -> tuple[str, int | None, int | None]:
+    """Compare local HEAD to a remote SHA. Returns (status, ahead, behind).
+    status in {'equal', 'ahead', 'behind', 'diverged', 'unknown'}. Requires
+    the remote SHA to be reachable in the local object store; we call
+    `git fetch origin main` first to ensure that."""
+    if local_sha == remote_sha:
+        return ("equal", 0, 0)
+
+    # Best-effort fetch so the remote SHA is in our local object DB.
+    _git_run(["git", "fetch", "origin", "main"], timeout=15)
+
+    rc, _, _ = _git_run(["git", "cat-file", "-e", remote_sha])
+    if rc != 0:
+        return ("unknown", None, None)
+
+    # ahead = commits in HEAD not in remote_sha
+    rc_a, out_a, _ = _git_run(["git", "rev-list", "--count", f"{remote_sha}..HEAD"])
+    rc_b, out_b, _ = _git_run(["git", "rev-list", "--count", f"HEAD..{remote_sha}"])
+    if rc_a != 0 or rc_b != 0:
+        return ("unknown", None, None)
+    try:
+        ahead = int(out_a.strip())
+        behind = int(out_b.strip())
+    except ValueError:
+        return ("unknown", None, None)
+    if ahead == 0 and behind == 0:
+        return ("equal", 0, 0)
+    if ahead > 0 and behind == 0:
+        return ("ahead", ahead, 0)
+    if ahead == 0 and behind > 0:
+        return ("behind", 0, behind)
+    return ("diverged", ahead, behind)
+
+
 def _check_and_cache_update(api_timeout: float = 3.0) -> dict | None:
-    """Fresh check; writes the cache; returns the notice when an update is available, else None."""
+    """Fresh check; writes the cache; returns the notice ONLY when local is strictly
+    behind remote (i.e., a fast-forward upgrade is appropriate). Returns None
+    otherwise (equal / ahead / diverged / unknown)."""
     local = _local_git_sha()
     remote = _remote_main_sha(timeout=api_timeout)
     if not local or not remote:
         return None
-    if local == remote:
-        _write_update_cache({
-            "checked_at": int(time.time()),
-            "update_available": False,
-            "current_sha": local, "latest_sha": remote,
-        })
-        return None
-    notice = _build_update_notice(local, remote)
-    _write_update_cache({
+    rel, ahead, behind = _git_relationship(local, remote)
+    base_record = {
         "checked_at": int(time.time()),
-        "update_available": True,
         "current_sha": local, "latest_sha": remote,
-        "notice": notice,
-    })
-    return notice
+        "relationship": rel, "ahead": ahead, "behind": behind,
+    }
+    if rel == "behind":
+        notice = _build_update_notice(local, remote, behind_count=behind)
+        _write_update_cache({**base_record, "update_available": True, "notice": notice})
+        return notice
+    _write_update_cache({**base_record, "update_available": False})
+    return None
 
 
 def _maybe_check_for_updates() -> dict | None:
@@ -1694,35 +1740,61 @@ def tool_update_crosscheck(args: dict) -> dict:
                 "current_sha": local[:12],
                 "remote_url": _UPDATE_REMOTE_URL}
 
+    rel, ahead, behind = _git_relationship(local, remote)
     base = {
         "tool": "update_crosscheck",
         "current_sha": local[:12],
         "latest_sha":  remote[:12],
-        "update_available": local != remote,
+        "relationship": rel,
+        "ahead": ahead,
+        "behind": behind,
+        "update_available": rel == "behind",
         "remote_url": _UPDATE_REMOTE_URL,
     }
+    cache_record = {
+        "checked_at": int(time.time()),
+        "current_sha": local, "latest_sha": remote,
+        "relationship": rel, "ahead": ahead, "behind": behind,
+        "update_available": rel == "behind",
+    }
 
-    if local == remote:
-        # Refresh cache so the next session also recognizes 'up to date'.
-        _write_update_cache({
-            "checked_at": int(time.time()),
-            "update_available": False,
-            "current_sha": local, "latest_sha": remote,
-        })
+    if rel == "equal":
+        _write_update_cache(cache_record)
         return {**base, "status": "up_to_date"}
 
+    if rel == "ahead":
+        _write_update_cache(cache_record)
+        return {**base, "status": "local_ahead",
+                "next_step": (f"Your local HEAD is {ahead} commit(s) ahead of "
+                              f"origin/main. There is no remote upgrade to apply. "
+                              f"Push with `git push origin main` if these commits "
+                              f"are ready to publish.")}
+
+    if rel == "diverged":
+        _write_update_cache(cache_record)
+        return {**base, "status": "diverged",
+                "next_step": (f"Local and remote have diverged "
+                              f"(ahead {ahead}, behind {behind}). Resolve "
+                              f"manually with `git status` and a rebase or merge. "
+                              f"Refusing to fast-forward through a divergence.")}
+
+    if rel == "unknown":
+        _write_update_cache(cache_record)
+        return {**base, "status": "error",
+                "reason": ("could not determine ancestry between local HEAD and "
+                           "remote main. Likely causes: no `origin` remote, "
+                           "git fetch failed, or remote SHA not reachable. The "
+                           "SHAs differ but it is unsafe to assume an upgrade direction.")}
+
+    # rel == "behind"
     if not apply_now:
-        notice = _build_update_notice(local, remote)
-        _write_update_cache({
-            "checked_at": int(time.time()),
-            "update_available": True,
-            "current_sha": local, "latest_sha": remote,
-            "notice": notice,
-        })
+        notice = _build_update_notice(local, remote, behind_count=behind)
+        _write_update_cache({**cache_record, "notice": notice})
         return {**base, "status": "update_available",
-                "next_step": ("Re-run with apply=true to fetch the latest commit. "
-                              "After it succeeds, restart Claude Code (or the MCP "
-                              "connection) so the server reloads the new code.")}
+                "next_step": (f"You are {behind} commit(s) behind origin/main. "
+                              f"Re-run with apply=true to fast-forward. After it "
+                              f"succeeds, restart Claude Code (or the MCP "
+                              f"connection) so the server reloads the new code.")}
 
     import subprocess
     try:
