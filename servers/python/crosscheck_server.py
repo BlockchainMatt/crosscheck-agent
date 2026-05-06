@@ -1528,6 +1528,221 @@ def tool_coordinate(args: dict) -> dict:
 
 
 # ------------------------------------------------------------
+# Pick: multi-criteria decision-making across the panel
+# ------------------------------------------------------------
+def _pick_scores_schema() -> dict:
+    return _SCHEMA_DOC["$defs"]["PickScores"]
+
+
+def _normalize_pick_input(raw_options: list, raw_criteria: list) -> tuple[list[dict], list[dict]]:
+    options: list[dict] = []
+    for o in raw_options or []:
+        if isinstance(o, str):
+            options.append({"name": o})
+        elif isinstance(o, dict) and "name" in o:
+            options.append({"name": str(o["name"]),
+                            "description": str(o.get("description", ""))})
+    criteria: list[dict] = []
+    for c in raw_criteria or []:
+        if isinstance(c, dict) and "name" in c:
+            criteria.append({
+                "name": str(c["name"]),
+                "weight": float(c.get("weight", 1.0)),
+                "description": str(c.get("description", "")),
+            })
+    return options, criteria
+
+
+def _stddev(xs: list[float]) -> float:
+    if len(xs) <= 1:
+        return 0.0
+    m = sum(xs) / len(xs)
+    var = sum((x - m) ** 2 for x in xs) / len(xs)
+    return var ** 0.5
+
+
+def tool_pick(args: dict) -> dict:
+    decision: str = args["decision"]
+    options, criteria = _normalize_pick_input(args.get("options") or [], args.get("criteria") or [])
+    if len(options) < 2:
+        return {"error": "pick needs at least 2 options"}
+    if not criteria:
+        return {"error": "pick needs at least 1 criterion"}
+    max_dissent = max(1, int(args.get("max_dissent_deltas", 5)))
+
+    selected, unknown = _resolve_providers(args.get("providers"))
+    selected, blocked = _filter_by_allowlist(selected)
+    if not selected:
+        if unknown:
+            return _unknown_provider_error(unknown)
+        if blocked:
+            return {"error": "no providers survive the allowlist for pick",
+                    "blocked": blocked, "allowlist": _allowlist()}
+        return {"error": "no active providers have API keys in .env"}
+
+    call_started = time.monotonic()
+    deadline = _deadline()
+    session = _session_load(args.get("session_id"))
+    per_call = _per_call_tokens(len(selected) + 1)
+
+    option_names = [o["name"] for o in options]
+    criterion_names = [c["name"] for c in criteria]
+    weights = {c["name"]: float(c.get("weight", 1.0)) for c in criteria}
+    weight_sum = sum(weights.values()) or 1.0
+
+    options_block = "\n".join(
+        f"- {o['name']}" + (f": {o['description']}" if o.get("description") else "")
+        for o in options
+    )
+    criteria_block = "\n".join(
+        f"- {c['name']} (weight {c['weight']})" + (f": {c['description']}" if c.get("description") else "")
+        for c in criteria
+    )
+    base_messages = [
+        {"role": "system", "content":
+            "You are scoring options against criteria for a decision. Be calibrated: 0 = "
+            "fails utterly, 0.5 = mixed, 1.0 = clearly best of the field. Score each option "
+            "on EVERY listed criterion, then give an overall score for that option. Return "
+            "ONLY JSON matching the schema."},
+        {"role": "user", "content":
+            f"DECISION: {decision}\n\nOPTIONS:\n{options_block}\n\nCRITERIA:\n{criteria_block}"},
+    ]
+
+    scores_by_provider: dict[str, dict | None] = {}
+    answers_collected: list[dict] = []
+    scoring_errors: dict[str, list[str]] = {}
+
+    def _score_one(p: Provider) -> tuple[Provider, dict | None, dict, list[str]]:
+        obj, ans, errs = _request_structured(
+            p, base_messages, _pick_scores_schema(),
+            max_tokens=per_call, deadline=deadline, max_retries=1,
+        )
+        return p, obj, ans, errs
+
+    if len(selected) == 1:
+        results = [_score_one(selected[0])]
+    else:
+        with ThreadPoolExecutor(max_workers=len(selected)) as ex:
+            results = list(ex.map(_score_one, selected))
+
+    for p, obj, ans, errs in results:
+        scores_by_provider[p.name] = obj
+        answers_collected.append(ans)
+        if errs:
+            scoring_errors[p.name] = errs
+
+    # Aggregate: per (option, criterion) collect provider scores; compute mean/stddev.
+    per_oc_scores: dict[tuple[str, str], list[tuple[str, float, str]]] = {
+        (o, c): [] for o in option_names for c in criterion_names
+    }
+    per_option_overall: dict[str, list[float]] = {o: [] for o in option_names}
+
+    for provider_name, obj in scores_by_provider.items():
+        if not isinstance(obj, dict):
+            continue
+        for entry in obj.get("scores") or []:
+            opt = entry.get("option")
+            if opt not in per_option_overall:
+                continue
+            try:
+                per_option_overall[opt].append(float(entry.get("overall", 0)))
+            except (TypeError, ValueError):
+                pass
+            for sub in entry.get("by_criterion") or []:
+                cn = sub.get("criterion")
+                if cn not in criterion_names:
+                    continue
+                try:
+                    sc = float(sub.get("score", 0))
+                except (TypeError, ValueError):
+                    continue
+                rationale = str(sub.get("rationale", ""))
+                per_oc_scores[(opt, cn)].append((provider_name, sc, rationale))
+
+    ranking_rows = []
+    for opt in option_names:
+        crit_rows = []
+        weighted = 0.0
+        total_weight = 0.0
+        n_provider_scores = 0
+        for cn in criterion_names:
+            scores = [s for (_p, s, _r) in per_oc_scores[(opt, cn)]]
+            if scores:
+                m = sum(scores) / len(scores)
+                sd = _stddev(scores)
+            else:
+                m, sd = 0.0, 0.0
+            crit_rows.append({"criterion": cn, "mean_score": round(m, 4),
+                              "stddev": round(sd, 4), "weight": weights[cn]})
+            weighted += m * weights[cn]
+            total_weight += weights[cn]
+            n_provider_scores += len(scores)
+        weighted = (weighted / total_weight) if total_weight > 0 else 0.0
+        overall_scores = per_option_overall[opt]
+        mean_overall = (sum(overall_scores) / len(overall_scores)) if overall_scores else weighted
+        ranking_rows.append({
+            "option": opt,
+            "weighted_score": round(weighted, 4),
+            "mean_overall":   round(mean_overall, 4),
+            "by_criterion":   crit_rows,
+            "n_provider_scores": n_provider_scores,
+        })
+    ranking_rows.sort(key=lambda r: (-r["weighted_score"], r["option"]))
+    for i, r in enumerate(ranking_rows, start=1):
+        r["rank"] = i
+
+    # Dissent deltas: top-k (option, criterion) pairs by stddev (then by spread).
+    dissent_pool: list[dict] = []
+    for (opt, cn), per_p in per_oc_scores.items():
+        if len(per_p) < 2:
+            continue
+        scores = [s for (_p, s, _r) in per_p]
+        sd = _stddev(scores)
+        spread = max(scores) - min(scores)
+        dissent_pool.append({
+            "option": opt, "criterion": cn,
+            "stddev": round(sd, 4), "spread": round(spread, 4),
+            "providers": [{"provider": pn, "score": round(s, 4), "rationale": r}
+                          for (pn, s, r) in per_p],
+        })
+    dissent_pool.sort(key=lambda d: (-d["stddev"], -d["spread"], d["option"], d["criterion"]))
+    dissent_deltas = dissent_pool[:max_dissent]
+
+    _session_record(session, answers_collected, call_started)
+    _session_save(session)
+
+    if session and ranking_rows:
+        try:
+            top = ranking_rows[0]
+            _claim_add(session["session_id"],
+                       f"Pick: {decision} -> {top['option']} (weighted {top['weighted_score']})",
+                       provider="pick", confidence=top["weighted_score"], kind="consensus")
+        except Exception:
+            pass
+
+    result = {
+        "tool": "pick",
+        "decision": decision,
+        "options": option_names,
+        "criteria": [{"name": c["name"], "weight": c["weight"]} for c in criteria],
+        "ranking": ranking_rows,
+        "dissent_deltas": dissent_deltas,
+        "scores_by_provider": scores_by_provider,
+        "providers_used": [p.name for p in selected],
+        "budget": _budget_summary(call_started, deadline, answers_collected),
+    }
+    if scoring_errors:
+        result["scoring_errors"] = scoring_errors
+    if session:
+        result["session"] = session
+    if blocked:
+        result["blocked_by_allowlist"] = blocked
+    if unknown:
+        result["skipped_unknown_providers"] = unknown
+    return result
+
+
+# ------------------------------------------------------------
 # Fetch: HTTP retrieval with allowlist + sha256 evidence snapshots
 # ------------------------------------------------------------
 def _fetch_cfg() -> dict:
@@ -2222,6 +2437,7 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "bench":          tool_bench,
     "solve":          tool_solve,
     "fetch":          tool_fetch,
+    "pick":           tool_pick,
 }
 
 
