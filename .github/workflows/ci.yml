@@ -34,3 +34,6 @@ jobs:
 
       - name: Schema-first synthesis offline test
         run: python3 scripts/test_structured.py
+
+      - name: Coordinate (Proposer/Critic/Synthesizer) offline test
+        run: python3 scripts/test_coordinate.py

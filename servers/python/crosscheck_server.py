@@ -1161,6 +1161,214 @@ def tool_plan(args: dict) -> dict:
     })
 
 
+def _role_turn_schema() -> dict:
+    return _SCHEMA_DOC["$defs"]["RoleTurn"]
+
+
+def _format_role_turn(role: str, obj: dict | None, fallback_text: str = "") -> str:
+    """Render a RoleTurn (or fallback text) as something the next role can consume."""
+    if not obj:
+        return fallback_text or f"({role}: no structured output)"
+    parts = [f"[{role}] summary: {obj.get('summary','')}"]
+    parts.append(f"  confidence: {obj.get('confidence','?')}")
+    if obj.get("ballot"):
+        parts.append(f"  ballot: {obj['ballot']}")
+    for c in (obj.get("claims") or []):
+        parts.append(f"  - claim: {c.get('claim')} (conf={c.get('confidence')})")
+    for cit in (obj.get("citations") or []):
+        parts.append(f"  cite: {cit}")
+    return "\n".join(parts)
+
+
+def tool_coordinate(args: dict) -> dict:
+    topic: str = args["topic"]
+    context: str = args.get("context", "")
+    untrusted: bool = bool(args.get("untrusted_input", False))
+
+    selected, unknown = _resolve_providers(args.get("providers"))
+    selected, blocked = _filter_by_allowlist(selected)
+    if unknown and len(selected) < 2:
+        return _unknown_provider_error(unknown)
+    if len(selected) < 2:
+        if blocked:
+            return {"error": "coordinate has fewer than 2 providers after allowlist filtering",
+                    "blocked": blocked, "allowlist": _allowlist(),
+                    "available_now": sorted(ALL_PROVIDERS.keys())}
+        return {"error": "coordinate needs at least 2 providers with keys in .env",
+                "available_now": sorted(ALL_PROVIDERS.keys())}
+
+    selected_by_name = {p.name: p for p in selected}
+
+    # Resolve roles. Defaults: proposer = first selected, synthesizer = config.moderator
+    # (or first selected if not present), critics = remaining selected.
+    proposer_name = args.get("proposer") or selected[0].name
+    synth_name = (args.get("synthesizer") or args.get("moderator")
+                  or CFG.get("moderator") or selected[-1].name)
+    proposer = ALL_PROVIDERS.get(proposer_name) or selected[0]
+    synth = ALL_PROVIDERS.get(synth_name) or proposer
+
+    if "critics" in args and isinstance(args["critics"], list):
+        critic_names = [n for n in args["critics"] if n in ALL_PROVIDERS]
+    else:
+        critic_names = [p.name for p in selected
+                        if p.name != proposer.name and p.name != synth.name]
+        if not critic_names:
+            critic_names = [p.name for p in selected if p.name != proposer.name][:1]
+    critics = [ALL_PROVIDERS[n] for n in critic_names if n in ALL_PROVIDERS]
+    if not critics:
+        return {"error": "coordinate could not assign at least one critic distinct from the proposer",
+                "available_now": sorted(ALL_PROVIDERS.keys())}
+
+    call_started = time.monotonic()
+    deadline = _deadline()
+    # Three role steps share the per-call budget; weight: proposer 1, each critic 1, synth 1.5.
+    per_call = _per_call_tokens(2 + len(critics))
+    session = _session_load(args.get("session_id"))
+    _emit_event("tool_start", tool="coordinate",
+                roles={"proposer": proposer.name,
+                       "critics": [c.name for c in critics],
+                       "synthesizer": synth.name},
+                untrusted_input=untrusted,
+                session_id=session.get("session_id") if session else None)
+
+    base_system_lines = [
+        "You are part of a structured coordination flow with three roles: "
+        "proposer, critic, synthesizer. Stay strictly in the role you are given. "
+        "Be specific, cite assumptions, and prefer concrete claims to generic prose."
+    ]
+    if untrusted:
+        base_system_lines.append(_UNTRUSTED_SYSTEM_NOTE)
+    sys_msg = "\n".join(base_system_lines)
+
+    topic_block = f"TOPIC: {topic}"
+    if context:
+        ctx_block = _wrap_untrusted(context) if untrusted else context
+        topic_block += f"\n\nCONTEXT:\n{ctx_block}"
+
+    # ---- Step 1: Proposer ----------------------------------------------------
+    prop_system = (
+        sys_msg + "\n\nYou are the PROPOSER. Draft an initial position with claims and "
+        "confidence values. Set role=\"proposer\" and ballot=\"agree\" in your envelope."
+    )
+    prop_messages = [
+        {"role": "system", "content": prop_system},
+        {"role": "user",   "content": topic_block},
+    ]
+    proposal_obj, proposal_ans, _prop_errs = _request_structured(
+        proposer, prop_messages, _role_turn_schema(),
+        max_tokens=per_call, deadline=deadline, max_retries=1,
+    )
+    proposal_render = _format_role_turn("proposer", proposal_obj,
+                                        fallback_text=proposal_ans.get("response", "") if proposal_ans else "")
+
+    # ---- Step 2: Critics in parallel ----------------------------------------
+    crit_system = (
+        sys_msg + "\n\nYou are a CRITIC. Identify weak claims, missed cases, and risks in the "
+        "proposal. Set role=\"critic\" and choose ballot in {agree, disagree, abstain}."
+    )
+    def _critique(p: Provider) -> tuple[Provider, dict | None, dict, list[str]]:
+        msgs = [
+            {"role": "system", "content": crit_system},
+            {"role": "user",   "content": f"{topic_block}\n\nPROPOSAL:\n{proposal_render}"},
+        ]
+        obj, ans, errs = _request_structured(
+            p, msgs, _role_turn_schema(), max_tokens=per_call,
+            deadline=deadline, max_retries=1,
+        )
+        return p, obj, ans, errs
+
+    critique_pairs: list[tuple[Provider, dict | None, dict, list[str]]] = []
+    if critics:
+        if len(critics) == 1:
+            critique_pairs.append(_critique(critics[0]))
+        else:
+            with ThreadPoolExecutor(max_workers=len(critics)) as ex:
+                critique_pairs = list(ex.map(_critique, critics))
+
+    critique_answers   = [pair[2] for pair in critique_pairs]
+    critique_structured = [pair[1] for pair in critique_pairs]
+
+    # ---- Step 3: Synthesizer ------------------------------------------------
+    synth_system = (
+        sys_msg + "\n\nYou are the SYNTHESIZER. Read the proposal and the critiques. Produce a "
+        "single grounded synthesis as JSON matching the schema (consensus, weighted_confidence, "
+        "key_claims, dissent, citations, open_questions). Reflect real disagreement when it "
+        "exists; do not paper over it."
+    )
+    critique_block = "\n\n".join(
+        _format_role_turn(f"critic[{p.name}]", obj,
+                          fallback_text=ans.get("response", "") if ans else "")
+        for (p, obj, ans, _err) in critique_pairs
+    ) or "(no critiques)"
+    synth_messages = [
+        {"role": "system", "content": synth_system},
+        {"role": "user",   "content": f"{topic_block}\n\nPROPOSAL:\n{proposal_render}\n\nCRITIQUES:\n{critique_block}"},
+    ]
+    synthesis_obj, synthesis_ans, synthesis_errs = _request_structured(
+        synth, synth_messages, _structured_synthesis_schema(),
+        max_tokens=per_call, deadline=deadline, max_retries=1,
+    )
+
+    all_answers = [proposal_ans] + critique_answers + ([synthesis_ans] if synthesis_ans else [])
+    _session_record(session, all_answers, call_started)
+    _session_save(session)
+
+    # Persist structured output to the SQLite claim-list when we have a session.
+    if session and synthesis_obj:
+        try:
+            sid = session["session_id"]
+            cons_text = synthesis_obj.get("consensus")
+            consensus_id = None
+            if cons_text:
+                consensus_id = _claim_add(sid, cons_text, provider=synth.name,
+                                          confidence=float(synthesis_obj.get("weighted_confidence") or 0),
+                                          kind="consensus")
+            for kc in synthesis_obj.get("key_claims") or []:
+                cid = _claim_add(sid, kc.get("claim", ""), provider=synth.name,
+                                 confidence=float(kc.get("confidence") or 0),
+                                 kind="support")
+                if consensus_id is not None:
+                    _claim_link(cid, consensus_id, "supports")
+            for d in synthesis_obj.get("dissent") or []:
+                did = _claim_add(sid, d.get("claim", ""),
+                                 provider=",".join(d.get("providers") or []) or synth.name,
+                                 kind="dissent")
+                if consensus_id is not None:
+                    _claim_link(did, consensus_id, "attacks")
+            for q in synthesis_obj.get("open_questions") or []:
+                _claim_add(sid, q, provider=synth.name, kind="open_question")
+        except Exception:
+            pass
+
+    result = {
+        "tool": "coordinate",
+        "topic": topic,
+        "roles": {"proposer": proposer.name,
+                  "critics": [p.name for p in critics],
+                  "synthesizer": synth.name},
+        "proposal_answer":      proposal_ans,
+        "proposal_structured":  proposal_obj,
+        "critique_answers":     critique_answers,
+        "critique_structured":  critique_structured,
+        "synthesis_answer":     synthesis_ans,
+        "synthesis_structured": synthesis_obj,
+        "budget": _budget_summary(call_started, deadline, all_answers),
+    }
+    if synthesis_errs:
+        result["synthesis_errors"] = synthesis_errs
+    if session:
+        result["session"] = session
+    if blocked:
+        result["blocked_by_allowlist"] = blocked
+    if unknown:
+        result["skipped_unknown_providers"] = unknown
+    result["transcript_path"] = write_transcript("coordinate", result)
+    _emit_event("tool_end", tool="coordinate", provider_calls=len(all_answers),
+                cache_hits=result["budget"]["cache_hits"],
+                wall_used_ms=result["budget"]["wall_used_ms"])
+    return result
+
+
 def tool_review(args: dict) -> dict:
     snippet = args["snippet"]
     intent = args.get("intent", "")
@@ -1187,6 +1395,7 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "debate":         tool_debate,
     "plan":           tool_plan,
     "review":         tool_review,
+    "coordinate":     tool_coordinate,
 }
 
 

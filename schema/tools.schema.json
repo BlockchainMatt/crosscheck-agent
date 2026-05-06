@@ -43,6 +43,32 @@
       },
       "required": ["wall_used_ms", "wall_remaining_ms", "max_time_seconds", "token_cap"]
     },
+    "RoleTurn": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Role envelope produced by a single proposer/critic turn in coordinate.",
+      "properties": {
+        "role":       { "type": "string", "enum": ["proposer", "critic"] },
+        "summary":    { "type": "string", "description": "1-3 sentences capturing the position." },
+        "claims": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "claim":      { "type": "string" },
+              "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+            },
+            "required": ["claim", "confidence"]
+          }
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "Overall confidence in the position." },
+        "citations":  { "type": "array", "items": { "type": "string" } },
+        "ballot":     { "type": "string", "enum": ["agree", "disagree", "abstain"],
+                        "description": "Critic's stance on the proposal. Proposer always emits 'agree'." }
+      },
+      "required": ["role", "summary", "confidence"]
+    },
     "StructuredSynthesis": {
       "type": "object",
       "additionalProperties": false,
@@ -240,6 +266,57 @@
         "required": ["goal"]
       },
       "output": { "$ref": "#/tools/debate/output" }
+    },
+    "coordinate": {
+      "description": "Run a structured Proposer -> Critic(s) -> Synthesizer flow. The synthesizer's output is JSON-schema-validated; key claims, dissent, and open questions are persisted to the session claim-list when session_id is provided.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "topic":       { "type": "string", "description": "What to coordinate on (question, decision, design)." },
+          "context":     { "type": "string" },
+          "providers":   { "$ref": "#/$defs/ProviderArrayArg" },
+          "proposer":    { "type": "string", "description": "Provider that drafts the initial proposal. Defaults to the first resolvable provider." },
+          "critics":     { "type": "array", "items": { "type": "string" },
+                           "description": "Providers that critique the proposal in parallel. Defaults to all selected providers minus proposer/synthesizer." },
+          "synthesizer": { "type": "string", "description": "Provider that produces the final structured synthesis. Defaults to the configured moderator." },
+          "session_id":  { "type": "string", "description": "Optional id; structured claims are persisted under this session." },
+          "untrusted_input": { "type": "boolean", "default": false }
+        },
+        "required": ["topic"]
+      },
+      "output": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "tool":          { "const": "coordinate" },
+              "topic":         { "type": "string" },
+              "roles":         {
+                "type": "object",
+                "properties": {
+                  "proposer":    { "type": "string" },
+                  "critics":     { "type": "array", "items": { "type": "string" } },
+                  "synthesizer": { "type": "string" }
+                },
+                "required": ["proposer", "critics", "synthesizer"]
+              },
+              "proposal_answer":      { "$ref": "#/$defs/ProviderAnswer" },
+              "proposal_structured":  { "anyOf": [{ "$ref": "#/$defs/RoleTurn" }, { "type": "null" }] },
+              "critique_answers":     { "type": "array", "items": { "$ref": "#/$defs/ProviderAnswer" } },
+              "critique_structured":  { "type": "array", "items": { "anyOf": [{ "$ref": "#/$defs/RoleTurn" }, { "type": "null" }] } },
+              "synthesis_answer":     { "anyOf": [{ "$ref": "#/$defs/ProviderAnswer" }, { "type": "null" }] },
+              "synthesis_structured": { "anyOf": [{ "$ref": "#/$defs/StructuredSynthesis" }, { "type": "null" }] },
+              "synthesis_errors":     { "type": "array", "items": { "type": "string" } },
+              "budget":               { "$ref": "#/$defs/BudgetSummary" },
+              "session":              { "$ref": "#/$defs/SessionSummary" },
+              "transcript_path":      { "type": ["string", "null"] }
+            },
+            "required": ["tool", "topic", "roles"]
+          },
+          { "$ref": "#/$defs/ProviderErrorEnvelope" }
+        ]
+      }
     },
     "review": {
       "description": "Peer-review a code snippet or proposal across one or more LLMs.",
