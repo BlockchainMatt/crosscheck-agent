@@ -318,6 +318,58 @@
         ]
       }
     },
+    "triangulate": {
+      "description": "Run a Proposer/Critic/Synthesizer flow and return a consensus + minority report with per-provider weights drawn from accumulated ballot stats. Use this when you want one answer plus an honest dissenting view.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "question":        { "type": "string" },
+          "context":         { "type": "string" },
+          "providers":       { "$ref": "#/$defs/ProviderArrayArg" },
+          "session_id":      { "type": "string" },
+          "untrusted_input": { "type": "boolean", "default": false }
+        },
+        "required": ["question"]
+      },
+      "output": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "tool":                { "const": "triangulate" },
+              "question":            { "type": "string" },
+              "consensus":           { "type": "string" },
+              "weighted_confidence": { "anyOf": [{ "type": "number", "minimum": 0, "maximum": 1 }, { "type": "null" }] },
+              "key_claims":          { "type": "array" },
+              "dissent":             { "type": "array" },
+              "minority_report":     { "type": "string" },
+              "open_questions":      { "type": "array", "items": { "type": "string" } },
+              "panel": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "provider": { "type": "string" },
+                    "weight":   { "type": "number", "minimum": 0, "maximum": 1 }
+                  },
+                  "required": ["provider", "weight"]
+                }
+              },
+              "providers_used":   { "type": "array", "items": { "type": "string" } },
+              "roles":            { "type": "object" },
+              "synthesis_errors": { "type": "array", "items": { "type": "string" } },
+              "budget":           { "$ref": "#/$defs/BudgetSummary" },
+              "session":          { "$ref": "#/$defs/SessionSummary" },
+              "transcript_path":  { "type": ["string", "null"] }
+            },
+            "required": ["tool", "question", "consensus", "panel", "providers_used"]
+          },
+          { "$ref": "#/$defs/ProviderErrorEnvelope" }
+        ]
+      }
+    },
     "review": {
       "description": "Peer-review a code snippet or proposal across one or more LLMs.",
       "input": {

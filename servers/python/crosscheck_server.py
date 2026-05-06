@@ -361,6 +361,14 @@ def _db_init() -> None:
                 );
                 CREATE INDEX IF NOT EXISTS idx_links_src ON claim_links(src_id);
                 CREATE INDEX IF NOT EXISTS idx_links_dst ON claim_links(dst_id);
+
+                CREATE TABLE IF NOT EXISTS provider_stats (
+                  provider  TEXT PRIMARY KEY,
+                  wins      INTEGER NOT NULL DEFAULT 0,
+                  losses    INTEGER NOT NULL DEFAULT 0,
+                  abstains  INTEGER NOT NULL DEFAULT 0,
+                  last_at   INTEGER
+                );
                 """
             )
         _DB_INIT_DONE = True
@@ -472,6 +480,55 @@ def _session_claims(session_id: str) -> list[dict]:
             d["citations"] = json.loads(d.pop("citations_json") or "[]")
             out.append(d)
         return out
+
+
+def _record_ballot(provider: str, ballot: str) -> None:
+    """Bump provider_stats for a critic ballot. ballot in {agree, disagree, abstain}."""
+    if ballot not in ("agree", "disagree", "abstain"):
+        return
+    field = {"agree": "wins", "disagree": "losses", "abstains": "abstains"}.get(ballot, "abstains")
+    if ballot == "abstain":
+        field = "abstains"
+    _db_init()
+    with _db_conn() as conn:
+        conn.execute(
+            "INSERT INTO provider_stats(provider, wins, losses, abstains, last_at) "
+            "VALUES (?, 0, 0, 0, ?) "
+            "ON CONFLICT(provider) DO UPDATE SET last_at = excluded.last_at",
+            (provider, int(time.time())),
+        )
+        conn.execute(f"UPDATE provider_stats SET {field} = {field} + 1 WHERE provider = ?",
+                     (provider,))
+
+
+def _provider_stats_all() -> dict[str, dict]:
+    _db_init()
+    with _db_conn() as conn:
+        rows = conn.execute(
+            "SELECT provider, wins, losses, abstains, last_at FROM provider_stats"
+        ).fetchall()
+        return {r["provider"]: {k: r[k] for k in r.keys()} for r in rows}
+
+
+def _provider_weights(panel: list[str]) -> dict[str, float]:
+    """Return a normalized weight in [0,1] per provider in `panel`. Defaults to 1.0
+    when there's no signal yet; weights converge toward win-rate as the bench/coordinate
+    flows accumulate ballots."""
+    stats = _provider_stats_all()
+    out: dict[str, float] = {}
+    for name in panel:
+        s = stats.get(name)
+        if not s:
+            out[name] = 1.0
+            continue
+        denom = (s["wins"] + s["losses"] + s["abstains"])
+        if denom == 0:
+            out[name] = 1.0
+        else:
+            # win-rate over committed ballots (exclude abstains).
+            committed = s["wins"] + s["losses"]
+            out[name] = (s["wins"] / committed) if committed > 0 else 0.5
+    return out
 
 
 def _session_claim_links(session_id: str) -> list[dict]:
@@ -1288,6 +1345,14 @@ def tool_coordinate(args: dict) -> dict:
     critique_answers   = [pair[2] for pair in critique_pairs]
     critique_structured = [pair[1] for pair in critique_pairs]
 
+    # Record critic ballots into provider_stats (best-effort).
+    for (cp, cobj, _ans, _err) in critique_pairs:
+        if isinstance(cobj, dict) and isinstance(cobj.get("ballot"), str):
+            try:
+                _record_ballot(cp.name, cobj["ballot"])
+            except Exception:
+                pass
+
     # ---- Step 3: Synthesizer ------------------------------------------------
     synth_system = (
         sys_msg + "\n\nYou are the SYNTHESIZER. Read the proposal and the critiques. Produce a "
@@ -1369,6 +1434,67 @@ def tool_coordinate(args: dict) -> dict:
     return result
 
 
+def tool_triangulate(args: dict) -> dict:
+    """Run a coordinate flow and reshape the output as consensus + minority report
+    with per-provider weights drawn from accumulated ballot stats."""
+    coord_args = {
+        "topic":          args["question"],
+        "context":        args.get("context", ""),
+        "providers":      args.get("providers"),
+        "session_id":     args.get("session_id"),
+        "untrusted_input": bool(args.get("untrusted_input", False)),
+    }
+    coord = tool_coordinate(coord_args)
+    if "error" in coord:
+        return coord
+
+    synth = coord.get("synthesis_structured") or {}
+    consensus = synth.get("consensus") or "(no consensus produced)"
+    weighted_confidence = synth.get("weighted_confidence")
+    key_claims = synth.get("key_claims") or []
+    dissent = synth.get("dissent") or []
+    open_questions = synth.get("open_questions") or []
+
+    panel_names = sorted({coord["roles"]["proposer"], coord["roles"]["synthesizer"],
+                          *coord["roles"]["critics"]})
+    weights = _provider_weights(panel_names)
+
+    minority_lines: list[str] = []
+    for d in dissent:
+        provs = ", ".join(d.get("providers") or []) or "(unspecified)"
+        rationale = d.get("rationale") or ""
+        line = f"- {d.get('claim','')} — voiced by {provs}"
+        if rationale:
+            line += f": {rationale}"
+        minority_lines.append(line)
+    minority_report = "\n".join(minority_lines) or "(no dissent recorded)"
+
+    result = {
+        "tool": "triangulate",
+        "question": args["question"],
+        "consensus": consensus,
+        "weighted_confidence": weighted_confidence,
+        "key_claims": key_claims,
+        "dissent": dissent,
+        "minority_report": minority_report,
+        "open_questions": open_questions,
+        "panel": [{"provider": n, "weight": weights[n]} for n in panel_names],
+        "providers_used": panel_names,
+        "roles": coord["roles"],
+        "synthesis_errors": coord.get("synthesis_errors", []),
+        "budget": coord["budget"],
+    }
+    if "session" in coord:
+        result["session"] = coord["session"]
+    if "transcript_path" in coord:
+        result["transcript_path"] = coord["transcript_path"]
+    if "blocked_by_allowlist" in coord:
+        result["blocked_by_allowlist"] = coord["blocked_by_allowlist"]
+    if "skipped_unknown_providers" in coord:
+        result["skipped_unknown_providers"] = coord["skipped_unknown_providers"]
+    return result
+
+
 def tool_review(args: dict) -> dict:
     snippet = args["snippet"]
     intent = args.get("intent", "")
@@ -1396,6 +1522,7 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "plan":           tool_plan,
     "review":         tool_review,
     "coordinate":     tool_coordinate,
+    "triangulate":    tool_triangulate,
 }
 
 
