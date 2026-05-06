@@ -29,9 +29,13 @@ Claude │ Claude Code  │     MCP      ┌────────────
 |------------------|------------------------------------------------------------------------------|
 | `list_providers` | Discover which LLMs are currently available and which are in the active set.|
 | `confer`         | Ask one or more providers the same question in parallel; return every answer.|
-| `debate`         | Bounded round-trip debate; the configured moderator synthesises a result.   |
-| `plan`           | Collaborative step-by-step planning with risks + alternatives.              |
-| `review`         | Peer code / proposal review across one or more LLMs.                        |
+| `debate`         | Bounded round-trip debate; the configured moderator synthesises a result. Optional `structured: true` makes the synthesis a JSON-schema-validated object (consensus, dissent, key claims, citations, open questions). |
+| `plan`           | Collaborative step-by-step planning with risks + alternatives. Honours `structured: true`. |
+| `review`         | Peer code / proposal review across one or more LLMs. Pass `untrusted_input: true` when the snippet may contain prompt injections. |
+| `coordinate`     | Structured **Proposer → Critic(s) → Synthesizer** flow. Each role emits a JSON envelope; the synthesizer emits a validated `StructuredSynthesis`. Persists key claims to the SQLite claim-list with `supports`/`attacks` edges when `session_id` is provided. |
+| `triangulate`    | Run a coordinate flow and return **consensus + minority report** plus per-provider weights drawn from accumulated bench / critic-ballot win-rate. The "give me one answer, but be honest about disagreement" tool. |
+| `delegate`       | Cross-model handshake: route a `confer` or `review` call through one named provider, with quota tracking by `session_id` and by requesting provider. Refused calls return `accepted: false` with a structured `reason` and the live quota envelope. |
+| `bench`          | Run repo-scoped goldens (`*.json` in `.crosscheck/goldens/`) against a panel; rule-based verifiers (contains / regex_match / contains_any / contains_all / not_contains / min_length) score each provider, and the win-rate feeds `triangulate`'s weights. |
 
 ### Ad-hoc panels
 
@@ -64,6 +68,16 @@ Every run obeys the limits in `crosscheck.config.json`:
 - `max_rounds` — hard cap on unsupervised round trips.
 - `token_cap` — total token budget spread across providers × rounds.
 - `max_time_seconds` — wall-clock deadline enforced per run.
+- `cache.{enabled,ttl_seconds,max_entries,dir}` — SHA256 exact-match disk cache for provider responses. Cached calls return with `cache_hit: true` and `elapsed_ms: 0`. LRU eviction at write time; default TTL 7 days.
+- `retries.{max_attempts,backoff_base_s}` — jittered exponential backoff on transient HTTP errors (429, 5xx, network, timeout). Honours upstream `Retry-After`.
+- `rate_limits.{<provider>|default}.{capacity,refill_per_sec}` — per-provider leaky-bucket rate limiter.
+- `redaction.{enabled,patterns_extra}` — regex scrub for emails, IPv4, AWS keys, GitHub PATs, Slack tokens, OpenAI keys, bearer tokens, 16-digit cards. Applied recursively to ndjson event records and to JSON transcripts at write time.
+- `provider_allowlist` — null = no restriction; otherwise the array is the only set of providers that may run, even when callers ask for others. Blocked providers surface in `blocked_by_allowlist`.
+- `events_log` — path to the ndjson event trace (one structured event per `tool_start` / `provider_call` / `tool_end`). Use `scripts/replay` to inspect.
+- `delegation.{max_per_session,max_per_requester}` — quota knobs for the `delegate` tool.
+- `bench.goldens_dir` — directory holding bench fixtures.
+
+Every tool result includes a `budget` block (`wall_used_ms`, `wall_remaining_ms`, `cache_hits`, `provider_calls`). When `session_id` is supplied, a `session` block carries cumulative `{calls, wall_ms, cache_hits}` across calls — backed by SQLite at `.crosscheck/sessions.sqlite3` (override via `session_db`).
 
 ## Asking Claude to use it
 
@@ -100,6 +114,31 @@ does, based on what you say. A few prompts that work well inside Claude Code:
 
 > "List the providers crosscheck has available and tell me which ones are
 > missing an API key."
+
+**Structured coordination (Proposer → Critic → Synthesizer)**
+
+> "Coordinate this with anthropic, openai, and gemini, session_id=auth-rewrite-1: 'should we move from JWT to opaque tokens for our internal-API auth?'"
+
+**Triangulate when you want consensus + dissent**
+
+> "Triangulate across the panel: what's the right batch size for our embedding pipeline given a 16GB GPU and 4M docs?"
+
+**Cross-model delegation**
+
+> "Delegate this code review to xai with requested_by=anthropic, session_id=migrations-2: paste-the-SQL-here."
+
+**Bench the panel**
+
+> "Run bench against alpha, beta, gamma using the goldens in .crosscheck/goldens/ and rank them."
+
+**Replay the event log**
+
+```bash
+scripts/replay --tail 50                # last 50 events
+scripts/replay --tool coordinate        # only coordinate events
+scripts/replay --provider gemini        # all Gemini calls
+scripts/replay --kind provider_call --since 5m
+```
 
 Claude will call `list_providers`, `confer`, `debate`, `plan`, or `review`
 under the hood, pass the subset you named, and stream the responses back.
