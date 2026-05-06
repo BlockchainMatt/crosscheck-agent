@@ -31,5 +31,8 @@
   "delegation": {
     "max_per_session": 50,
     "max_per_requester": 200
+  },
+  "bench": {
+    "goldens_dir": ".crosscheck/goldens"
   }
 }

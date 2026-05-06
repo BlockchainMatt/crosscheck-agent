@@ -43,3 +43,6 @@ jobs:
 
       - name: Delegate (cross-model handshake + quota) offline test
         run: python3 scripts/test_delegate.py
+
+      - name: Bench (rule-based goldens + win-rate) offline test
+        run: python3 scripts/test_bench.py

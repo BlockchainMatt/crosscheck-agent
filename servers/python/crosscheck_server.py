@@ -1446,6 +1446,191 @@ def tool_coordinate(args: dict) -> dict:
     return result
 
 
+# ------------------------------------------------------------
+# Bench: rule-based goldens + provider scoring
+# ------------------------------------------------------------
+def _bench_goldens_dir(override: str | None = None) -> Path:
+    raw = override or (CFG.get("bench") or {}).get("goldens_dir") or ".crosscheck/goldens"
+    p = Path(str(raw))
+    return p if p.is_absolute() else (ROOT / p)
+
+
+def _eval_verifier(spec: dict, text: str) -> tuple[bool, str]:
+    """Run one verifier against `text`. Returns (passed, label)."""
+    kind = spec.get("kind")
+    if kind == "contains":
+        v = str(spec.get("value", ""))
+        if spec.get("case_insensitive"):
+            return (v.lower() in text.lower(), f"contains[ci] {v!r}")
+        return (v in text, f"contains {v!r}")
+    if kind == "not_contains":
+        v = str(spec.get("value", ""))
+        if spec.get("case_insensitive"):
+            return (v.lower() not in text.lower(), f"not_contains[ci] {v!r}")
+        return (v not in text, f"not_contains {v!r}")
+    if kind == "regex_match":
+        pat = str(spec.get("value", ""))
+        flags = re.IGNORECASE if spec.get("case_insensitive") else 0
+        try:
+            ok = re.search(pat, text, flags=flags) is not None
+        except re.error as e:
+            return (False, f"regex_match[bad pattern: {e}]")
+        return (ok, f"regex_match {pat!r}")
+    if kind == "contains_any":
+        vs = [str(v) for v in (spec.get("values") or [])]
+        if spec.get("case_insensitive"):
+            ok = any(v.lower() in text.lower() for v in vs)
+        else:
+            ok = any(v in text for v in vs)
+        return (ok, f"contains_any {vs!r}")
+    if kind == "contains_all":
+        vs = [str(v) for v in (spec.get("values") or [])]
+        if spec.get("case_insensitive"):
+            ok = all(v.lower() in text.lower() for v in vs)
+        else:
+            ok = all(v in text for v in vs)
+        return (ok, f"contains_all {vs!r}")
+    if kind == "min_length":
+        n = int(spec.get("value", 0))
+        return (len(text) >= n, f"min_length {n}")
+    return (False, f"unknown verifier kind {kind!r}")
+
+
+def _load_goldens(dir_path: Path, name_filter: str | None = None) -> list[dict]:
+    if not dir_path.exists():
+        return []
+    out: list[dict] = []
+    for p in sorted(dir_path.glob("*.json")):
+        try:
+            doc = json.loads(p.read_text())
+        except Exception:
+            continue
+        if not isinstance(doc, dict) or "name" not in doc or "verifiers" not in doc:
+            continue
+        if name_filter and name_filter.lower() not in str(doc["name"]).lower():
+            continue
+        out.append(doc)
+    return out
+
+
+def tool_bench(args: dict) -> dict:
+    selected, unknown = _resolve_providers(args.get("providers"))
+    selected, blocked = _filter_by_allowlist(selected)
+    if not selected:
+        if unknown:
+            return _unknown_provider_error(unknown)
+        if blocked:
+            return {"error": "no providers survive the allowlist for bench",
+                    "blocked": blocked, "allowlist": _allowlist()}
+        return {"error": "no active providers have API keys in .env"}
+
+    dir_path = _bench_goldens_dir(args.get("goldens_dir"))
+    goldens = _load_goldens(dir_path, args.get("filter"))
+    call_started = time.monotonic()
+    deadline = _deadline()
+    session = _session_load(args.get("session_id"))
+
+    by_provider: dict[str, dict] = {
+        p.name: {"passed": 0, "failed": 0, "errored": 0, "score": 0.0, "details": []}
+        for p in selected
+    }
+    answers_collected: list[dict] = []
+
+    for golden in goldens:
+        tool_call = golden.get("tool_call")
+        inner_args = dict(golden.get("args") or {})
+        verifiers = golden.get("verifiers") or []
+        if tool_call not in ("confer", "review") or not verifiers:
+            continue
+
+        for p in selected:
+            if _time_left(deadline) <= 1:
+                break
+            inv = dict(inner_args)
+            inv["providers"] = [p.name]
+            inv.pop("session_id", None)  # bench is its own session counter
+            handler = _HANDLERS[tool_call]
+            try:
+                inner = handler(inv)
+            except Exception as e:
+                by_provider[p.name]["errored"] += 1
+                by_provider[p.name]["details"].append(
+                    {"golden": golden["name"], "passed": False, "errored": True, "verifiers": [],
+                     "error": f"{type(e).__name__}: {e}"})
+                continue
+            if not isinstance(inner, dict) or "answers" not in inner:
+                by_provider[p.name]["errored"] += 1
+                by_provider[p.name]["details"].append(
+                    {"golden": golden["name"], "passed": False, "errored": True, "verifiers": [],
+                     "error": str(inner.get("error", "no answers in tool result"))})
+                continue
+            answers = inner.get("answers") or []
+            answers_collected.extend(answers)
+            text = ""
+            for a in answers:
+                if a.get("provider") == p.name:
+                    text = a.get("response") or ""
+                    break
+            if not text:
+                err = next((a.get("error", "no response") for a in answers if a.get("provider") == p.name), "no response")
+                by_provider[p.name]["errored"] += 1
+                by_provider[p.name]["details"].append(
+                    {"golden": golden["name"], "passed": False, "errored": True, "verifiers": [],
+                     "error": str(err)})
+                continue
+
+            v_results = []
+            all_pass = True
+            for v in verifiers:
+                ok, label = _eval_verifier(v, text)
+                v_results.append({"kind": str(v.get("kind", "")), "label": label, "passed": ok})
+                if not ok:
+                    all_pass = False
+            if all_pass:
+                by_provider[p.name]["passed"] += 1
+            else:
+                by_provider[p.name]["failed"] += 1
+            by_provider[p.name]["details"].append(
+                {"golden": golden["name"], "passed": all_pass, "errored": False,
+                 "verifiers": v_results})
+
+    # Compute scores; record wins/losses for the win-rate that triangulate uses.
+    for name, agg in by_provider.items():
+        committed = agg["passed"] + agg["failed"]
+        agg["score"] = (agg["passed"] / committed) if committed > 0 else 0.0
+        for _ in range(agg["passed"]):
+            try:
+                _record_ballot(name, "agree")
+            except Exception:
+                pass
+        for _ in range(agg["failed"]):
+            try:
+                _record_ballot(name, "disagree")
+            except Exception:
+                pass
+
+    ranking = sorted(
+        ({"provider": n, "score": v["score"]} for n, v in by_provider.items()),
+        key=lambda r: (-r["score"], r["provider"]),
+    )
+
+    _session_record(session, answers_collected, call_started)
+    _session_save(session)
+
+    result = {
+        "tool": "bench",
+        "goldens_dir": str(dir_path),
+        "goldens_run": len(goldens),
+        "providers_used": [p.name for p in selected],
+        "results_by_provider": by_provider,
+        "ranking": ranking,
+        "budget": _budget_summary(call_started, deadline, answers_collected),
+    }
+    if session:
+        result["session"] = session
+    return result
+
+
 _DELEGABLE_TOOLS = ("confer", "review")
 
 
@@ -1651,6 +1836,7 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "coordinate":     tool_coordinate,
     "triangulate":    tool_triangulate,
     "delegate":       tool_delegate,
+    "bench":          tool_bench,
 }
 
 

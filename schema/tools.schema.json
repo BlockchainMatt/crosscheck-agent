@@ -318,6 +318,32 @@
         ]
       }
     },
+    "Verifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A rule-based check that runs against a provider's response text.",
+      "properties": {
+        "kind":             { "type": "string",
+                              "enum": ["contains", "not_contains", "regex_match",
+                                       "contains_any", "contains_all", "min_length"] },
+        "value":            { "type": ["string", "integer"] },
+        "values":           { "type": "array", "items": { "type": "string" } },
+        "case_insensitive": { "type": "boolean", "default": false }
+      },
+      "required": ["kind"]
+    },
+    "Golden": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A bench fixture: an input + the rule-based assertions a passing answer must satisfy.",
+      "properties": {
+        "name":      { "type": "string" },
+        "tool_call": { "type": "string", "enum": ["confer", "review"] },
+        "args":      { "type": "object", "description": "Args forwarded to the inner tool. The `providers` field is overridden per provider under bench." },
+        "verifiers": { "type": "array", "items": { "$ref": "#/$defs/Verifier" }, "minItems": 1 }
+      },
+      "required": ["name", "tool_call", "args", "verifiers"]
+    },
     "delegate": {
       "description": "Cross-model tool delegation with an explicit handshake. Run a delegable tool (confer or review) against a single named provider, with quota tracking by session_id and by requesting provider. Useful for capability handoffs (\"route this code review to provider X\") and for bounded multi-step plans where one model decides who answers a sub-question.",
       "input": {
@@ -410,6 +436,85 @@
           },
           { "$ref": "#/$defs/ProviderErrorEnvelope" }
         ]
+      }
+    },
+    "bench": {
+      "description": "Run rule-based goldens against each provider in a panel and return a per-provider score + ranking. Bumps provider_stats wins/losses, which feeds the weights surfaced by triangulate. Use this to keep an honest, repo-scoped picture of who answers your repo's questions best.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "providers":   { "$ref": "#/$defs/ProviderArrayArg",
+                           "description": "Panel to bench. Each golden is run once per provider in this list." },
+          "goldens_dir": { "type": "string",
+                           "description": "Override the goldens directory (defaults to config.bench.goldens_dir)." },
+          "filter":      { "type": "string",
+                           "description": "Run only goldens whose name contains this substring (case-insensitive)." },
+          "session_id":  { "type": "string" }
+        }
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "tool":         { "const": "bench" },
+          "goldens_dir":  { "type": "string" },
+          "goldens_run":  { "type": "integer", "minimum": 0 },
+          "providers_used": { "type": "array", "items": { "type": "string" } },
+          "results_by_provider": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "passed":  { "type": "integer", "minimum": 0 },
+                "failed":  { "type": "integer", "minimum": 0 },
+                "errored": { "type": "integer", "minimum": 0 },
+                "score":   { "type": "number",  "minimum": 0, "maximum": 1 },
+                "details": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "golden":    { "type": "string" },
+                      "passed":    { "type": "boolean" },
+                      "errored":   { "type": "boolean" },
+                      "verifiers": { "type": "array",
+                                     "items": {
+                                       "type": "object",
+                                       "additionalProperties": false,
+                                       "properties": {
+                                         "kind":   { "type": "string" },
+                                         "label":  { "type": "string" },
+                                         "passed": { "type": "boolean" }
+                                       },
+                                       "required": ["kind", "label", "passed"]
+                                     } },
+                      "error":     { "type": "string" }
+                    },
+                    "required": ["golden", "passed", "errored"]
+                  }
+                }
+              },
+              "required": ["passed", "failed", "errored", "score", "details"]
+            }
+          },
+          "ranking": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "provider": { "type": "string" },
+                "score":    { "type": "number", "minimum": 0, "maximum": 1 }
+              },
+              "required": ["provider", "score"]
+            }
+          },
+          "budget":  { "$ref": "#/$defs/BudgetSummary" },
+          "session": { "$ref": "#/$defs/SessionSummary" }
+        },
+        "required": ["tool", "goldens_run", "results_by_provider", "ranking"]
       }
     },
     "review": {

@@ -120,6 +120,15 @@
         "max_per_session":   { "type": "integer", "minimum": 1, "default": 50 },
         "max_per_requester": { "type": "integer", "minimum": 1, "default": 200 }
       }
+    },
+    "bench": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Configuration for the `bench` tool.",
+      "properties": {
+        "goldens_dir": { "type": "string", "default": ".crosscheck/goldens",
+                         "description": "Directory containing one *.json per Golden fixture." }
+      }
     }
   },
   "required": ["max_rounds", "token_cap", "max_time_seconds", "providers", "moderator"]
