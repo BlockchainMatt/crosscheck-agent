@@ -40,6 +40,7 @@ Claude │ Claude Code  │     MCP      ┌────────────
 | `fetch`          | Retrieve a URL with **deny-by-default allowlist** (`fetch.url_allowlist` prefix list) and persist a sha256-keyed snapshot under `.crosscheck/evidence/`. Cached on repeat unless `force_refresh: true`. Use to ground claims with reproducible evidence. |
 | `pick`           | **Multi-criteria decision-making.** Each provider scores every option on every criterion (0..1); the tool aggregates with criterion weights, returns a ranked list, and surfaces the top-K cross-provider disagreements as `dissent_deltas`. |
 | `scoreboard`     | Read-only snapshot: per-provider weight + wins/losses/abstains + delegations, plus `totals` for sessions/claims/links/delegations and (optional) the last N redacted event lines. The data the UI panel reads. |
+| `update_crosscheck` | Compares your local git HEAD against `main` at https://github.com/fxspeiser/crosscheck-agent. With `apply: true`, runs `git pull --ff-only` in the install directory; the server can't reload itself, so the response asks you to restart Claude Code. The first crosscheck call per server process runs the same check (cached 6h) and attaches an `update_notice` to the result so Claude can offer the upgrade proactively. |
 
 ### Ad-hoc panels
 
@@ -134,6 +135,12 @@ does, based on what you say. A few prompts that work well inside Claude Code:
 **Bench the panel**
 
 > "Run bench against alpha, beta, gamma using the goldens in .crosscheck/goldens/ and rank them."
+
+**Self-update**
+
+> "Check whether crosscheck-agent has an update."  *(if Claude already saw an `update_notice` on a previous tool call, it will surface it without prompting.)*
+
+> "Yes, upgrade it."  → Claude calls `update_crosscheck` with `apply: true`, then reminds you to restart Claude Code so the new server code loads.
 
 **Replay the event log**
 

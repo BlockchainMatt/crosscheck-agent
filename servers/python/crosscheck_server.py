@@ -1528,6 +1528,244 @@ def tool_coordinate(args: dict) -> dict:
 
 
 # ------------------------------------------------------------
+# Update check (compares local git HEAD against GitHub main HEAD)
+# ------------------------------------------------------------
+_UPDATE_REMOTE_REPO = "fxspeiser/crosscheck-agent"
+_UPDATE_REMOTE_URL  = f"https://github.com/{_UPDATE_REMOTE_REPO}"
+_UPDATE_API_URL     = f"https://api.github.com/repos/{_UPDATE_REMOTE_REPO}/commits/main"
+_UPDATE_CACHE_TTL_SECONDS = 6 * 3600
+
+_UPDATE_LOCK = threading.Lock()
+_UPDATE_CHECKED = False
+_UPDATE_NOTICE: dict | None = None
+
+
+def _update_cache_path() -> Path:
+    raw = CFG.get("update_cache_path") or ".crosscheck/last_update_check.json"
+    p = Path(str(raw))
+    return p if p.is_absolute() else (ROOT / p)
+
+
+def _local_git_sha() -> str | None:
+    import subprocess
+    try:
+        cp = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return None
+    if cp.returncode != 0:
+        return None
+    sha = (cp.stdout or "").strip()
+    return sha if re.fullmatch(r"[0-9a-f]{7,64}", sha) else None
+
+
+def _remote_main_sha(timeout: float = 3.0) -> str | None:
+    try:
+        req = urllib.request.Request(
+            _UPDATE_API_URL,
+            headers={"User-Agent": "crosscheck-agent/update-check",
+                     "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    sha = data.get("sha") if isinstance(data, dict) else None
+    return sha if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{7,64}", sha) else None
+
+
+def _read_update_cache() -> dict | None:
+    p = _update_cache_path()
+    if not p.exists():
+        return None
+    try:
+        cached = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if (time.time() - int(cached.get("checked_at", 0))) > _UPDATE_CACHE_TTL_SECONDS:
+        return None
+    return cached
+
+
+def _write_update_cache(payload: dict) -> None:
+    p = _update_cache_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _build_update_notice(local: str, remote: str) -> dict:
+    return {
+        "update_available": True,
+        "current_sha": local[:12],
+        "latest_sha":  remote[:12],
+        "remote_url":  _UPDATE_REMOTE_URL,
+        "message": (
+            f"crosscheck-agent: a newer version is available "
+            f"({local[:8]} -> {remote[:8]}). To upgrade, call the "
+            f"`update_crosscheck` tool with apply=true; the user must then "
+            f"restart Claude Code (or the MCP connection) to load the new code. "
+            f"Ask the user before applying."
+        ),
+        "ask_user": True,
+    }
+
+
+def _check_and_cache_update(api_timeout: float = 3.0) -> dict | None:
+    """Fresh check; writes the cache; returns the notice when an update is available, else None."""
+    local = _local_git_sha()
+    remote = _remote_main_sha(timeout=api_timeout)
+    if not local or not remote:
+        return None
+    if local == remote:
+        _write_update_cache({
+            "checked_at": int(time.time()),
+            "update_available": False,
+            "current_sha": local, "latest_sha": remote,
+        })
+        return None
+    notice = _build_update_notice(local, remote)
+    _write_update_cache({
+        "checked_at": int(time.time()),
+        "update_available": True,
+        "current_sha": local, "latest_sha": remote,
+        "notice": notice,
+    })
+    return notice
+
+
+def _maybe_check_for_updates() -> dict | None:
+    """First call per process kicks off a check. Returns the cached / freshly-computed
+    notice when newer; None otherwise. Best-effort; never raises; bounded by a tight
+    GitHub API timeout."""
+    global _UPDATE_CHECKED, _UPDATE_NOTICE
+    with _UPDATE_LOCK:
+        if _UPDATE_CHECKED:
+            return _UPDATE_NOTICE
+        _UPDATE_CHECKED = True
+
+    cached = _read_update_cache()
+    if cached is not None:
+        if cached.get("update_available"):
+            _UPDATE_NOTICE = cached.get("notice")
+        return _UPDATE_NOTICE
+
+    try:
+        notice = _check_and_cache_update(api_timeout=2.5)
+    except Exception:
+        notice = None
+    _UPDATE_NOTICE = notice
+    return notice
+
+
+def _attach_update_notice(out: Any, tool_name: str) -> Any:
+    """If a non-update tool returned a dict, run the first-call check and attach
+    the resulting notice when one is available."""
+    if tool_name == "update_crosscheck":
+        return out
+    if not isinstance(out, dict):
+        return out
+    if "update_notice" in out:
+        return out
+    notice = _maybe_check_for_updates()
+    if notice:
+        out["update_notice"] = notice
+    return out
+
+
+def tool_update_crosscheck(args: dict) -> dict:
+    apply_now = bool(args.get("apply", False))
+
+    local = _local_git_sha()
+    if not local:
+        return {"tool": "update_crosscheck", "status": "error",
+                "reason": "could not determine local git SHA. crosscheck-agent must be "
+                          "installed as a git checkout for in-place updates.",
+                "remote_url": _UPDATE_REMOTE_URL}
+
+    remote = _remote_main_sha(timeout=10.0)
+    if not remote:
+        return {"tool": "update_crosscheck", "status": "error",
+                "reason": "could not reach https://api.github.com to check for updates.",
+                "current_sha": local[:12],
+                "remote_url": _UPDATE_REMOTE_URL}
+
+    base = {
+        "tool": "update_crosscheck",
+        "current_sha": local[:12],
+        "latest_sha":  remote[:12],
+        "update_available": local != remote,
+        "remote_url": _UPDATE_REMOTE_URL,
+    }
+
+    if local == remote:
+        # Refresh cache so the next session also recognizes 'up to date'.
+        _write_update_cache({
+            "checked_at": int(time.time()),
+            "update_available": False,
+            "current_sha": local, "latest_sha": remote,
+        })
+        return {**base, "status": "up_to_date"}
+
+    if not apply_now:
+        notice = _build_update_notice(local, remote)
+        _write_update_cache({
+            "checked_at": int(time.time()),
+            "update_available": True,
+            "current_sha": local, "latest_sha": remote,
+            "notice": notice,
+        })
+        return {**base, "status": "update_available",
+                "next_step": ("Re-run with apply=true to fetch the latest commit. "
+                              "After it succeeds, restart Claude Code (or the MCP "
+                              "connection) so the server reloads the new code.")}
+
+    import subprocess
+    try:
+        cp = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return {**base, "status": "pull_failed", "error": "git pull timed out after 60s"}
+    except FileNotFoundError:
+        return {**base, "status": "pull_failed", "error": "git binary not found in PATH"}
+    except Exception as e:
+        return {**base, "status": "pull_failed", "error": f"{type(e).__name__}: {e}"}
+
+    if cp.returncode != 0:
+        return {**base, "status": "pull_failed",
+                "exit_code": cp.returncode,
+                "stderr": (cp.stderr or "")[-1024:],
+                "stdout": (cp.stdout or "")[-512:],
+                "next_step": ("git pull failed — likely uncommitted local changes or a "
+                              "non-fast-forward divergence. Resolve manually with "
+                              "`git status && git pull --rebase` and retry.")}
+
+    new_local = _local_git_sha() or local
+    # Invalidate the cache so the next first-call check sees the up-to-date state.
+    _write_update_cache({
+        "checked_at": int(time.time()),
+        "update_available": (new_local != remote),
+        "current_sha": new_local, "latest_sha": remote,
+    })
+    return {**base,
+            "status": "updated",
+            "new_sha": new_local[:12],
+            "stdout": (cp.stdout or "")[-512:],
+            "restart_required": True,
+            "restart_instructions": (
+                "The MCP server cannot reload its own code. To pick up the new "
+                "version: in Claude Code, run `/mcp` and reconnect to the "
+                "crosscheck server, or restart your Claude Code session."
+            )}
+
+
+# ------------------------------------------------------------
 # Scoreboard: read-only snapshot of provider stats + activity totals
 # ------------------------------------------------------------
 def tool_scoreboard(args: dict) -> dict:
@@ -2546,6 +2784,7 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "fetch":          tool_fetch,
     "pick":           tool_pick,
     "scoreboard":     tool_scoreboard,
+    "update_crosscheck": tool_update_crosscheck,
 }
 
 
@@ -2838,6 +3077,7 @@ def handle(req: dict) -> dict | None:
             return rpc_error(id_, -32602, err)
         try:
             out = tool["handler"](args)
+            out = _attach_update_notice(out, name)
             return rpc_result(id_, {"content": [{"type": "text", "text": json.dumps(out, indent=2)}]})
         except Exception as e:
             return rpc_error(id_, -32000, str(e))

@@ -698,6 +698,39 @@
         ]
       }
     },
+    "update_crosscheck": {
+      "description": "Check whether a newer version of crosscheck-agent is available at https://github.com/fxspeiser/crosscheck-agent (compares local git HEAD against the remote main HEAD via the GitHub API). With apply=true, runs `git pull --ff-only` in the install directory; the MCP server cannot reload itself, so the response asks the user to restart Claude Code afterwards. Requires the install to be a git checkout with the standard remote. The first crosscheck tool call per server process automatically performs the same check (cached 6h) and attaches an `update_notice` to its result so Claude can surface the upgrade offer.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "apply": { "type": "boolean", "default": false,
+                     "description": "When true, run `git pull --ff-only` in the install directory after confirming an update is available. The user must restart Claude Code (or the MCP connection) to load the new code." }
+        }
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "tool":              { "const": "update_crosscheck" },
+          "status":            { "type": "string",
+                                 "enum": ["up_to_date", "update_available", "updated", "pull_failed", "error"] },
+          "current_sha":       { "type": "string" },
+          "latest_sha":        { "type": "string" },
+          "new_sha":           { "type": "string" },
+          "update_available":  { "type": "boolean" },
+          "remote_url":        { "type": "string" },
+          "next_step":         { "type": "string" },
+          "reason":            { "type": "string" },
+          "error":             { "type": "string" },
+          "stderr":            { "type": "string" },
+          "stdout":            { "type": "string" },
+          "exit_code":         { "type": "integer" },
+          "restart_required":  { "type": "boolean" },
+          "restart_instructions": { "type": "string" }
+        },
+        "required": ["tool", "status"]
+      }
+    },
     "scoreboard": {
       "description": "Read-only snapshot of accumulated provider performance and recent activity. Surfaces the per-repo win-rate that triangulate uses for weights, plus delegation counters and totals so a UI can render a 'who's winning here' panel.",
       "input": {
