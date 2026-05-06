@@ -369,6 +369,18 @@ def _db_init() -> None:
                   abstains  INTEGER NOT NULL DEFAULT 0,
                   last_at   INTEGER
                 );
+
+                CREATE TABLE IF NOT EXISTS delegations (
+                  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                  session_id TEXT,
+                  requester  TEXT,
+                  tool_call  TEXT NOT NULL,
+                  via        TEXT NOT NULL,
+                  accepted   INTEGER NOT NULL,
+                  created_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_deleg_session ON delegations(session_id);
+                CREATE INDEX IF NOT EXISTS idx_deleg_req     ON delegations(requester);
                 """
             )
         _DB_INIT_DONE = True
@@ -1434,6 +1446,121 @@ def tool_coordinate(args: dict) -> dict:
     return result
 
 
+_DELEGABLE_TOOLS = ("confer", "review")
+
+
+def _delegation_limits() -> dict:
+    cfg = CFG.get("delegation") or {}
+    return {
+        "max_per_session":   int(cfg.get("max_per_session",   50)),
+        "max_per_requester": int(cfg.get("max_per_requester", 200)),
+    }
+
+
+def _delegation_count(session_id: str | None, requester: str | None) -> tuple[int, int]:
+    """Returns (used_for_session, used_for_requester) — only the *accepted* ones."""
+    _db_init()
+    used_session = used_requester = 0
+    with _db_conn() as conn:
+        if session_id:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM delegations WHERE session_id = ? AND accepted = 1",
+                (_safe_session_id(session_id),),
+            ).fetchone()
+            used_session = int(row["n"])
+        if requester:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM delegations WHERE requester = ? AND accepted = 1",
+                (requester,),
+            ).fetchone()
+            used_requester = int(row["n"])
+    return used_session, used_requester
+
+
+def _delegation_record(session_id: str | None, requester: str | None,
+                       tool_call: str, via: str, accepted: bool) -> None:
+    _db_init()
+    sid = _safe_session_id(session_id) if session_id else None
+    if sid:
+        _session_load(sid)  # ensure parent row exists for FK semantics in queries
+    with _db_conn() as conn:
+        conn.execute(
+            "INSERT INTO delegations(session_id, requester, tool_call, via, accepted, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (sid, requester, tool_call, via, 1 if accepted else 0, int(time.time())),
+        )
+
+
+def tool_delegate(args: dict) -> dict:
+    """Run a delegable tool (confer | review) restricted to a single named provider.
+    Performs an explicit handshake: quota check first, then executes (or refuses)."""
+    tool_call: str = args["tool_call"]
+    via: str = args["via"]
+    inner_args: dict = dict(args.get("args") or {})
+    requester: str | None = args.get("requested_by")
+    session_id: str | None = args.get("session_id")
+
+    limits = _delegation_limits()
+    used_session, used_requester = _delegation_count(session_id, requester)
+    quota = {
+        "session_used":      used_session,
+        "session_limit":     limits["max_per_session"],
+        "session_remaining": max(0, limits["max_per_session"] - used_session),
+        "requester_used":    used_requester,
+        "requester_limit":   limits["max_per_requester"],
+        "requester_remaining": max(0, limits["max_per_requester"] - used_requester),
+    }
+    base_envelope = {"tool": "delegate", "tool_call": tool_call, "via": via,
+                     "requested_by": requester, "quota": quota}
+
+    # Validate the call shape before honouring.
+    if tool_call not in _DELEGABLE_TOOLS:
+        _delegation_record(session_id, requester, tool_call, via, accepted=False)
+        return {**base_envelope, "accepted": False,
+                "reason": f"tool {tool_call!r} is not delegable; allowed: {list(_DELEGABLE_TOOLS)}"}
+    if via not in ALL_PROVIDERS:
+        _delegation_record(session_id, requester, tool_call, via, accepted=False)
+        return {**base_envelope, "accepted": False,
+                "reason": f"provider {via!r} is not configured (no API key in .env or unknown)"}
+    if _allowlist() is not None and via not in _allowlist():
+        _delegation_record(session_id, requester, tool_call, via, accepted=False)
+        return {**base_envelope, "accepted": False,
+                "reason": f"provider {via!r} is blocked by provider_allowlist"}
+
+    # Quota check.
+    if used_session >= limits["max_per_session"] and session_id:
+        _delegation_record(session_id, requester, tool_call, via, accepted=False)
+        return {**base_envelope, "accepted": False, "reason": "quota_exhausted_for_session"}
+    if used_requester >= limits["max_per_requester"] and requester:
+        _delegation_record(session_id, requester, tool_call, via, accepted=False)
+        return {**base_envelope, "accepted": False, "reason": "quota_exhausted_for_requester"}
+
+    # Force the inner call to run on the named provider only.
+    inner_args["providers"] = [via]
+    if session_id and "session_id" not in inner_args:
+        inner_args["session_id"] = session_id
+
+    handler = _HANDLERS[tool_call]
+    try:
+        result = handler(inner_args)
+    except Exception as e:
+        _delegation_record(session_id, requester, tool_call, via, accepted=False)
+        return {**base_envelope, "accepted": False, "reason": f"delegate failed: {e}"}
+
+    _delegation_record(session_id, requester, tool_call, via, accepted=True)
+    # Recompute quota after recording so the returned counts include this call.
+    used_session2, used_requester2 = _delegation_count(session_id, requester)
+    quota_after = {
+        "session_used":        used_session2,
+        "session_limit":       limits["max_per_session"],
+        "session_remaining":   max(0, limits["max_per_session"] - used_session2),
+        "requester_used":      used_requester2,
+        "requester_limit":     limits["max_per_requester"],
+        "requester_remaining": max(0, limits["max_per_requester"] - used_requester2),
+    }
+    return {**base_envelope, "accepted": True, "result": result, "quota": quota_after}
+
+
 def tool_triangulate(args: dict) -> dict:
     """Run a coordinate flow and reshape the output as consensus + minority report
     with per-provider weights drawn from accumulated ballot stats."""
@@ -1523,6 +1650,7 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "review":         tool_review,
     "coordinate":     tool_coordinate,
     "triangulate":    tool_triangulate,
+    "delegate":       tool_delegate,
 }
 
 

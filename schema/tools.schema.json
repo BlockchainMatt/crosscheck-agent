@@ -318,6 +318,48 @@
         ]
       }
     },
+    "delegate": {
+      "description": "Cross-model tool delegation with an explicit handshake. Run a delegable tool (confer or review) against a single named provider, with quota tracking by session_id and by requesting provider. Useful for capability handoffs (\"route this code review to provider X\") and for bounded multi-step plans where one model decides who answers a sub-question.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tool_call":    { "type": "string", "enum": ["confer", "review"] },
+          "via":          { "type": "string", "description": "Provider that will execute the delegated call. Must be configured + within the provider_allowlist." },
+          "args":         { "type": "object", "description": "Arguments forwarded to the target tool. Any `providers` field is overridden to [via]." },
+          "requested_by": { "type": "string", "description": "Optional: provider on whose behalf this delegation is being made; counted toward its requester quota." },
+          "session_id":   { "type": "string", "description": "Optional id; counts toward the per-session delegation quota." }
+        },
+        "required": ["tool_call", "via", "args"]
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "tool":         { "const": "delegate" },
+          "accepted":     { "type": "boolean" },
+          "tool_call":    { "type": "string" },
+          "via":          { "type": "string" },
+          "requested_by": { "type": ["string", "null"] },
+          "reason":       { "type": "string", "description": "When accepted=false." },
+          "quota": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "session_used":         { "type": "integer", "minimum": 0 },
+              "session_limit":        { "type": "integer", "minimum": 0 },
+              "session_remaining":    { "type": "integer", "minimum": 0 },
+              "requester_used":       { "type": "integer", "minimum": 0 },
+              "requester_limit":      { "type": "integer", "minimum": 0 },
+              "requester_remaining":  { "type": "integer", "minimum": 0 }
+            },
+            "required": ["session_used", "session_limit", "session_remaining",
+                         "requester_used", "requester_limit", "requester_remaining"]
+          },
+          "result": { "type": ["object", "null"], "description": "Forwarded output of the delegated tool when accepted." }
+        },
+        "required": ["tool", "accepted", "tool_call", "via", "quota"]
+      }
+    },
     "triangulate": {
       "description": "Run a Proposer/Critic/Synthesizer flow and return a consensus + minority report with per-provider weights drawn from accumulated ballot stats. Use this when you want one answer plus an honest dissenting view.",
       "input": {

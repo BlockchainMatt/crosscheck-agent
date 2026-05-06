@@ -111,6 +111,15 @@
       "type": "string",
       "default": ".crosscheck/events.ndjson",
       "description": "Path to the ndjson event trace (one structured event per line)."
+    },
+    "delegation": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Quota knobs for the `delegate` tool. Limits accepted delegations per session and per requesting provider.",
+      "properties": {
+        "max_per_session":   { "type": "integer", "minimum": 1, "default": 50 },
+        "max_per_requester": { "type": "integer", "minimum": 1, "default": 200 }
+      }
     }
   },
   "required": ["max_rounds", "token_cap", "max_time_seconds", "providers", "moderator"]

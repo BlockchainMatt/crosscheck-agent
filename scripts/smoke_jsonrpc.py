@@ -102,7 +102,8 @@ def main(argv: list[str]) -> int:
         if not isinstance(tools_list, list):
             _die("tools/list: result.tools is not a list")
         tool_names = {t.get("name") for t in tools_list if isinstance(t, dict)}
-        required = {"list_providers", "confer", "debate", "plan", "review", "coordinate", "triangulate"}
+        required = {"list_providers", "confer", "debate", "plan", "review",
+                    "coordinate", "triangulate", "delegate"}
         missing = required - tool_names
         if missing:
             _die(f"tools/list: missing tools: {sorted(missing)}")

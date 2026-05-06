@@ -27,5 +27,9 @@
     "patterns_extra": []
   },
   "provider_allowlist": null,
-  "events_log": ".crosscheck/events.ndjson"
+  "events_log": ".crosscheck/events.ndjson",
+  "delegation": {
+    "max_per_session": 50,
+    "max_per_requester": 200
+  }
 }
