@@ -522,6 +522,36 @@
         ]
       }
     },
+    "fetch": {
+      "description": "Retrieve a URL with allowlist enforcement and persist a sha256-keyed snapshot under .crosscheck/evidence/. Repeat fetches of the same URL return the cached snapshot unless force_refresh=true. Use this to ground claims with reproducible evidence.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "url":           { "type": "string" },
+          "force_refresh": { "type": "boolean", "default": false },
+          "session_id":    { "type": "string" }
+        },
+        "required": ["url"]
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "tool":         { "const": "fetch" },
+          "url":          { "type": "string" },
+          "accepted":     { "type": "boolean" },
+          "reason":       { "type": "string" },
+          "cached":       { "type": "boolean" },
+          "sha256":       { "type": "string" },
+          "bytes":        { "type": "integer", "minimum": 0 },
+          "path":         { "type": "string" },
+          "content_type": { "type": "string" },
+          "status":       { "type": "integer" },
+          "allowlist":    { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["tool", "url", "accepted"]
+      }
+    },
     "bench": {
       "description": "Run rule-based goldens against each provider in a panel and return a per-provider score + ranking. Bumps provider_stats wins/losses, which feeds the weights surfaced by triangulate. Use this to keep an honest, repo-scoped picture of who answers your repo's questions best.",
       "input": {

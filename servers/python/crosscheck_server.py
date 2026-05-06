@@ -320,6 +320,39 @@ def _db_conn() -> sqlite3.Connection:
     return conn
 
 
+def _migrate_claim_links_check(conn: sqlite3.Connection) -> None:
+    """Older schemas only allowed kinds in {supports, attacks}. Recreate the
+    table to widen the CHECK if the existing one is the narrow form."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='claim_links'"
+    ).fetchone()
+    if not row:
+        return
+    sql = row["sql"] or ""
+    if "derives_from" in sql or "merges_with" in sql:
+        return  # already wide
+    if "supports" not in sql or "attacks" not in sql:
+        return  # unfamiliar shape; leave alone
+    conn.executescript(
+        """
+        CREATE TABLE claim_links_new (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          src_id     INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+          dst_id     INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+          kind       TEXT    NOT NULL CHECK (kind IN ('supports','attacks','derives_from','merges_with')),
+          created_at INTEGER NOT NULL,
+          UNIQUE(src_id, dst_id, kind)
+        );
+        INSERT INTO claim_links_new(id, src_id, dst_id, kind, created_at)
+            SELECT id, src_id, dst_id, kind, created_at FROM claim_links;
+        DROP TABLE claim_links;
+        ALTER TABLE claim_links_new RENAME TO claim_links;
+        CREATE INDEX IF NOT EXISTS idx_links_src ON claim_links(src_id);
+        CREATE INDEX IF NOT EXISTS idx_links_dst ON claim_links(dst_id);
+        """
+    )
+
+
 def _db_init() -> None:
     global _DB_INIT_DONE
     if _DB_INIT_DONE:
@@ -328,6 +361,7 @@ def _db_init() -> None:
         if _DB_INIT_DONE:
             return
         with _db_conn() as conn:
+            _migrate_claim_links_check(conn)
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -355,7 +389,7 @@ def _db_init() -> None:
                   id         INTEGER PRIMARY KEY AUTOINCREMENT,
                   src_id     INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
                   dst_id     INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
-                  kind       TEXT    NOT NULL CHECK (kind IN ('supports','attacks')),
+                  kind       TEXT    NOT NULL CHECK (kind IN ('supports','attacks','derives_from','merges_with')),
                   created_at INTEGER NOT NULL,
                   UNIQUE(src_id, dst_id, kind)
                 );
@@ -447,12 +481,52 @@ def _session_record(state: dict | None, answers: list[dict], call_started: float
 # Claim-list v0 (consensus / dissent / open_question / support)
 # ------------------------------------------------------------
 _CLAIM_KINDS = ("consensus", "dissent", "open_question", "support")
-_LINK_KINDS = ("supports", "attacks")
+_LINK_KINDS = ("supports", "attacks", "derives_from", "merges_with")
+
+
+_TOKEN_RE = re.compile(r"\w+")
+
+
+def _tokenize(text: str) -> set[str]:
+    return set(_TOKEN_RE.findall((text or "").lower()))
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a and not b:
+        return 0.0
+    inter = a & b
+    union = a | b
+    return len(inter) / len(union) if union else 0.0
+
+
+def _claim_dedupe(session_id: str, new_id: int, new_text: str,
+                  threshold: float = 0.7) -> list[int]:
+    """Scan same-session claims and link new_id -> existing as merges_with when
+    the token Jaccard exceeds threshold. Returns the ids that were merged into."""
+    sid = _safe_session_id(session_id)
+    new_tokens = _tokenize(new_text)
+    if not new_tokens:
+        return []
+    merged: list[int] = []
+    with _db_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, text FROM claims WHERE session_id = ? AND id != ?",
+            (sid, int(new_id)),
+        ).fetchall()
+        for r in rows:
+            if _jaccard(new_tokens, _tokenize(r["text"])) >= threshold:
+                merged.append(int(r["id"]))
+        for existing_id in merged:
+            try:
+                _claim_link(int(new_id), existing_id, "merges_with")
+            except Exception:
+                pass
+    return merged
 
 
 def _claim_add(session_id: str, text: str, *, provider: str | None = None,
                confidence: float | None = None, citations: list[str] | None = None,
-               kind: str | None = None) -> int:
+               kind: str | None = None, dedupe: bool = True) -> int:
     sid = _safe_session_id(session_id)
     _session_load(sid)  # ensure session row exists
     if kind is not None and kind not in _CLAIM_KINDS:
@@ -464,12 +538,19 @@ def _claim_add(session_id: str, text: str, *, provider: str | None = None,
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (sid, text, provider, confidence, cit, kind, int(time.time())),
         )
-        return int(cur.lastrowid)
+        new_id = int(cur.lastrowid)
+    if dedupe:
+        try:
+            _claim_dedupe(sid, new_id, text)
+        except Exception:
+            pass
+    return new_id
 
 
 def _claim_link(src_id: int, dst_id: int, kind: str) -> None:
     if kind not in _LINK_KINDS:
         raise ValueError(f"unknown link kind: {kind!r}")
+    _db_init()
     with _db_conn() as conn:
         conn.execute(
             "INSERT OR IGNORE INTO claim_links(src_id, dst_id, kind, created_at) VALUES (?, ?, ?, ?)",
@@ -1447,6 +1528,100 @@ def tool_coordinate(args: dict) -> dict:
 
 
 # ------------------------------------------------------------
+# Fetch: HTTP retrieval with allowlist + sha256 evidence snapshots
+# ------------------------------------------------------------
+def _fetch_cfg() -> dict:
+    return CFG.get("fetch") or {}
+
+
+def _evidence_dir() -> Path:
+    raw = _fetch_cfg().get("evidence_dir") or ".crosscheck/evidence"
+    p = Path(str(raw))
+    return p if p.is_absolute() else (ROOT / p)
+
+
+def _fetch_url_allowed(url: str) -> bool:
+    al = _fetch_cfg().get("url_allowlist") or []
+    if not al:
+        return False
+    return any(url.startswith(prefix) for prefix in al)
+
+
+def tool_fetch(args: dict) -> dict:
+    url = str(args["url"])
+    force = bool(args.get("force_refresh", False))
+    cfg = _fetch_cfg()
+
+    base = {"tool": "fetch", "url": url}
+
+    if not cfg.get("enabled", True):
+        return {**base, "accepted": False, "reason": "fetch is disabled"}
+    if not (url.startswith("https://") or url.startswith("http://")):
+        return {**base, "accepted": False, "reason": "only http/https schemes are supported"}
+    if not (cfg.get("url_allowlist") or []):
+        return {**base, "accepted": False,
+                "reason": "fetch.url_allowlist is empty; no URLs may be fetched"}
+    if not _fetch_url_allowed(url):
+        return {**base, "accepted": False,
+                "reason": "url is not covered by fetch.url_allowlist",
+                "allowlist": cfg.get("url_allowlist")}
+
+    max_bytes = int(cfg.get("max_bytes", 10 * 1024 * 1024))
+    timeout = float(cfg.get("timeout_s", 15))
+
+    ev_dir = _evidence_dir()
+    url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    meta_path = ev_dir / f"by-url-{url_hash}.json"
+    if meta_path.exists() and not force:
+        try:
+            meta = json.loads(meta_path.read_text())
+            return {**base, "accepted": True, "cached": True,
+                    "sha256": meta["sha256"], "bytes": meta["bytes"],
+                    "path": meta["path"]}
+        except Exception:
+            pass  # fall through and re-fetch
+
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "crosscheck-agent/0.1"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            buf = bytearray()
+            while True:
+                chunk = resp.read(64 * 1024)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                if len(buf) > max_bytes:
+                    return {**base, "accepted": False,
+                            "reason": f"response exceeds max_bytes={max_bytes}"}
+            data = bytes(buf)
+            content_type = resp.headers.get("Content-Type", "")
+            status = getattr(resp, "status", 200)
+    except urllib.error.HTTPError as e:
+        return {**base, "accepted": False,
+                "reason": f"HTTP {e.code}: {(e.read() or b'').decode('utf-8','ignore')[:256]}"}
+    except urllib.error.URLError as e:
+        reason = getattr(e, "reason", str(e))
+        return {**base, "accepted": False, "reason": f"network error: {reason}"}
+    except Exception as e:
+        return {**base, "accepted": False, "reason": f"{type(e).__name__}: {e}"}
+
+    sha = hashlib.sha256(data).hexdigest()
+    body_path = ev_dir / f"{sha}.bin"
+    ev_dir.mkdir(parents=True, exist_ok=True)
+    body_path.write_bytes(data)
+    rel_body = (str(body_path.relative_to(ROOT))
+                if str(body_path).startswith(str(ROOT))
+                else str(body_path))
+    meta = {"url": url, "sha256": sha, "bytes": len(data),
+            "path": rel_body, "content_type": content_type,
+            "status": status, "fetched_at": int(time.time())}
+    meta_path.write_text(json.dumps(meta, indent=2))
+    return {**base, "accepted": True, "cached": False,
+            "sha256": sha, "bytes": len(data), "path": rel_body,
+            "content_type": content_type, "status": status}
+
+
+# ------------------------------------------------------------
 # Solve: iterative propose -> verify -> retry, with a sandboxed verifier
 # ------------------------------------------------------------
 def _verify_proposal(verifier: dict, proposal: str) -> dict:
@@ -2046,6 +2221,7 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "delegate":       tool_delegate,
     "bench":          tool_bench,
     "solve":          tool_solve,
+    "fetch":          tool_fetch,
 }
 
 

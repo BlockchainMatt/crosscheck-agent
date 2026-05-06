@@ -129,6 +129,19 @@
         "goldens_dir": { "type": "string", "default": ".crosscheck/goldens",
                          "description": "Directory containing one *.json per Golden fixture." }
       }
+    },
+    "fetch": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "HTTP fetch tool: enabled flag + URL prefix allowlist (deny-by-default) + size/timeout caps + evidence directory.",
+      "properties": {
+        "enabled":       { "type": "boolean", "default": true },
+        "url_allowlist": { "type": "array", "items": { "type": "string" }, "default": [],
+                           "description": "Prefix-match list. If empty, all URLs are denied. Provide e.g. [\"https://docs.python.org/\"]." },
+        "evidence_dir":  { "type": "string", "default": ".crosscheck/evidence" },
+        "max_bytes":     { "type": "integer", "minimum": 1024, "default": 10485760 },
+        "timeout_s":     { "type": "number",  "minimum": 1,    "default": 15 }
+      }
     }
   },
   "required": ["max_rounds", "token_cap", "max_time_seconds", "providers", "moderator"]
