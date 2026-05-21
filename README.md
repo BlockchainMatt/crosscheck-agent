@@ -48,6 +48,7 @@ Claude │ Claude Code  │     MCP      ┌────────────
 | `scoreboard`     | Read-only snapshot: per-provider weight + wins/losses/abstains + delegations, plus `totals` for sessions/claims/links/delegations and (optional) the last N redacted event lines. The data the UI panel reads. |
 | `orchestrate`    | **Plan-then-execute** across sub-agents. The moderator decomposes a `goal` into a DAG of subtasks (or you pass a pre-authored `dag`), workers run in parallel where deps allow, and a final synth pass recombines node outputs into a coherent deliverable. Each node declares `difficulty: low\|med\|high` — with `cheap_mode: true` the router picks the cheapest registered model in that tier (scoreboard win-rate breaks ties within-tier only). Default failure semantics: partial-recombine with `[MISSING: node_id]` markers; set `fail_fast: true` for strict workflows. |
 | `audit`          | **Post-run rubric scoring**. Audits an output (from `output_to_audit`, or pulled from the latest transcript for `session_id`) against a rubric. The auditor is selected to **exclude** the `producing_panelists` so a model cannot grade its own work (override with `allow_self_audit: true`). Default rubric covers factual grounding, constraint adherence, PII leak, internal consistency, open-question coverage, and actionability — override with `rubric: [...]`. Audit cost rolls up under the same `session_id` tagged `purpose: "audit"`. |
+| `create` / `create_cheap` | **End-to-end macro tool**. Takes one high-level `instruction` and drives the full lifecycle: ingest documents → confer for scope → orchestrate the build → review → audit, all under a single `session_id`. On audit failure, `create` injects the audit feedback as constraints and runs orchestrate one more time, then re-audits; `create_cheap` defaults `cheap_mode: true` and suppresses the retry to honor cost. Supports `target_path` (write deliverable to disk), `dry_run`, `skip_audit`/`skip_review`, and `documents` (file paths or URLs — URLs go through the `fetch` allowlist). Status is one of `success | audit_failed | audit_failed_after_retry | error`. |
 | `update_crosscheck` | Compares your local git HEAD against `main` at https://github.com/fxspeiser/crosscheck-agent. With `apply: true`, runs `git pull --ff-only` in the install directory; the server can't reload itself, so the response asks you to restart Claude Code. The first crosscheck call per server process runs the same check (cached 6h) and attaches an `update_notice` to the result so Claude can offer the upgrade proactively. |
 
 ### Usage + cost reporting
@@ -209,6 +210,62 @@ high`). Caller pins (`node.provider` + `node.model`) always win over the
 router. Scoreboard win-rate (provider_stats) is used only as a tie-breaker
 between identically-priced models in the same tier — never to override the
 tier itself.
+
+### One-shot lifecycle (`create` / `create_cheap`)
+
+When you have a high-level instruction and want the **whole** plan-build-review-audit lifecycle in one call, use `create`. It chains: ingest → confer (scope) → orchestrate → review → audit, all under one `session_id` so total cost rolls up cleanly. On audit failure it auto-retries once with the audit feedback injected as constraints. `create_cheap` is the cost-aware variant — `cheap_mode: true` by default, and audit-retry is suppressed.
+
+**Example — the worked case from the panel:**
+
+```jsonc
+create({
+  "instruction": "Tie all features in the project to rules and regulations mentioned in the project documents.",
+  "documents":   ["docs/compliance.md", "docs/security_policy.md", "https://example.org/spec.html"],
+  "providers":   ["openai", "anthropic", "xai"],
+  "target_path": "REPORTS/feature_compliance_matrix.md",
+  "audit_threshold": 0.75
+})
+```
+
+DAG the planner typically produces for this instruction (5 nodes):
+
+1. **extract_regulations** (`low`) — pull rule IDs and clauses from the documents
+2. **extract_features** (`low`) — inventory features from the codebase summary
+3. **map_features_to_rules** (`med`) — produce a traceability matrix with citations
+4. **gap_analysis** (`med`) — flag unmapped features, low-confidence links
+5. **packaging** (`high`) — emit the final report in the requested format
+
+Response sketch:
+
+```jsonc
+{
+  "tool":     "create",
+  "status":   "success",
+  "session_id": "create-1748000000-7a3f",
+  "attempts": 1,
+  "documents_ingested": [
+    { "source": "docs/compliance.md",     "type": "file", "status": "ok", "bytes": 4827,  "hash": "..." },
+    { "source": "https://example.org/spec.html", "type": "url", "status": "ok", "bytes": 12480, "truncated": false }
+  ],
+  "scope_summary": "[openai] 5 sub-tasks: extract regs, extract features, ...",
+  "dag":   { "nodes": [ {"id":"extract_regulations","difficulty":"low",...}, ... ] },
+  "nodes": [ {"id":"extract_regulations","status":"ok","provider":"openai","wall_ms":840,...}, ... ],
+  "final": "# Feature Compliance Matrix\n\n| feature | rules | citation |...",
+  "audit": { "overall_score": 0.86, "passed": true, "items": [...] },
+  "artifacts": [ {"path":"REPORTS/feature_compliance_matrix.md", "bytes": 8420} ],
+  "usage":  { "totals": { "total_tokens": 18420, "cost_usd": 0.214 } },
+  "budget": { "wall_used_ms": 31200, "cpu_used_ms": 320, "total_cost_usd": 0.214 }
+}
+```
+
+Use `create_cheap` for the same instruction at a fraction of the cost — it routes each node to the cheapest model in its declared difficulty tier:
+
+```jsonc
+create_cheap({
+  "instruction": "Tie all features in the project to rules and regulations mentioned in the project documents.",
+  "documents":   ["docs/compliance.md", "docs/security_policy.md"]
+})
+```
 
 ### Post-run audit (`audit`)
 

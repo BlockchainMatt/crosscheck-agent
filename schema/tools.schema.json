@@ -823,6 +823,63 @@
         "required": ["tool", "auditor"]
       }
     },
+    "create": {
+      "description": "End-to-end macro: ingest documents -> confer (scope) -> orchestrate (build) -> review -> audit, all under one session_id so usage/cost rolls up cleanly. Use this when you have a high-level instruction and want the full plan-build-review-audit lifecycle in one call. `documents` may be file paths or URLs (URLs go through the `fetch` allowlist). When audit fails (overall_score < audit_threshold), `create` injects the audit feedback as constraints and runs orchestrate ONE more time, then re-audits; `create_cheap` skips the retry. `target_path` writes the final deliverable to disk (unless `dry_run:true` or audit failed). Status is one of: success | audit_failed | audit_failed_after_retry | error.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "instruction":      { "type": "string", "description": "High-level instruction; e.g. 'tie all features in the project to rules and regulations in the project documents'." },
+          "session_id":       { "type": "string", "description": "Optional; auto-generated as `create-<unixts>-<hash>` when absent." },
+          "providers":        { "$ref": "#/$defs/ProviderArrayArg" },
+          "moderator":        { "type": "string" },
+          "cheap_mode":       { "type": "boolean", "default": false },
+          "fail_fast":        { "type": "boolean", "default": false },
+          "skip_audit":       { "type": "boolean", "default": false },
+          "skip_review":      { "type": "boolean", "default": false },
+          "documents":        { "type": "array", "items": { "type": "string" },
+                                 "description": "File paths (relative to repo root) or URLs (resolved via `fetch`)." },
+          "target_path":      { "type": "string", "description": "If set, the final deliverable is written here (parent dirs created)." },
+          "constraints":      { "type": "string" },
+          "audit_rubric":     { "type": "array", "items": { "type": "object" } },
+          "audit_threshold":  { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7 },
+          "untrusted_input":  { "type": "boolean", "default": false },
+          "dry_run":          { "type": "boolean", "default": false,
+                                 "description": "When true, never write to `target_path` (the deliverable is still in the response)." },
+          "max_parallel":     { "type": "integer", "minimum": 1, "default": 4 }
+        },
+        "required": ["instruction"]
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "tool":               { "const": "create" },
+          "status":             { "type": "string", "enum": ["success", "audit_failed", "audit_failed_after_retry", "error"] },
+          "instruction":        { "type": "string" },
+          "session_id":         { "type": "string" },
+          "providers":          { "type": "array", "items": { "type": "string" } },
+          "moderator":          { "type": ["string", "null"] },
+          "cheap_mode":         { "type": "boolean" },
+          "attempts":           { "type": "integer", "minimum": 1, "maximum": 2 },
+          "documents_ingested": { "type": "array", "items": { "type": "object" } },
+          "scope_summary":      { "type": "string" },
+          "dag":                { "type": ["object", "null"] },
+          "nodes":              { "type": "array", "items": { "type": "object" } },
+          "final":              { "type": "string" },
+          "review":             { "type": ["object", "null"] },
+          "audit":              { "type": ["object", "null"] },
+          "artifacts":          { "type": "array", "items": { "type": "object" } },
+          "warnings":           { "type": "array", "items": { "type": "string" } },
+          "budget":             { "$ref": "#/$defs/BudgetSummary" }
+        },
+        "required": ["tool", "status", "session_id"]
+      }
+    },
+    "create_cheap": {
+      "description": "Cheap-mode variant of `create`: cheap_mode defaults to true (sub-tasks route to the cheapest sufficient model per difficulty tier) AND the audit-failure retry is suppressed to honor cost. Otherwise identical contract to `create`.",
+      "input": { "$ref": "#/tools/create/input" },
+      "output": { "$ref": "#/tools/create/output" }
+    },
     "update_crosscheck": {
       "description": "Check whether a newer version of crosscheck-agent is available at https://github.com/fxspeiser/crosscheck-agent (compares local git HEAD against the remote main HEAD via the GitHub API). With apply=true, runs `git pull --ff-only` in the install directory; the MCP server cannot reload itself, so the response asks the user to restart Claude Code afterwards. Requires the install to be a git checkout with the standard remote. The first crosscheck tool call per server process automatically performs the same check (cached 6h) and attaches an `update_notice` to its result so Claude can surface the upgrade offer.",
       "input": {

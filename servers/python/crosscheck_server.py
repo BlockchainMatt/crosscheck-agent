@@ -4358,6 +4358,456 @@ def tool_audit(args: dict) -> dict:
     return result
 
 
+# ------------------------------------------------------------
+# create / create_cheap — full lifecycle macro:
+#   ingest → confer (scope) → orchestrate → review → audit (+ optional retry)
+# Every sub-call shares one session_id so cost/usage rolls up cleanly.
+# ------------------------------------------------------------
+_CREATE_DOC_MAX_BYTES = 32 * 1024   # per-document inline budget
+_CREATE_AUDIT_THRESHOLD = 0.7
+
+
+def _ingest_documents(documents: list[str] | None,
+                      session_id: str) -> tuple[list[dict], list[dict]]:
+    """Materialize document refs into inline payloads.
+    Local paths are read in-process; URLs are pulled via `tool_fetch` so the
+    same allowlist + evidence snapshot story applies. Returns
+    (ingested_descriptors, fetch_answers_for_usage_rollup)."""
+    if not documents:
+        return [], []
+    descriptors: list[dict] = []
+    fetch_answers: list[dict] = []
+    for ref in documents:
+        ref = str(ref)
+        if ref.startswith(("http://", "https://")):
+            try:
+                r = tool_fetch({"url": ref, "session_id": session_id})
+            except Exception as e:
+                descriptors.append({"source": ref, "type": "url",
+                                    "status": "error", "error": f"{type(e).__name__}: {e}",
+                                    "content": ""})
+                continue
+            if r.get("error"):
+                descriptors.append({"source": ref, "type": "url", "status": "error",
+                                    "error": r["error"], "content": ""})
+                continue
+            text = r.get("content") or ""
+            truncated = len(text) > _CREATE_DOC_MAX_BYTES
+            descriptors.append({
+                "source":   ref, "type": "url", "status": "ok",
+                "bytes":    len(text), "truncated": truncated,
+                "hash":     r.get("sha256"),
+                "content":  text[:_CREATE_DOC_MAX_BYTES],
+            })
+        else:
+            p = Path(ref)
+            if not p.is_absolute():
+                p = ROOT / p
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except Exception as e:
+                descriptors.append({"source": ref, "type": "file", "status": "error",
+                                    "error": f"{type(e).__name__}: {e}", "content": ""})
+                continue
+            truncated = len(text) > _CREATE_DOC_MAX_BYTES
+            descriptors.append({
+                "source":   ref, "type": "file", "status": "ok",
+                "bytes":    len(text), "truncated": truncated,
+                "hash":     hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "content":  text[:_CREATE_DOC_MAX_BYTES],
+            })
+    return descriptors, fetch_answers
+
+
+def _format_documents_payload(descriptors: list[dict]) -> str:
+    """Inline materialized documents for the orchestrate / confer prompts."""
+    if not descriptors:
+        return "(no documents provided)"
+    out: list[str] = []
+    for i, d in enumerate(descriptors, start=1):
+        if d.get("status") != "ok":
+            out.append(f"[doc {i}] {d['source']} — ERROR: {d.get('error','unknown')}")
+            continue
+        trunc_note = " (truncated)" if d.get("truncated") else ""
+        out.append(
+            f"[doc {i}] source={d['source']} type={d['type']} "
+            f"bytes={d['bytes']}{trunc_note}\n"
+            "----------\n"
+            f"{d['content']}\n"
+            "----------"
+        )
+    return "\n\n".join(out)
+
+
+def _extract_answers_from_subresult(sub: dict | None) -> list[dict]:
+    """Pull every per-call answer dict (with `usage` + timing) out of a
+    sub-tool result, so the macro can roll it all into one envelope.
+
+    Strategy: prefer joining `usage.by_call` with `timing.by_call` because
+    every tool that calls `_attach_usage_block` exposes both — this covers
+    `audit` and any other sub-tool whose top-level envelope doesn't carry
+    raw provider-answer dicts. We fall back to scanning the legacy
+    `answers` / `transcript` / `synthesis_answer` slots when the usage
+    block isn't present (e.g. an error envelope)."""
+    if not isinstance(sub, dict):
+        return []
+    out: list[dict] = []
+
+    usage = sub.get("usage") if isinstance(sub.get("usage"), dict) else None
+    timing = sub.get("timing") if isinstance(sub.get("timing"), dict) else None
+    by_call_u = (usage or {}).get("by_call") if isinstance(usage, dict) else None
+    by_call_t = (timing or {}).get("by_call") if isinstance(timing, dict) else None
+    if isinstance(by_call_u, list) and by_call_u:
+        for i, u in enumerate(by_call_u):
+            if not isinstance(u, dict):
+                continue
+            t = by_call_t[i] if isinstance(by_call_t, list) and i < len(by_call_t) else {}
+            out.append({
+                "provider":   u.get("provider"),
+                "model":      u.get("model"),
+                "cache_hit":  bool(t.get("cache_hit")) if isinstance(t, dict) else False,
+                "elapsed_ms": int(t.get("wall_ms", 0)) if isinstance(t, dict) else 0,
+                "cpu_ms":     int(t.get("cpu_ms", 0))  if isinstance(t, dict) else 0,
+                "usage":      u,
+            })
+        return out
+
+    # Fallback for sub-results without a usage block (e.g. error envelopes).
+    if isinstance(sub.get("answers"), list):
+        out.extend(a for a in sub["answers"] if isinstance(a, dict))
+    if isinstance(sub.get("transcript"), list):
+        out.extend(a for a in sub["transcript"] if isinstance(a, dict))
+    if isinstance(sub.get("synthesis"), dict):
+        out.append(sub["synthesis"])
+    if isinstance(sub.get("proposal_answer"), dict):
+        out.append(sub["proposal_answer"])
+    if isinstance(sub.get("critique_answers"), list):
+        out.extend(a for a in sub["critique_answers"] if isinstance(a, dict))
+    if isinstance(sub.get("synthesis_answer"), dict):
+        out.append(sub["synthesis_answer"])
+    return out
+
+
+def _create_session_id(supplied: str | None) -> str:
+    if supplied:
+        return _safe_session_id(supplied)
+    stamp = int(time.time())
+    suffix = hashlib.sha256(f"{stamp}-{os.getpid()}-{random.random()}".encode()).hexdigest()[:8]
+    return f"create-{stamp}-{suffix}"
+
+
+def _run_create_pipeline(args: dict, cheap_default: bool, tool_name: str) -> dict:
+    instruction: str = args["instruction"]
+    session_id  = _create_session_id(args.get("session_id"))
+    providers   = args.get("providers")
+    cheap_mode  = bool(args.get("cheap_mode", cheap_default))
+    fail_fast   = bool(args.get("fail_fast", False))
+    skip_audit  = bool(args.get("skip_audit", False))
+    skip_review = bool(args.get("skip_review", False))
+    documents   = args.get("documents") or []
+    target_path = args.get("target_path")
+    constraints = args.get("constraints", "")
+    audit_rubric = args.get("audit_rubric")
+    audit_threshold = float(args.get("audit_threshold", _CREATE_AUDIT_THRESHOLD))
+    untrusted   = bool(args.get("untrusted_input", False))
+    dry_run     = bool(args.get("dry_run", False))
+    max_parallel = int(args.get("max_parallel", 4))
+    moderator   = args.get("moderator") or CFG.get("moderator")
+
+    # The macro pipeline is itself a multi-step tool; mark cumulative timing
+    # against the macro, but sub-tools also record their own start/end events.
+    call_started = time.monotonic()
+    cpu_started  = time.process_time()
+
+    _emit_event("tool_start", tool=tool_name, session_id=session_id,
+                cheap_mode=cheap_mode, fail_fast=fail_fast,
+                skip_audit=skip_audit, skip_review=skip_review,
+                document_count=len(documents))
+    _emit_progress(
+        f"{tool_name}: starting (cheap_mode={cheap_mode}, "
+        f"docs={len(documents)}, providers={providers or 'config-default'})",
+        tool=tool_name, session_id=session_id,
+    )
+
+    # -- Ingest documents ---------------------------------------------------
+    _emit_progress(f"{tool_name}: ingesting {len(documents)} document(s)",
+                   tool=tool_name, step="ingest")
+    descriptors, fetch_answers = _ingest_documents(documents, session_id)
+    documents_payload = _format_documents_payload(descriptors)
+
+    # Build the contextual block reused across confer / orchestrate.
+    context_block = (
+        (f"USER CONSTRAINTS:\n{constraints}\n\n" if constraints else "")
+        + f"DOCUMENTS ({len([d for d in descriptors if d.get('status')=='ok'])} "
+          f"of {len(descriptors)} ingested):\n{documents_payload}"
+    )
+
+    # -- Phase: scope via confer -------------------------------------------
+    _emit_progress(f"{tool_name}: scoping via confer",
+                   tool=tool_name, step="scope")
+    scope = tool_confer({
+        "question": (
+            "We are about to orchestrate a full plan->build->review->audit "
+            "lifecycle for this instruction. List 3-6 concrete sub-tasks "
+            "(each with a one-line description and a difficulty: low|med|high), "
+            "any critical assumptions, and any missing-information risks. "
+            "Be concise and decisive — your output will be used to build the "
+            "orchestration DAG.\n\nINSTRUCTION:\n" + instruction
+        ),
+        "context":     context_block,
+        "providers":   providers,
+        "session_id":  session_id,
+        "untrusted_input": untrusted,
+    })
+    scope_answer = ""
+    if isinstance(scope, dict) and isinstance(scope.get("answers"), list):
+        # Concatenate per-provider scope opinions for downstream prompts.
+        scope_answer = "\n\n".join(
+            f"[{a.get('provider')}]\n{a.get('response','')}"
+            for a in scope["answers"] if isinstance(a, dict) and a.get("response")
+        )
+    scope_synth = scope.get("error") if isinstance(scope, dict) else None
+
+    # -- Phase: orchestrate -------------------------------------------------
+    orchestrate_args = {
+        "goal":         instruction,
+        "providers":    providers,
+        "moderator":    moderator,
+        "cheap_mode":   cheap_mode,
+        "fail_fast":    fail_fast,
+        "max_parallel": max_parallel,
+        "session_id":   session_id,
+        "untrusted_input": untrusted,
+        "context":      (
+            f"SCOPE OPINIONS (from confer):\n{scope_answer or '(none)'}\n\n"
+            f"{context_block}"
+        ),
+    }
+    _emit_progress(f"{tool_name}: orchestrating",
+                   tool=tool_name, step="orchestrate", cheap_mode=cheap_mode)
+    orchestration = tool_orchestrate(orchestrate_args)
+    attempts = 1
+
+    # -- Phase: review ------------------------------------------------------
+    review_envelope: dict | None = None
+    if not skip_review and orchestration.get("final"):
+        _emit_progress(f"{tool_name}: peer-reviewing final",
+                       tool=tool_name, step="review")
+        review_envelope = tool_review({
+            "snippet":   orchestration["final"],
+            "intent":    f"final deliverable for: {instruction}",
+            "providers": providers,
+            "session_id": session_id,
+            "untrusted_input": untrusted,
+        })
+
+    # -- Phase: audit (+ optional retry on failure) -------------------------
+    # Keep prior-attempt orchestration around so its usage isn't lost on retry.
+    prior_orchestration: dict | None = None
+    audit_envelope: dict | None = None
+    artifacts: list[dict] = []
+    warnings: list[str] = []
+    status = "success"
+
+    def _compute_producing_panel(orch: dict) -> list[str]:
+        """Union of providers seen across all DAG nodes + the usage rollup.
+        Recomputed on each attempt so audit excludes the actual panel that ran."""
+        provs: list[str] = []
+        for n in orch.get("nodes") or []:
+            if isinstance(n, dict) and n.get("provider"):
+                provs.append(str(n["provider"]))
+        by_prov = (orch.get("usage") or {}).get("by_provider")
+        if isinstance(by_prov, list):
+            provs.extend(str(p.get("provider"))
+                         for p in by_prov if isinstance(p, dict) and p.get("provider"))
+        elif isinstance(by_prov, dict):
+            provs.extend(str(k) for k in by_prov.keys() if k)
+        return sorted({p.lower() for p in provs if p})
+
+    if not skip_audit and orchestration.get("final"):
+        producing_panel = _compute_producing_panel(orchestration)
+        _emit_progress(f"{tool_name}: auditing (excluding {producing_panel})",
+                       tool=tool_name, step="audit", producing=producing_panel)
+        audit_envelope = tool_audit({
+            "output_to_audit":     orchestration["final"],
+            "producing_panelists": producing_panel,
+            "rubric":              audit_rubric,
+            "constraints":         constraints,
+            "session_id":          session_id,
+            "cheap_mode":          cheap_mode,
+        })
+        overall = audit_envelope.get("overall_score")
+        try:
+            overall_f = float(overall) if overall is not None else None
+        except (TypeError, ValueError):
+            overall_f = None
+
+        # Retry once if audit failed and we're not in cheap mode.
+        if (overall_f is not None and overall_f < audit_threshold
+                and not cheap_mode and not args.get("_no_retry")):
+            failed_items = [it for it in (audit_envelope.get("items") or [])
+                            if isinstance(it, dict) and not it.get("pass")]
+            feedback = "\n".join(
+                f"- {it['id']} (score {it.get('score',0):.2f}): {it.get('rationale','')}"
+                for it in failed_items
+            ) or "Audit failed but no per-item details available."
+            retry_constraints = (
+                (constraints + "\n\n" if constraints else "")
+                + "AUDIT FEEDBACK FROM PREVIOUS ATTEMPT (address these explicitly):\n"
+                + feedback
+            )
+            _emit_progress(f"{tool_name}: audit failed ({overall_f:.2f}); retrying orchestrate",
+                           tool=tool_name, step="audit_retry",
+                           score=overall_f, failed_items=len(failed_items))
+            orchestrate_args["context"] = (
+                f"SCOPE OPINIONS (from confer):\n{scope_answer or '(none)'}\n\n"
+                f"USER CONSTRAINTS + AUDIT FEEDBACK:\n{retry_constraints}\n\n"
+                f"DOCUMENTS:\n{documents_payload}"
+            )
+            prior_orchestration = orchestration   # preserve for usage rollup
+            orchestration = tool_orchestrate(orchestrate_args)
+            attempts = 2
+            if orchestration.get("final"):
+                # Recompute panel — retry may have routed to different providers.
+                producing_panel = _compute_producing_panel(orchestration)
+                audit_envelope = tool_audit({
+                    "output_to_audit":     orchestration["final"],
+                    "producing_panelists": producing_panel,
+                    "rubric":              audit_rubric,
+                    "constraints":         retry_constraints,
+                    "session_id":          session_id,
+                    "cheap_mode":          cheap_mode,
+                })
+                overall = audit_envelope.get("overall_score")
+                try:
+                    overall_f = float(overall) if overall is not None else None
+                except (TypeError, ValueError):
+                    overall_f = None
+            else:
+                # Retry orchestration produced no final — keep audit_envelope
+                # from the first attempt but mark the status accordingly.
+                overall_f = None
+                warnings.append("retry orchestration produced no final")
+            if overall_f is None or overall_f < audit_threshold:
+                status = "audit_failed_after_retry"
+        elif overall_f is None:
+            status = "audit_inconclusive"
+        elif overall_f < audit_threshold:
+            status = "audit_failed"
+
+    if status == "success" and orchestration.get("error"):
+        status = "error"
+
+    # -- Optional artifact write -------------------------------------------
+    # Status policy for writes:
+    #   success                        -> write
+    #   audit_failed (cheap_mode only) -> write, but record a warning
+    #   audit_inconclusive             -> write, but record a warning
+    #   audit_failed_after_retry       -> skip
+    #   error                          -> skip
+    block_write_statuses = {"audit_failed_after_retry", "error"}
+    if (target_path and not dry_run and orchestration.get("final")
+            and status not in block_write_statuses):
+        try:
+            tp = Path(str(target_path))
+            tp_abs = tp if tp.is_absolute() else (ROOT / tp)
+            tp_abs.parent.mkdir(parents=True, exist_ok=True)
+            tp_abs.write_text(orchestration["final"], encoding="utf-8")
+            artifacts.append({"path": str(target_path),
+                              "bytes": len(orchestration["final"])})
+            if status in ("audit_failed", "audit_inconclusive"):
+                warnings.append(f"wrote {target_path} despite status={status!r} "
+                                f"(cheap_mode policy / inconclusive audit)")
+        except Exception as e:
+            warnings.append(f"failed to write target_path: {type(e).__name__}: {e}")
+    elif target_path and dry_run:
+        warnings.append("target_path provided but dry_run=true; no file written")
+    elif target_path and status in block_write_statuses:
+        warnings.append(f"target_path skipped because status={status!r}")
+
+    # -- Roll up usage across all sub-tools --------------------------------
+    # On retry, we include BOTH orchestrations' usage so the top-level usage
+    # block matches the session totals written to SQLite by sub-tools.
+    answers_collected: list[dict] = []
+    answers_collected.extend(fetch_answers)
+    answers_collected.extend(_extract_answers_from_subresult(scope))
+    if prior_orchestration is not None:
+        answers_collected.extend(_extract_answers_from_subresult(prior_orchestration))
+    answers_collected.extend(_extract_answers_from_subresult(orchestration))
+    answers_collected.extend(_extract_answers_from_subresult(review_envelope))
+    answers_collected.extend(_extract_answers_from_subresult(audit_envelope))
+
+    # Note: session_record already happened inside each sub-tool, so we do
+    # NOT call _session_record() here — that would double-count. We *do*
+    # reload the session row so the caller sees the final accumulated state.
+    session = _session_load(session_id)
+
+    # Public-facing summaries (avoid duplicating the full sub-envelopes).
+    def _shrink(sub: dict | None, keep: tuple[str, ...]) -> dict | None:
+        if not isinstance(sub, dict):
+            return None
+        return {k: sub.get(k) for k in keep if k in sub}
+
+    result = {
+        "tool":                tool_name,
+        "status":              status,
+        "instruction":         instruction,
+        "session_id":          session_id,
+        "providers":           providers or CFG.get("providers", []),
+        "moderator":           moderator,
+        "cheap_mode":          cheap_mode,
+        "attempts":            attempts,
+        "documents_ingested":  [
+            {k: v for k, v in d.items() if k != "content"}
+            for d in descriptors
+        ],
+        "scope_summary":       scope_answer,
+        "scope":               _shrink(scope, ("answers", "budget", "session", "transcript_path")),
+        "dag":                 orchestration.get("dag"),
+        "nodes":               orchestration.get("nodes"),
+        "final":               orchestration.get("final"),
+        "review":              _shrink(review_envelope, ("answers", "budget")),
+        "audit":               _shrink(audit_envelope, ("auditor", "items", "overall_score", "passed", "rubric")),
+        "artifacts":           artifacts,
+        "warnings":            warnings,
+        "budget":              _budget_summary(call_started, deadline=_deadline(),
+                                                answers=answers_collected,
+                                                cpu_started=cpu_started),
+    }
+    _attach_usage_block(result, answers_collected)
+    if session:
+        result["session"] = session
+    result["transcript_path"] = write_transcript(tool_name, result)
+
+    overall_score = (audit_envelope or {}).get("overall_score")
+    _emit_progress(
+        f"{tool_name}: done status={status} "
+        f"(attempts={attempts}, overall_score={overall_score}, "
+        f"{result['budget']['wall_used_ms']}ms wall / "
+        f"{result['budget']['cpu_used_ms']}ms cpu, "
+        f"${result['budget']['total_cost_usd']:.4f})",
+        tool=tool_name, status=status, attempts=attempts,
+        overall_score=overall_score,
+        wall_ms=result["budget"]["wall_used_ms"],
+        cpu_ms=result["budget"]["cpu_used_ms"],
+        cost_usd=result["budget"]["total_cost_usd"],
+    )
+    _emit_event("tool_end", tool=tool_name, status=status, attempts=attempts,
+                overall_score=overall_score,
+                cost_usd=result["budget"]["total_cost_usd"])
+    return result
+
+
+def tool_create(args: dict) -> dict:
+    return _run_create_pipeline(args, cheap_default=False, tool_name="create")
+
+
+def tool_create_cheap(args: dict) -> dict:
+    # cheap_mode defaults to True; the underlying pipeline also suppresses the
+    # audit-retry to honor cost.
+    return _run_create_pipeline(args, cheap_default=True, tool_name="create_cheap")
+
+
 def _latest_transcript_for_session(session_id: str) -> str | None:
     """Find the most recent transcript JSON whose `session.session_id` matches.
     Best-effort, returns None on failure."""
@@ -4400,6 +4850,8 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "scoreboard":     tool_scoreboard,
     "orchestrate":    tool_orchestrate,
     "audit":          tool_audit,
+    "create":         tool_create,
+    "create_cheap":   tool_create_cheap,
     "update_crosscheck": tool_update_crosscheck,
 }
 
