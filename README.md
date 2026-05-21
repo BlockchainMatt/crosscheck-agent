@@ -2,8 +2,14 @@
 
 Confer with multiple LLMs from inside Claude Code. `crosscheck-agent` is a
 compact MCP server that lets Claude ask peers from other model families
-(GPT, Grok, Gemini, Mistral, Groq, DeepSeek) to reason, debate, plan, and
-peer-review — then hands the synthesised answer back to Claude.
+(GPT, Grok, Gemini, Mistral, Groq, DeepSeek) to reason, debate, plan,
+peer-review, **orchestrate sub-agent DAGs**, and **audit each other's
+output** — then hands the synthesised answer back to Claude.
+
+Every multi-LLM call now reports real per-provider token usage and an
+estimated USD cost, with live CPU and wall-time progress streamed to the
+client. Routing can be opted into "cheap mode" so easy subtasks land on
+small models and only the hard nodes pay for full power.
 
 The server is **Python, stdlib-only** — no external dependencies, no build
 step. (Earlier versions shipped TypeScript/Rust/Perl mirrors; those have
@@ -46,22 +52,223 @@ Claude │ Claude Code  │     MCP      ┌────────────
 
 ### Usage + cost reporting
 
-Every multi-LLM tool now returns a `usage` block (per-call, per-provider, totals
-incl. estimated USD cost from [`config/pricing.json`](config/pricing.json)) and
-a `timing` block (per-call + total `wall_ms` / `cpu_ms`). Sessions accumulate
-the same totals so you can see lifetime spend per `session_id`.
+Every multi-LLM tool returns a `usage` block (per-call, per-provider, totals
+incl. estimated USD cost from [`config/pricing.json`](config/pricing.json))
+and a `timing` block (per-call + total `wall_ms` / `cpu_ms`). Sessions
+accumulate the same totals so you can see lifetime spend per `session_id`.
 
-Set `CROSSCHECK_PRICING_PATH=/path/to/pricing.json` to override the bundled
-table. Missing-model lookups return `cost: 0, estimated: true` with a logged
-warning rather than failing the call.
+```jsonc
+// trailing fields on every confer / debate / plan / coordinate / pick /
+// solve / bench / orchestrate / audit response:
+"usage": {
+  "by_call": [
+    { "provider": "anthropic", "model": "claude-opus-4-5",
+      "prompt_tokens": 1200, "completion_tokens": 340, "cached_tokens": 0,
+      "total_tokens": 1540, "cost_usd": 0.0435, "estimated": false,
+      "purpose": "confer" },
+    { "provider": "openai", "model": "gpt-5",
+      "prompt_tokens": 1100, "completion_tokens": 290, "cached_tokens": 200,
+      "total_tokens": 1390, "cost_usd": 0.00885, "estimated": false,
+      "purpose": "confer" }
+  ],
+  "by_provider": [
+    { "provider": "anthropic", "calls": 1, "total_tokens": 1540, "cost_usd": 0.0435, ... },
+    { "provider": "openai",    "calls": 1, "total_tokens": 1390, "cost_usd": 0.00885, ... }
+  ],
+  "totals": {
+    "prompt_tokens": 2300, "completion_tokens": 630, "cached_tokens": 200,
+    "total_tokens": 2930, "cost_usd": 0.05235, "estimated": false, "calls": 2
+  }
+},
+"timing": { "wall_ms": 8240, "cpu_ms": 145,
+            "by_call": [ {"provider":"anthropic","model":"...","purpose":"confer","wall_ms":7900,"cpu_ms":78,"cache_hit":false}, ... ] },
+"budget": { "wall_used_ms": 8240, "cpu_used_ms": 145,
+            "total_tokens": 2930, "total_cost_usd": 0.05235, "cost_estimated": false, ... }
+```
+
+Sessions are persisted in SQLite (`.crosscheck/sessions.sqlite3`) and gain six
+new totals columns: `total_prompt_tokens`, `total_completion_tokens`,
+`total_cached_tokens`, `total_tokens`, `total_cost_usd`, `total_cpu_ms`. A new
+`usage_log` table holds one row per provider call so you can drill down by
+`purpose` (`worker | moderator | synth | audit | confer | debate | ...`).
+
+Pricing is configurable. Set `CROSSCHECK_PRICING_PATH=/path/to/pricing.json`
+to override the bundled table. Missing-model lookups return `cost: 0,
+estimated: true` with a logged warning rather than failing the call — so
+experimenting with a brand-new model never blocks on out-of-date pricing.
 
 ### Live progress
 
 When an MCP client passes `_meta.progressToken` with a tool call, the server
-emits `notifications/progress` messages as each node / round / synth step
-runs — including running CPU and wall time, tokens consumed, and cumulative
-cost. Without a token, the same progress lines are written as structured
-JSON to stderr so they appear in the MCP debug pane.
+emits `notifications/progress` JSON-RPC messages as each node / round / synth
+step runs. Whether or not a token is supplied, the same events are also
+written as structured JSON lines to stderr — so they appear in your MCP debug
+pane regardless of client support.
+
+Sample stderr stream for `orchestrate(goal=…, cheap_mode=true)`:
+
+```
+{"kind":"progress","step":1,"wall_ms":0,   "cpu_ms":0,  "message":"orchestrate: starting (moderator=anthropic, cheap_mode=true, fail_fast=false)"}
+{"kind":"progress","step":2,"wall_ms":12,  "cpu_ms":4,  "message":"orchestrate: planner drafting DAG"}
+{"kind":"progress","step":3,"wall_ms":3400,"cpu_ms":45, "message":"orchestrate: node fetch -> openai:gpt-4o-mini (low)"}
+{"kind":"progress","step":4,"wall_ms":3401,"cpu_ms":45, "message":"openai: dispatch","provider":"openai","model":"gpt-4o-mini","purpose":"worker"}
+{"kind":"progress","step":5,"wall_ms":4242,"cpu_ms":62, "message":"openai: ok (841ms wall / 17ms cpu, 312 tok, $0.0001)"}
+{"kind":"progress","step":6,"wall_ms":4243,"cpu_ms":62, "message":"orchestrate: node draft -> anthropic:claude-sonnet-4-5 (med)"}
+{"kind":"progress","step":7,"wall_ms":4244,"cpu_ms":62, "message":"anthropic: dispatch","provider":"anthropic","model":"claude-sonnet-4-5","purpose":"worker"}
+{"kind":"progress","step":8,"wall_ms":8108,"cpu_ms":129,"message":"anthropic: ok (3864ms wall / 67ms cpu, 1827 tok, $0.0274)"}
+{"kind":"progress","step":9,"wall_ms":8109,"cpu_ms":129,"message":"orchestrate: recombining","missing":[],"partial":false}
+{"kind":"progress","step":10,"wall_ms":11823,"cpu_ms":171,"message":"orchestrate: done (2/2 ok, 11823ms wall / 171ms cpu, $0.0421)"}
+```
+
+Each line carries running wall and CPU time so you can watch local overhead
+vs. upstream LLM latency in real time.
+
+### Sub-agent orchestration (`orchestrate`)
+
+`orchestrate` decomposes a goal into a small DAG of subtasks, dispatches
+workers in parallel where dependencies allow, and recombines node outputs
+into one coherent deliverable. You can hand it a `goal` (and let the
+moderator plan the DAG) or pass a pre-authored `dag` to skip the planning
+round entirely — useful for tests and deterministic workflows.
+
+**Node shape:**
+
+```jsonc
+{
+  "id":         "fetch_facts",
+  "task":       "Summarize the spec at https://example.com/spec",
+  "difficulty": "low",                  // routes via cheap-mode tier ladder
+  "depends_on": [],                     // upstream node ids; empty = root
+  "role":       "researcher",           // free-form label surfaced in prompt
+  "provider":   "openai",               // optional pin; overrides cheap-mode
+  "model":      "gpt-4o-mini"           // optional pin
+}
+```
+
+**Example — pre-authored DAG with cheap-mode routing:**
+
+```jsonc
+orchestrate({
+  "session_id": "auth-migration-1",
+  "cheap_mode": true,
+  "dag": {
+    "summary": "draft the auth migration",
+    "nodes": [
+      { "id": "fetch",   "task": "Extract endpoints + auth scheme from openapi.yaml", "difficulty": "low" },
+      { "id": "risks",   "task": "List rollout risks for an opaque-token migration",   "difficulty": "med", "depends_on": ["fetch"] },
+      { "id": "rollback","task": "Draft a 1-page rollback runbook",                    "difficulty": "med", "depends_on": ["fetch"] },
+      { "id": "summary", "task": "Combine into a stakeholder one-pager",               "difficulty": "high","depends_on": ["risks","rollback"] }
+    ]
+  }
+})
+```
+
+Response sketch:
+
+```jsonc
+{
+  "tool": "orchestrate",
+  "dag":   { ... echoed back ... },
+  "nodes": [
+    { "id":"fetch",   "status":"ok","provider":"openai",   "model":"gpt-4o-mini",         "output":"...","wall_ms":840,  "cpu_ms":17 },
+    { "id":"risks",   "status":"ok","provider":"anthropic","model":"claude-sonnet-4-5",   "output":"...","wall_ms":3120, "cpu_ms":52 },
+    { "id":"rollback","status":"ok","provider":"anthropic","model":"claude-sonnet-4-5",   "output":"...","wall_ms":2870, "cpu_ms":47 },
+    { "id":"summary", "status":"ok","provider":"anthropic","model":"claude-opus-4-5",     "output":"...","wall_ms":5400, "cpu_ms":91 }
+  ],
+  "final":      "Combined one-pager…",
+  "missing":    [],
+  "partial":    false,
+  "fail_fast":  false,
+  "cheap_mode": true,
+  "usage":  { "totals": { "total_tokens": 9420, "cost_usd": 0.0512, ... }, ... },
+  "timing": { "wall_ms": 12230, "cpu_ms": 207, "by_call": [...] }
+}
+```
+
+**Failure semantics — partial-recombine by default:**
+
+```jsonc
+// If `fetch` fails, downstream still runs. `final` carries explicit gaps.
+{
+  "nodes": [
+    { "id":"fetch", "status":"failed", "error":"HTTP 503: ..." },
+    { "id":"risks", "status":"ok",     "output":"..." }
+  ],
+  "missing": ["fetch"],
+  "partial": true,
+  "final":   "...[MISSING: fetch — HTTP 503: ...]..."
+}
+```
+
+Pass `fail_fast: true` for strict workflows — failed upstream marks
+downstream nodes `skipped` instead of running them.
+
+**Cheap-mode router** picks the cheapest registered model in each node's
+declared difficulty tier from `config/pricing.json` (`_tiers.low / med /
+high`). Caller pins (`node.provider` + `node.model`) always win over the
+router. Scoreboard win-rate (provider_stats) is used only as a tie-breaker
+between identically-priced models in the same tier — never to override the
+tier itself.
+
+### Post-run audit (`audit`)
+
+`audit` runs an independent rubric pass over an output (from
+`output_to_audit`, or pulled from the latest transcript for a given
+`session_id`). The auditor is selected to **exclude** the providers that
+produced the output so a model cannot grade its own work.
+
+**Default rubric** (6 items):
+
+| id | severity | what it checks |
+|---|---|---|
+| `factual_grounding`      | high | Claims grounded in evidence; no hallucinated APIs |
+| `constraint_adherence`   | high | Respects stated user constraints (scope, language, format, budget) |
+| `no_pii_leak`            | high | No leaked emails, secrets, IPs, etc. |
+| `internally_consistent`  | med  | Later statements don't contradict earlier ones |
+| `covers_open_questions`  | med  | Surfaces unresolved trade-offs, doesn't paper over them |
+| `actionability`          | low  | Concrete and actionable for the stated audience |
+
+Override with `rubric: [{id, description, severity}, ...]` to drop in your
+own criteria (e.g. compliance checks for your domain).
+
+**Example:**
+
+```jsonc
+audit({
+  "session_id": "auth-migration-1",
+  "producing_panelists": ["openai", "anthropic", "xai"],
+  "constraints": "Zero downtime; 3M active users; Postgres-backed sessions.",
+  "cheap_mode": true
+})
+```
+
+Response sketch:
+
+```jsonc
+{
+  "tool":  "audit",
+  "auditor": { "provider": "gemini", "model": "gemini-2.5-pro" },
+  "items": [
+    { "id":"factual_grounding",    "score":0.92, "pass":true,  "rationale":"All claims traceable to spec section refs.", "severity":"high" },
+    { "id":"constraint_adherence", "score":0.85, "pass":true,  "rationale":"Migration plan respects zero-downtime constraint.",        "severity":"high" },
+    { "id":"no_pii_leak",          "score":1.0,  "pass":true,  "rationale":"No PII present in the plan.",                              "severity":"high" },
+    { "id":"internally_consistent","score":0.78, "pass":true,  "rationale":"One small inconsistency around token TTL.",                "severity":"med" },
+    { "id":"covers_open_questions","score":0.62, "pass":false, "rationale":"Doesn't surface the dual-write window risk.",              "severity":"med" },
+    { "id":"actionability",        "score":0.90, "pass":true,  "rationale":"Each step has an owner and exit criterion.",               "severity":"low" }
+  ],
+  "overall_score": 0.845,
+  "passed": false,
+  "usage": { "by_call": [{ "provider":"gemini","purpose":"audit", ... }], "totals": { "total_tokens": 1820, "cost_usd": 0.00228, ... } }
+}
+```
+
+Audit cost rolls up under the **same** `session_id` tagged
+`purpose: "audit"`, so audit spend is attributable but doesn't fragment your
+session billing.
+
+When every registered provider is on the producing panel, audit returns a
+structured `no auditor` error rather than running anyway. The escape hatch
+is `allow_self_audit: true` — explicit, never silent.
 
 ### Ad-hoc panels
 
@@ -157,6 +364,26 @@ does, based on what you say. A few prompts that work well inside Claude Code:
 
 > "Run bench against alpha, beta, gamma using the goldens in .crosscheck/goldens/ and rank them."
 
+**Orchestrate a sub-agent DAG with cheap-mode routing**
+
+> "Orchestrate this in cheap mode, session_id=auth-1: 'draft a migration plan from JWT to opaque session tokens, including risks and a rollback runbook'."
+
+> "Run this DAG against the panel — fetch endpoints (low), draft risks and rollback in parallel (med), then summarize (high). cheap_mode=true."
+
+**Strict mode when partial answers are useless**
+
+> "Plan-then-execute the cutover. fail_fast=true; I'd rather see what blocked than a Frankenstein summary."
+
+**Audit the panel's output**
+
+> "Audit the last session (session_id=auth-1). Producing panelists were anthropic, openai, xai. Constraint: zero downtime."
+
+> "Audit this paragraph against our internal compliance rubric — rubric=[{id:'cites_sources', ...}, {id:'no_eu_pii', ...}]"
+
+**Check spend on a session**
+
+> "What did session auth-1 cost so far? Show per-provider tokens and dollars."  *(Claude pulls the totals from the session row.)*
+
 **Self-update**
 
 > "Check whether crosscheck-agent has an update."  *(if Claude already saw an `update_notice` on a previous tool call, it will surface it without prompting.)*
@@ -172,10 +399,11 @@ scripts/replay --provider gemini        # all Gemini calls
 scripts/replay --kind provider_call --since 5m
 ```
 
-Claude will call `list_providers`, `confer`, `debate`, `plan`, or `review`
-under the hood, pass the subset you named, and stream the responses back.
-If you name a provider that isn't configured, crosscheck returns a
-structured error so Claude can ask you what to do instead of guessing.
+Claude will call `list_providers`, `confer`, `debate`, `plan`, `review`,
+`orchestrate`, `audit` (etc.) under the hood, pass the subset you named, and
+stream the responses back. If you name a provider that isn't configured,
+crosscheck returns a structured error so Claude can ask you what to do
+instead of guessing.
 
 ## Quick start
 
@@ -305,8 +533,12 @@ crosscheck-agent/
 
 ## Contributing
 
-Issues and PRs welcome. Keep the tool surface (`confer`, `debate`, `plan`,
-`review`, `list_providers`) stable and dependency-light. Python stdlib only.
+Issues and PRs welcome. Keep the tool surface (`list_providers`, `confer`,
+`debate`, `plan`, `review`, `coordinate`, `triangulate`, `delegate`, `bench`,
+`solve`, `fetch`, `pick`, `scoreboard`, `orchestrate`, `audit`,
+`update_crosscheck`) backwards-compatible and dependency-light — Python
+stdlib only. New fields on existing responses are fine if additive; renames
+and removals are not.
 
 ## Credits
 
