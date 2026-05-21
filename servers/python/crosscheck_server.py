@@ -1610,10 +1610,17 @@ def _ask_many_parallel(providers: list[Provider], messages: list[dict], deadline
 
 
 def _attach_usage_block(result: dict, answers: list[dict],
-                        extra_calls: list[dict] | None = None) -> dict:
+                        extra_calls: list[dict] | None = None,
+                        *,
+                        session_id: str | None = None,
+                        tool_name: str | None = None) -> dict:
     """Attach a `usage` block (per-call + per-provider + totals) and a `timing`
     block (totals + per-call wall/cpu) to a tool result. `extra_calls` lets
-    moderator/synth answers join the rollup."""
+    moderator/synth answers join the rollup.
+
+    When `tool_name` is provided, also attaches a `run_summary` block that
+    prefers session-scope rollup (from `usage_log`) when `session_id` exists,
+    falling back to this-call rollup."""
     all_calls = list(answers)
     if extra_calls:
         all_calls.extend(extra_calls)
@@ -1653,6 +1660,182 @@ def _attach_usage_block(result: dict, answers: list[dict],
             for a in all_calls
         ],
     }
+    if tool_name and not result.get("_suppress_run_summary"):
+        try:
+            result["run_summary"] = _render_run_summary(session_id, tool_name, all_calls)
+        except Exception:
+            pass
+    result.pop("_suppress_run_summary", None)
+    return result
+
+
+# ------------------------------------------------------------
+# Run summary (always-on lifecycle table)
+# ------------------------------------------------------------
+def _render_run_summary(session_id: str | None,
+                        tool_name: str,
+                        answers: list[dict],
+                        ascii_only: bool = True) -> dict[str, Any]:
+    """Render a lifecycle summary for the just-completed call.
+
+    When `session_id` is supplied and the row exists, we read aggregated stats
+    per `purpose` from `usage_log`; this captures *all* cumulative spend on
+    that session (across previous calls, important for macro tools that chain
+    multiple sub-tools). When no session is available we fall back to the
+    answers from THIS call only.
+
+    Returns a structured dict the response carries verbatim:
+      {
+        "session_id":  str | null,
+        "tool":        str,
+        "scope":       "session" | "call",
+        "currency":    "USD",
+        "started_at":  RFC3339 str | null,
+        "ended_at":    RFC3339 str,
+        "rows": [{purpose, calls, prompt_tokens, completion_tokens,
+                  total_tokens, cost_usd, wall_ms, cpu_ms, cache_hits, errors}],
+        "totals": {... same shape, no purpose ...},
+        "text":        pre-rendered tree
+      }
+    """
+    rows: list[dict[str, Any]] = []
+    scope = "call"
+    started_at: int | None = None
+    ended_at: int = int(time.time())
+
+    if session_id:
+        try:
+            _db_init()
+            with _db_conn() as conn:
+                rs = conn.execute(
+                    "SELECT purpose, COUNT(*) AS calls, "
+                    "       SUM(prompt_tokens)     AS prompt_tokens, "
+                    "       SUM(completion_tokens) AS completion_tokens, "
+                    "       SUM(total_tokens)      AS total_tokens, "
+                    "       SUM(cost_usd)          AS cost_usd, "
+                    "       SUM(wall_ms)           AS wall_ms, "
+                    "       SUM(cpu_ms)            AS cpu_ms "
+                    "FROM usage_log WHERE session_id = ? "
+                    "GROUP BY purpose ORDER BY MIN(ts), purpose",
+                    (_safe_session_id(session_id),),
+                ).fetchall()
+                if rs:
+                    scope = "session"
+                    for r in rs:
+                        rows.append({
+                            "purpose":           r["purpose"],
+                            "calls":             int(r["calls"] or 0),
+                            "prompt_tokens":     int(r["prompt_tokens"] or 0),
+                            "completion_tokens": int(r["completion_tokens"] or 0),
+                            "total_tokens":      int(r["total_tokens"] or 0),
+                            "cost_usd":          round(float(r["cost_usd"] or 0.0), 8),
+                            "wall_ms":           int(r["wall_ms"] or 0),
+                            "cpu_ms":            int(r["cpu_ms"] or 0),
+                            "cache_hits":        0,    # not stored in usage_log (cache hits skip log_usage)
+                            "errors":            0,
+                        })
+                meta = conn.execute(
+                    "SELECT started_at FROM sessions WHERE session_id = ?",
+                    (_safe_session_id(session_id),),
+                ).fetchone()
+                if meta and meta["started_at"]:
+                    started_at = int(meta["started_at"])
+        except Exception:
+            # Logging must never break a tool call.
+            scope = "call"
+            rows = []
+
+    if scope == "call":
+        # Per-purpose rollup from this call's `answers`.
+        by_purpose: dict[str, dict[str, Any]] = {}
+        for a in answers:
+            u = a.get("usage") or {}
+            purpose = u.get("purpose") or "worker"
+            row = by_purpose.setdefault(purpose, {
+                "purpose": purpose, "calls": 0,
+                "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+                "cost_usd": 0.0, "wall_ms": 0, "cpu_ms": 0,
+                "cache_hits": 0, "errors": 0,
+            })
+            row["calls"] += 1
+            row["prompt_tokens"]     += int(u.get("prompt_tokens", 0))
+            row["completion_tokens"] += int(u.get("completion_tokens", 0))
+            row["total_tokens"]      += int(u.get("total_tokens", 0))
+            row["cost_usd"]           = round(row["cost_usd"] + float(u.get("cost_usd", 0.0)), 8)
+            row["wall_ms"]           += int(a.get("elapsed_ms", 0))
+            row["cpu_ms"]            += int(a.get("cpu_ms", 0))
+            if a.get("cache_hit"):
+                row["cache_hits"] += 1
+            if a.get("error"):
+                row["errors"] += 1
+        rows = list(by_purpose.values())
+
+    totals = {
+        "calls":             sum(r["calls"] for r in rows),
+        "prompt_tokens":     sum(r["prompt_tokens"] for r in rows),
+        "completion_tokens": sum(r["completion_tokens"] for r in rows),
+        "total_tokens":      sum(r["total_tokens"] for r in rows),
+        "cost_usd":          round(sum(r["cost_usd"] for r in rows), 8),
+        "wall_ms":           sum(r["wall_ms"] for r in rows),
+        "cpu_ms":            sum(r["cpu_ms"] for r in rows),
+        "cache_hits":        sum(r["cache_hits"] for r in rows),
+        "errors":            sum(r["errors"] for r in rows),
+    }
+
+    # Pre-render the tree-style text. Plain ASCII glyphs by default so it
+    # survives transit through dumb terminals and JSON viewers.
+    branch_mid = "|-" if ascii_only else "├─"
+    branch_end = "`-" if ascii_only else "└─"
+    title_left = f"session: {session_id}" if scope == "session" else f"call: {tool_name}"
+    header = (
+        f"{title_left}   ({totals['calls']} calls, "
+        f"{totals['total_tokens']:,} tokens, "
+        f"${totals['cost_usd']:.4f}, "
+        f"{totals['wall_ms'] / 1000:.1f}s wall, "
+        f"{totals['cpu_ms'] / 1000:.3f}s cpu)"
+    )
+    body_lines: list[str] = []
+    for i, r in enumerate(rows):
+        glyph = branch_end if i == len(rows) - 1 else branch_mid
+        body_lines.append(
+            f"  {glyph} {r['purpose']:<14} {r['calls']:>3} calls   "
+            f"{r['total_tokens']:>7,} tok   "
+            f"${r['cost_usd']:>8.4f}   "
+            f"{r['wall_ms'] / 1000:>6.1f}s wall   "
+            f"{r['cpu_ms'] / 1000:>6.3f}s cpu"
+        )
+    text = "\n".join([header, *body_lines]) if body_lines else header
+
+    def _iso(ts: int | None) -> str | None:
+        if ts is None:
+            return None
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+    return {
+        "session_id": session_id,
+        "tool":       tool_name,
+        "scope":      scope,
+        "currency":   "USD",
+        "started_at": _iso(started_at),
+        "ended_at":   _iso(ended_at),
+        "rows":       rows,
+        "totals":     totals,
+        "text":       text,
+    }
+
+
+def _attach_run_summary(result: dict, session_id: str | None,
+                        tool_name: str, answers: list[dict]) -> dict:
+    """Attach `run_summary` to a tool result. Idempotent and never raises —
+    summary rendering must not break a tool call. Caller can suppress by
+    setting `result['_suppress_run_summary'] = True` before calling."""
+    if result.get("_suppress_run_summary"):
+        result.pop("_suppress_run_summary", None)
+        return result
+    try:
+        result["run_summary"] = _render_run_summary(session_id, tool_name, answers)
+    except Exception:
+        pass
     return result
 
 
@@ -1769,7 +1952,9 @@ def tool_confer(args: dict) -> dict:
 
     result = {"tool": "confer", "question": question, "answers": answers,
               "budget": _budget_summary(call_started, deadline, answers, cpu_started)}
-    _attach_usage_block(result, answers)
+    _attach_usage_block(result, answers,
+                        session_id=session.get("session_id") if session else None,
+                        tool_name="confer")
     _emit_progress(
         f"confer: done ({result['budget']['wall_used_ms']}ms wall / "
         f"{result['budget']['cpu_used_ms']}ms cpu, "
@@ -1921,7 +2106,9 @@ def tool_debate(args: dict) -> dict:
         "synthesis": synthesis,
         "budget": _budget_summary(call_started, deadline, all_answers, cpu_started),
     }
-    _attach_usage_block(result, all_answers)
+    _attach_usage_block(result, all_answers,
+                        session_id=session.get("session_id") if session else None,
+                        tool_name="debate")
     _emit_progress(
         f"debate: done ({result['rounds_completed']} rounds, "
         f"{result['budget']['wall_used_ms']}ms wall / "
@@ -2181,7 +2368,9 @@ def tool_coordinate(args: dict) -> dict:
         "synthesis_structured": synthesis_obj,
         "budget": _budget_summary(call_started, deadline, all_answers, cpu_started),
     }
-    _attach_usage_block(result, all_answers)
+    _attach_usage_block(result, all_answers,
+                        session_id=session.get("session_id") if session else None,
+                        tool_name="coordinate")
     _emit_progress(
         f"coordinate: done ({result['budget']['wall_used_ms']}ms wall / "
         f"{result['budget']['cpu_used_ms']}ms cpu, "
@@ -2811,7 +3000,9 @@ def tool_pick(args: dict) -> dict:
         "providers_used": [p.name for p in selected],
         "budget": _budget_summary(call_started, deadline, answers_collected, cpu_started),
     }
-    _attach_usage_block(result, answers_collected)
+    _attach_usage_block(result, answers_collected,
+                        session_id=session.get("session_id") if session else None,
+                        tool_name="pick")
     _emit_progress(
         f"pick: done ({result['budget']['wall_used_ms']}ms wall / "
         f"{result['budget']['cpu_used_ms']}ms cpu, "
@@ -3158,7 +3349,9 @@ def tool_solve(args: dict) -> dict:
         "winning_provider": winning_provider,
         "budget": _budget_summary(call_started, deadline, answers_collected, cpu_started),
     }
-    _attach_usage_block(result, answers_collected)
+    _attach_usage_block(result, answers_collected,
+                        session_id=session.get("session_id") if session else None,
+                        tool_name="solve")
     _emit_progress(
         f"solve: {'solved' if solved else 'failed'} "
         f"({result['budget']['wall_used_ms']}ms wall / "
@@ -3363,7 +3556,9 @@ def tool_bench(args: dict) -> dict:
         "ranking": ranking,
         "budget": _budget_summary(call_started, deadline, answers_collected, cpu_started),
     }
-    _attach_usage_block(result, answers_collected)
+    _attach_usage_block(result, answers_collected,
+                        session_id=session.get("session_id") if session else None,
+                        tool_name="bench")
     _emit_progress(
         f"bench: done ({result['budget']['wall_used_ms']}ms wall / "
         f"{result['budget']['cpu_used_ms']}ms cpu, "
@@ -3869,7 +4064,9 @@ def tool_orchestrate(args: dict) -> dict:
                 "planner_errors": planner_errs,
                 "budget": _budget_summary(call_started, deadline, answers_collected, cpu_started),
             }
-            _attach_usage_block(result, answers_collected)
+            _attach_usage_block(result, answers_collected,
+                                session_id=session.get("session_id") if session else args.get("session_id"),
+                                tool_name="orchestrate")
             return result
 
     val_errors = _validate_dag(dag)
@@ -3881,7 +4078,9 @@ def tool_orchestrate(args: dict) -> dict:
             "dag": dag,
             "budget": _budget_summary(call_started, deadline, answers_collected, cpu_started),
         }
-        _attach_usage_block(result, answers_collected)
+        _attach_usage_block(result, answers_collected,
+                            session_id=session.get("session_id") if session else args.get("session_id"),
+                            tool_name="orchestrate")
         return result
 
     # ---- Execute nodes topologically with bounded parallelism --------------
@@ -4108,7 +4307,9 @@ def tool_orchestrate(args: dict) -> dict:
         result["synth_error"] = synth_err
     if planner_errs:
         result["planner_errors"] = planner_errs
-    _attach_usage_block(result, answers_collected)
+    _attach_usage_block(result, answers_collected,
+                        session_id=session.get("session_id") if session else args.get("session_id"),
+                        tool_name="orchestrate")
     _emit_progress(
         f"orchestrate: done ({len(public_nodes) - len(missing)}/{len(public_nodes)} ok, "
         f"{result['budget']['wall_used_ms']}ms wall / {result['budget']['cpu_used_ms']}ms cpu, "
@@ -4212,6 +4413,225 @@ def _select_auditor(exclude_providers: list[str], cheap_mode: bool,
                   "producing panel; widen the panel or set `allow_self_audit=true`")
 
 
+_AUDIT_OBVIOUS_FAILURE_HIGH = 0.3   # any judge below this on high-severity flags
+_AUDIT_OBVIOUS_FAILURE_MED  = 0.2   # any judge below this on med-severity flags
+_AUDIT_DISAGREEMENT_STDDEV  = 0.3   # N>=3
+_AUDIT_DISAGREEMENT_RANGE   = 0.4   # N==2
+
+
+def _select_audit_judges(exclude_providers: list[str], coalesce: bool,
+                         max_judges: int = 4) -> tuple[list[Provider], str]:
+    """Pick a list of audit judges.
+
+    Returns (judges, mode). mode is one of:
+      "single"          — one judge outside the producing panel (default audit)
+      "coalesced"       — multiple judges, all outside the producing panel
+      "coalesced_self"  — every provider is on the producing panel; fall back
+                          to multi-judge using the producing panel itself, with
+                          this flag so callers know.
+
+    When coalesce=False, we still return a list, but with exactly one judge.
+    The caller decides which code path to take based on `mode`."""
+    exclude_set = {x.lower() for x in (exclude_providers or [])}
+    available = list(ALL_PROVIDERS.keys())
+    outside = [n for n in available if n not in exclude_set]
+
+    if not coalesce:
+        # Legacy single-auditor path is handled by `_select_auditor`; this
+        # function only fires when the caller already opted into coalesce.
+        if not outside:
+            return [], "coalesced_self"  # caller decides whether to proceed
+        return [ALL_PROVIDERS[outside[0]]], "single"
+
+    if outside:
+        chosen = outside[:max_judges]
+        return [ALL_PROVIDERS[n] for n in chosen], "coalesced"
+    # No provider outside the panel: self-audit with cross-checking.
+    chosen = available[:max_judges]
+    return [ALL_PROVIDERS[n] for n in chosen], "coalesced_self"
+
+
+_SEVERITY_ALIASES = {"medium": "med", "high": "high", "med": "med", "low": "low"}
+
+
+def _coerce_pass(v: Any) -> bool | None:
+    """Return True/False for a JSON pass field; None when invalid (e.g. caller
+    sent the literal string 'false' which `bool()` would treat as truthy)."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in {"true", "yes", "1", "y"}:
+            return True
+        if s in {"false", "no", "0", "n", ""}:
+            return False
+    return None
+
+
+def _coalesce_audit_items(rubric_items: list[dict],
+                          per_judge_obj: list[dict | None],
+                          per_judge_meta: list[dict],
+                          strict_mode: bool,
+                          ) -> tuple[list[dict], dict[str, Any]]:
+    """Aggregate per-judge audit responses into one set of items.
+
+    `per_judge_obj[i]` is None when judge i failed to produce a valid object.
+    `per_judge_meta[i]` is {provider, model, parse_error|refusal|ok}.
+
+    Returns (items, flags) where flags carries top-level signals:
+      obvious_failures: [item_id]
+      disagreements:    [item_id]
+      audit_process_failure: bool
+      judges_stats:     {total, valid, parse_errors, refusals}
+    """
+    import statistics
+    import math
+    n_total = len(per_judge_obj)
+    n_valid = sum(1 for o in per_judge_obj if isinstance(o, dict)
+                  and isinstance(o.get("items"), list))
+    parse_errors = sum(1 for m in per_judge_meta if m.get("status") == "parse_error")
+    refusals     = sum(1 for m in per_judge_meta if m.get("status") == "refusal")
+    # Need a majority of judges to have returned valid output, else the audit
+    # process itself failed.
+    process_failure = (n_total == 0) or (n_valid < math.ceil(n_total / 2))
+
+    items: list[dict] = []
+    obvious_failures: list[str] = []
+    disagreements: list[str] = []
+
+    for ri in rubric_items:
+        rid = ri["id"]
+        severity = _SEVERITY_ALIASES.get(str(ri.get("severity", "med")).lower(), "med")
+        per_judge: list[dict] = []
+        scores: list[float] = []
+        passes: list[bool] = []
+        offenders: list[str] = []   # judges who flagged this as a red signal
+        invalid_judges_this_item = 0
+        for j_idx, obj in enumerate(per_judge_obj):
+            meta = per_judge_meta[j_idx] if j_idx < len(per_judge_meta) else {}
+            provider = meta.get("provider") or "unknown"
+            model    = meta.get("model")    or "unknown"
+            status   = meta.get("status", "unknown")
+            if not isinstance(obj, dict) or not isinstance(obj.get("items"), list):
+                per_judge.append({"provider": provider, "model": model,
+                                  "status":   status})
+                invalid_judges_this_item += 1
+                continue
+            by_id = {it.get("id"): it for it in obj["items"] if isinstance(it, dict)}
+            scored = by_id.get(rid) or {}
+            try:
+                raw = scored.get("score", 0.0)
+                s = float(raw) if raw is not None else 0.0
+            except (TypeError, ValueError):
+                # Score is something this judge can't parse — treat its
+                # response as invalid for this item only.
+                per_judge.append({"provider": provider, "model": model,
+                                  "status":   "score_parse_error",
+                                  "raw_score": scored.get("score")})
+                invalid_judges_this_item += 1
+                continue
+            p = _coerce_pass(scored.get("pass"))
+            if p is None:
+                # Pass field unparseable; treat as invalid for this item.
+                per_judge.append({"provider": provider, "model": model,
+                                  "status":   "pass_parse_error",
+                                  "raw_pass": scored.get("pass")})
+                invalid_judges_this_item += 1
+                continue
+            scores.append(s)
+            passes.append(p)
+            per_judge.append({
+                "provider":  provider,
+                "model":     model,
+                "score":     s,
+                "pass":      p,
+                "rationale": str(scored.get("rationale", "")),
+            })
+            # Per spec: high-severity obvious-failure at score < 0.3,
+            # med-severity at score < 0.2; low never auto-flags.
+            if severity == "high" and s < _AUDIT_OBVIOUS_FAILURE_HIGH:
+                offenders.append(provider)
+            elif severity == "med" and s < _AUDIT_OBVIOUS_FAILURE_MED:
+                offenders.append(provider)
+
+        # Aggregation: median score, majority pass-vote (tie-break by score>=0.7).
+        if scores:
+            try:
+                med = statistics.median(scores)
+            except statistics.StatisticsError:
+                med = 0.0
+            pass_count = sum(1 for p in passes if p)
+            if pass_count > len(passes) / 2:
+                pass_v = True
+            elif pass_count < len(passes) / 2:
+                pass_v = False
+            else:  # tie
+                pass_v = med >= 0.7
+            if strict_mode:
+                # Strict requires every dispatched judge (including those that
+                # failed to produce a valid response for this item) to pass.
+                pass_v = (len(passes) == n_total
+                          and len(passes) > 0
+                          and all(passes))
+            # Disagreement metric:
+            disagreement_score = max(scores) - min(scores)
+            if len(scores) >= 3:
+                try:
+                    sd = statistics.pstdev(scores)
+                except statistics.StatisticsError:
+                    sd = 0.0
+                disputed = sd > _AUDIT_DISAGREEMENT_STDDEV
+            else:
+                sd = None
+                disputed = disagreement_score > _AUDIT_DISAGREEMENT_RANGE
+        else:
+            # No valid judge responses for this item at all.
+            med = 0.0
+            pass_v = False
+            sd = None
+            disagreement_score = 0.0
+            disputed = False
+
+        flags: list[str] = []
+        if offenders:
+            flags.append("obvious_failure")
+            obvious_failures.append(rid)
+        if disputed:
+            flags.append("disputed")
+            disagreements.append(rid)
+        if invalid_judges_this_item > 0:
+            flags.append("partial_judges")
+
+        items.append({
+            "id":           rid,
+            "description":  ri["description"],
+            "severity":     severity,
+            "score":        round(med, 4),
+            "pass":         pass_v,
+            "stddev":       round(sd, 4) if sd is not None else None,
+            "disagreement_score": round(disagreement_score, 4),
+            "disputed":     bool(disputed),
+            "flags":        flags,
+            "obvious_failure_judges": sorted(set(offenders)),
+            "valid_judges":  len(scores),
+            "per_judge":    per_judge,
+        })
+
+    return items, {
+        "obvious_failures":      obvious_failures,
+        "disagreements":         disagreements,
+        "audit_process_failure": bool(process_failure),
+        "judges_stats": {
+            "total":         n_total,
+            "valid":         n_valid,
+            "parse_errors":  parse_errors,
+            "refusals":      refusals,
+        },
+    }
+
+
 def tool_audit(args: dict) -> dict:
     output_to_audit = args.get("output_to_audit")
     session_id      = args.get("session_id")
@@ -4220,6 +4640,9 @@ def tool_audit(args: dict) -> dict:
     explicit        = args.get("auditor")
     cheap_mode      = bool(args.get("cheap_mode", True))
     allow_self      = bool(args.get("allow_self_audit", False))
+    coalesce        = bool(args.get("coalesce", False))
+    strict_mode     = bool(args.get("strict_mode", False))
+    max_judges      = int(args.get("max_judges", 4))
     user_constraints = args.get("constraints", "")
 
     if not output_to_audit and not session_id:
@@ -4233,7 +4656,6 @@ def tool_audit(args: dict) -> dict:
         if path:
             try:
                 doc = json.loads(Path(path).read_text())
-                # Reasonable extraction targets across tools.
                 output_to_audit = (
                     (doc.get("synthesis") or {}).get("response")
                     or doc.get("final")
@@ -4247,10 +4669,16 @@ def tool_audit(args: dict) -> dict:
                 "error": "could not load output to audit from session_id; "
                          "pass `output_to_audit` explicitly"}
 
+    # Auto-enable coalesce if the producing panel exhausts every available
+    # provider — the old "no auditor" error is now a graceful self-audit.
     exclude = list(producing) if not allow_self else []
-    auditor, reason = _select_auditor(exclude, cheap_mode, explicit)
-    if auditor is None:
-        return {"tool": "audit", "error": reason or "no auditor"}
+    available = list(ALL_PROVIDERS.keys())
+    if not available:
+        return {"tool": "audit",
+                "error": "no providers registered (set API keys in .env)"}
+    panel_exhausted = all(p in exclude for p in available)
+    if panel_exhausted and not coalesce:
+        coalesce = True
 
     rubric_items: list[dict] = []
     if isinstance(rubric_override, list) and rubric_override:
@@ -4278,24 +4706,167 @@ def tool_audit(args: dict) -> dict:
         + f"OUTPUT TO AUDIT:\n{output_to_audit}\n\n"
         + f"RUBRIC ITEMS:\n{rubric_text}"
     )
+    msgs = [{"role": "system", "content": sys_msg},
+            {"role": "user",   "content": user_msg}]
 
     session = _session_load(session_id) if session_id else None
     call_started = time.monotonic()
     cpu_started  = time.process_time()
     deadline = _deadline()
     per_call = _per_call_tokens(2)
-    _emit_event("tool_start", tool="audit", auditor=auditor.name,
-                rubric_count=len(rubric_items),
+
+    # ---- Branch: coalesce (multi-judge) vs single-auditor ---------------
+    if coalesce:
+        judges, coalesce_mode = _select_audit_judges(exclude, coalesce=True,
+                                                     max_judges=max_judges)
+        if not judges:
+            return {"tool": "audit",
+                    "error": "no judges available (no registered providers)"}
+        _emit_event("tool_start", tool="audit",
+                    mode=coalesce_mode, judges=[p.name for p in judges],
+                    rubric_count=len(rubric_items),
+                    strict_mode=strict_mode,
+                    session_id=session.get("session_id") if session else None)
+        _emit_progress(
+            f"audit: coalesced {coalesce_mode} via "
+            f"{len(judges)} judge(s) [{', '.join(p.name for p in judges)}]; "
+            f"strict_mode={strict_mode}",
+            tool="audit", mode=coalesce_mode, judges=[p.name for p in judges],
+            strict_mode=strict_mode,
+        )
+
+        # Carry progress token into each parallel judge.
+        parent_token = _progress_token()
+        parent_wall = getattr(_PROGRESS_CTX, "wall_start", None)
+        parent_cpu  = getattr(_PROGRESS_CTX, "cpu_start", None)
+
+        def _judge_call(j: Provider) -> tuple[Provider, dict | None, dict, list[str], str | None]:
+            """Returns (provider, parsed_obj, raw_answer, errors, exception_str).
+            Exceptions are captured rather than propagated so one judge crashing
+            doesn't tank the whole coalesce pass."""
+            if parent_token is not None:
+                _progress_set(parent_token, parent_wall, parent_cpu)
+            try:
+                obj, raw_ans, errs = _request_structured(
+                    j, msgs, _audit_rubric_schema(),
+                    max_tokens=per_call, deadline=deadline, max_retries=1,
+                    purpose="audit",
+                )
+                return j, obj, raw_ans, errs, None
+            except Exception as e:
+                return j, None, {}, [f"{type(e).__name__}: {e}"], f"{type(e).__name__}: {e}"
+            finally:
+                if parent_token is not None:
+                    _progress_clear()
+
+        if len(judges) == 1:
+            results = [_judge_call(judges[0])]
+        else:
+            # Use as a context manager so threads are cleanly torn down on
+            # exceptions higher up the stack.
+            with ThreadPoolExecutor(max_workers=len(judges)) as ex:
+                results = list(ex.map(_judge_call, judges))
+
+        per_judge_obj: list[dict | None] = []
+        per_judge_meta: list[dict] = []
+        answers_collected: list[dict] = []
+        for (j, obj, raw_ans, errs, exc_str) in results:
+            if raw_ans:
+                answers_collected.append(raw_ans)
+            if isinstance(obj, dict) and isinstance(obj.get("items"), list):
+                per_judge_obj.append(obj)
+                per_judge_meta.append({"provider": j.name, "model": j.model,
+                                       "status": "ok"})
+            else:
+                per_judge_obj.append(None)
+                # Classify the failure mode:
+                #   exception        -> exception
+                #   provider error   -> refusal (judge said no / API rejected)
+                #   parse failure    -> parse_error
+                if exc_str:
+                    kind = "exception"
+                elif raw_ans and raw_ans.get("error"):
+                    kind = "refusal"
+                else:
+                    kind = "parse_error"
+                per_judge_meta.append({"provider": j.name, "model": j.model,
+                                       "status": kind, "errors": errs,
+                                       **({"exception": exc_str} if exc_str else {})})
+
+        _session_record(session, answers_collected, call_started, cpu_started)
+        _session_save(session)
+        log_usage(session.get("session_id") if session else session_id,
+                  "audit", answers_collected)
+
+        items_with_meta, flags = _coalesce_audit_items(
+            rubric_items, per_judge_obj, per_judge_meta, strict_mode,
+        )
+        # Overall = median of per-item scores (or None when nothing valid).
+        valid_scores = [it["score"] for it in items_with_meta
+                        if any(p.get("score") is not None for p in it.get("per_judge", []))]
+        if valid_scores:
+            import statistics
+            overall = round(statistics.median(valid_scores), 4)
+        else:
+            overall = None
+
+        all_pass = bool(items_with_meta) and all(it["pass"] for it in items_with_meta)
+
+        result = {
+            "tool":           "audit",
+            "mode":           coalesce_mode,    # "coalesced" | "coalesced_self"
+            "strict_mode":    strict_mode,
+            "judges":         [{"provider": p.name, "model": p.model} for p in judges],
+            "rubric":         rubric_items,
+            "items":          items_with_meta,
+            "overall_score":  overall,
+            "passed":         all_pass,
+            "obvious_failures":      flags["obvious_failures"],
+            "disagreements":         flags["disagreements"],
+            "audit_process_failure": flags["audit_process_failure"],
+            "judges_stats":          flags["judges_stats"],
+            "budget":   _budget_summary(call_started, deadline, answers_collected, cpu_started),
+        }
+        _attach_usage_block(result, answers_collected,
+                            session_id=session.get("session_id") if session else session_id,
+                            tool_name="audit")
+        _emit_progress(
+            f"audit: coalesce done (overall={overall}, passed={all_pass}, "
+            f"obvious_failures={len(flags['obvious_failures'])}, "
+            f"disagreements={len(flags['disagreements'])}, "
+            f"process_failure={flags['audit_process_failure']}, "
+            f"{result['budget']['wall_used_ms']}ms wall / "
+            f"{result['budget']['cpu_used_ms']}ms cpu, "
+            f"${result['budget']['total_cost_usd']:.4f})",
+            tool="audit", overall_score=overall, mode=coalesce_mode,
+            wall_ms=result["budget"]["wall_used_ms"],
+            cpu_ms=result["budget"]["cpu_used_ms"],
+            cost_usd=result["budget"]["total_cost_usd"],
+        )
+        if session:
+            result["session"] = session
+        result["transcript_path"] = write_transcript("audit", result)
+        _emit_event("tool_end", tool="audit", overall_score=overall,
+                    mode=coalesce_mode, passed=all_pass,
+                    obvious_failures=len(flags["obvious_failures"]),
+                    audit_process_failure=flags["audit_process_failure"],
+                    cost_usd=result["budget"]["total_cost_usd"])
+        return result
+
+    # ---- Single-auditor (legacy) path -----------------------------------
+    auditor, reason = _select_auditor(exclude, cheap_mode, explicit)
+    if auditor is None:
+        return {"tool": "audit", "error": reason or "no auditor"}
+
+    _emit_event("tool_start", tool="audit", mode="single",
+                auditor=auditor.name, rubric_count=len(rubric_items),
+                strict_mode=strict_mode,
                 session_id=session.get("session_id") if session else None)
     _emit_progress(
         f"audit: scoring {len(rubric_items)} rubric item(s) via {auditor.name}",
         tool="audit", auditor=auditor.name, rubric_count=len(rubric_items),
     )
 
-    msgs = [
-        {"role": "system", "content": sys_msg},
-        {"role": "user",   "content": user_msg},
-    ]
     obj, raw_ans, errs = _request_structured(
         auditor, msgs, _audit_rubric_schema(),
         max_tokens=per_call, deadline=deadline, max_retries=1,
@@ -4328,16 +4899,25 @@ def tool_audit(args: dict) -> dict:
     else:
         overall = None
 
+    if strict_mode:
+        all_pass = bool(items_with_meta) and all(it["pass"] for it in items_with_meta)
+    else:
+        all_pass = bool(items_with_meta and all(it["pass"] for it in items_with_meta))
+
     result = {
         "tool":     "audit",
+        "mode":     "single",
+        "strict_mode": strict_mode,
         "auditor":  {"provider": auditor.name, "model": auditor.model},
         "rubric":   rubric_items,
         "items":    items_with_meta,
         "overall_score": overall,
-        "passed":   bool(items_with_meta and all(it["pass"] for it in items_with_meta)),
+        "passed":   all_pass,
         "budget":   _budget_summary(call_started, deadline, answers_collected, cpu_started),
     }
-    _attach_usage_block(result, answers_collected)
+    _attach_usage_block(result, answers_collected,
+                        session_id=session.get("session_id") if session else session_id,
+                        tool_name="audit")
     _emit_progress(
         f"audit: done (overall={overall}, "
         f"{result['budget']['wall_used_ms']}ms wall / "
@@ -4353,7 +4933,7 @@ def tool_audit(args: dict) -> dict:
     if session:
         result["session"] = session
     result["transcript_path"] = write_transcript("audit", result)
-    _emit_event("tool_end", tool="audit", overall_score=overall,
+    _emit_event("tool_end", tool="audit", overall_score=overall, mode="single",
                 cost_usd=result["budget"]["total_cost_usd"])
     return result
 
@@ -4774,7 +5354,9 @@ def _run_create_pipeline(args: dict, cheap_default: bool, tool_name: str) -> dic
                                                 answers=answers_collected,
                                                 cpu_started=cpu_started),
     }
-    _attach_usage_block(result, answers_collected)
+    _attach_usage_block(result, answers_collected,
+                        session_id=session_id,
+                        tool_name=tool_name)
     if session:
         result["session"] = session
     result["transcript_path"] = write_transcript(tool_name, result)

@@ -222,14 +222,18 @@ def main() -> int:
     srv._http_post_resilient = fake_post_resilient
 
     # -----------------------------------------------------------------
-    # 6) audit: refuses when only-available auditor is on producing panel
+    # 6) audit: auto-coalesces when every provider is on the producing panel
+    # (no single auditor exists). Mode should be "coalesced_self", with the
+    # transparency flag set; never returns a "no auditor" error anymore.
     # -----------------------------------------------------------------
     a_block = srv.tool_audit({
         "output_to_audit": "test output",
         "producing_panelists": ["openai", "anthropic", "xai"],
         "cheap_mode": True,
     })
-    assert "error" in a_block and "no auditor" in a_block["error"], a_block
+    assert "error" not in a_block, a_block.get("error")
+    assert a_block.get("mode") == "coalesced_self", a_block.get("mode")
+    assert len(a_block.get("judges", [])) >= 2
 
     # -----------------------------------------------------------------
     # 7) audit: structured rubric scoring with auditor selected outside panel

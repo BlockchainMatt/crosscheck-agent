@@ -267,6 +267,46 @@ create_cheap({
 })
 ```
 
+### Coalesced multi-judge audit (the "no auditor available" fix)
+
+By default `audit` picks **one** judge outside the producing panel. When the producing panel exhausts the registered pool (every provider was on the panel that produced the answer), the old `no auditor` error becomes a **graceful self-audit** via `mode: "coalesced_self"`. You can also opt in to coalesce mode explicitly with `coalesce: true` to get a multi-judge audit even when an outside auditor exists — useful when you want cross-judge agreement signal.
+
+**What coalesce mode gives you:**
+- All judges run **in parallel** (`ThreadPoolExecutor`, max bounded by `max_judges`, default 4).
+- Per rubric item: **median** score, **majority pass-vote** (tie-break on score ≥ 0.7), `disputed: bool` (stddev > 0.3 at N ≥ 3, or range > 0.4 at N = 2), and a full `per_judge[]` breakdown.
+- Top-level signals — `obvious_failures: [item_id]` (any judge scored < 0.3 on a high-severity item, or < 0.2 on med), `disagreements: [item_id]`, and `audit_process_failure: bool` (set when fewer than `ceil(N/2)` judges produced a valid response — i.e. the audit *process* itself failed, separate from the audited content failing).
+- `strict_mode: true` flips the per-item rule to **all judges must pass** that item (including no parse-failures); top-level `passed` then requires all items to pass.
+
+**Convention:** before invoking `audit` from a script or agent, you should typically ask the user whether they want strict mode — it's a substantively stricter bar.
+
+### Run summary on every multi-LLM response
+
+Every `confer` / `debate` / `plan` / `review` / `coordinate` / `triangulate` / `pick` / `solve` / `bench` / `orchestrate` / `audit` / `create` / `create_cheap` response now carries a `run_summary` block — pre-rendered ASCII tree plus structured rows for programmatic consumption. When a `session_id` is passed, the rollup is **session-scoped** (covers every call ever made under that id from `usage_log`); otherwise it's just this call.
+
+```
+session: create-feature-design-1   (5 calls, 17,841 tokens, $0.1253, 115.3s wall, 0.172s cpu)
+  |- confer          2 calls     4,986 tok   $  0.0561     53.4s wall    0.083s cpu
+  |- review          2 calls     7,424 tok   $  0.0640     75.7s wall    0.069s cpu
+  `- audit           1 call      4,860 tok   $  0.0052     18.6s wall    0.010s cpu
+```
+
+Programmatic view:
+
+```json
+"run_summary": {
+  "session_id": "create-feature-design-1",
+  "tool":       "create",
+  "scope":      "session",
+  "currency":   "USD",
+  "started_at": "2026-05-21T17:10:14Z",
+  "ended_at":   "2026-05-21T17:12:09Z",
+  "rows":   [{"purpose":"confer","calls":2,"prompt_tokens":1836,"completion_tokens":3150,
+              "total_tokens":4986,"cost_usd":0.0561,"wall_ms":53400,"cpu_ms":83, ...}, …],
+  "totals": {"calls":5,"total_tokens":17841,"cost_usd":0.1253,"wall_ms":115289,"cpu_ms":172},
+  "text":   "session: …\n  |- confer …"
+}
+```
+
 ### Post-run audit (`audit`)
 
 `audit` runs an independent rubric pass over an output (from

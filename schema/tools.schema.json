@@ -793,6 +793,12 @@
           "auditor":            { "type": "string", "description": "Explicit auditor provider. Overrides cheap-mode pick." },
           "cheap_mode":         { "type": "boolean", "default": true },
           "allow_self_audit":   { "type": "boolean", "default": false },
+          "coalesce":           { "type": "boolean", "default": false,
+                                   "description": "Run audit through MULTIPLE judges in parallel and aggregate. Auto-enabled when `producing_panelists` covers every registered provider (otherwise the old 'no auditor' error path)." },
+          "strict_mode":        { "type": "boolean", "default": false,
+                                   "description": "When true, item.pass requires ALL judges to pass that item (default is majority vote). Top-level `passed` then requires all items to pass." },
+          "max_judges":         { "type": "integer", "minimum": 1, "default": 4,
+                                   "description": "Cap on judges in coalesce mode (controls cost)." },
           "constraints":        { "type": "string", "description": "User constraints the output should respect; surfaced to the auditor." }
         }
       },
@@ -800,11 +806,21 @@
         "type": "object",
         "properties": {
           "tool":          { "const": "audit" },
+          "mode":          { "type": "string", "enum": ["single", "coalesced", "coalesced_self"] },
+          "strict_mode":   { "type": "boolean" },
           "auditor":       { "type": "object",
                              "properties": {
                                "provider": { "type": "string" },
                                "model":    { "type": "string" }
-                             }, "required": ["provider", "model"] },
+                             }, "required": ["provider", "model"],
+                             "description": "Present only when mode='single'." },
+          "judges":        { "type": "array",
+                             "items": { "type": "object",
+                                        "properties": {
+                                          "provider": { "type": "string" },
+                                          "model":    { "type": "string" }
+                                        }, "required": ["provider", "model"] },
+                             "description": "Present only in coalesce modes." },
           "rubric":        { "type": "array", "items": { "type": "object" } },
           "items":         { "type": "array",
                              "items": { "type": "object",
@@ -814,13 +830,33 @@
                                           "severity":    { "type": "string" },
                                           "score":       { "type": "number" },
                                           "pass":        { "type": "boolean" },
-                                          "rationale":   { "type": "string" }
+                                          "rationale":   { "type": "string" },
+                                          "stddev":      { "type": ["number", "null"], "description": "Coalesce only: stddev of per-judge scores (N>=3) or null when N<3." },
+                                          "disagreement_score": { "type": "number", "description": "Coalesce only: max(scores) - min(scores)." },
+                                          "disputed":    { "type": "boolean", "description": "Coalesce only." },
+                                          "flags":       { "type": "array", "items": { "type": "string" } },
+                                          "obvious_failure_judges": { "type": "array", "items": { "type": "string" },
+                                                                       "description": "Coalesce only: judges who flagged this item below the obvious-failure threshold for its severity." },
+                                          "per_judge":   { "type": "array", "items": { "type": "object" },
+                                                            "description": "Coalesce only: per-judge score/pass/rationale (or status when invalid)." }
                                         }, "required": ["id", "score", "pass"] } },
-          "overall_score": { "type": ["number", "null"] },
-          "passed":        { "type": "boolean" },
+          "overall_score":          { "type": ["number", "null"] },
+          "passed":                 { "type": "boolean" },
+          "obvious_failures":       { "type": "array", "items": { "type": "string" },
+                                       "description": "Coalesce only: rubric_item ids where any judge scored below the obvious-failure threshold (0.3 for high-severity, 0.2 for med)." },
+          "disagreements":          { "type": "array", "items": { "type": "string" },
+                                       "description": "Coalesce only: rubric_item ids with stddev > 0.3 (N>=3) or range > 0.4 (N=2)." },
+          "audit_process_failure":  { "type": "boolean", "description": "Coalesce only: true when fewer than ceil(N/2) judges returned valid output, so the audit itself failed (not the audited content)." },
+          "judges_stats":           { "type": "object",
+                                       "properties": {
+                                         "total":        { "type": "integer" },
+                                         "valid":        { "type": "integer" },
+                                         "parse_errors": { "type": "integer" },
+                                         "refusals":     { "type": "integer" }
+                                       } },
           "budget":        { "$ref": "#/$defs/BudgetSummary" }
         },
-        "required": ["tool", "auditor"]
+        "required": ["tool"]
       }
     },
     "create": {
