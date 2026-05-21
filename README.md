@@ -40,7 +40,28 @@ Claude │ Claude Code  │     MCP      ┌────────────
 | `fetch`          | Retrieve a URL with **deny-by-default allowlist** (`fetch.url_allowlist` prefix list) and persist a sha256-keyed snapshot under `.crosscheck/evidence/`. Cached on repeat unless `force_refresh: true`. Use to ground claims with reproducible evidence. |
 | `pick`           | **Multi-criteria decision-making.** Each provider scores every option on every criterion (0..1); the tool aggregates with criterion weights, returns a ranked list, and surfaces the top-K cross-provider disagreements as `dissent_deltas`. |
 | `scoreboard`     | Read-only snapshot: per-provider weight + wins/losses/abstains + delegations, plus `totals` for sessions/claims/links/delegations and (optional) the last N redacted event lines. The data the UI panel reads. |
+| `orchestrate`    | **Plan-then-execute** across sub-agents. The moderator decomposes a `goal` into a DAG of subtasks (or you pass a pre-authored `dag`), workers run in parallel where deps allow, and a final synth pass recombines node outputs into a coherent deliverable. Each node declares `difficulty: low\|med\|high` — with `cheap_mode: true` the router picks the cheapest registered model in that tier (scoreboard win-rate breaks ties within-tier only). Default failure semantics: partial-recombine with `[MISSING: node_id]` markers; set `fail_fast: true` for strict workflows. |
+| `audit`          | **Post-run rubric scoring**. Audits an output (from `output_to_audit`, or pulled from the latest transcript for `session_id`) against a rubric. The auditor is selected to **exclude** the `producing_panelists` so a model cannot grade its own work (override with `allow_self_audit: true`). Default rubric covers factual grounding, constraint adherence, PII leak, internal consistency, open-question coverage, and actionability — override with `rubric: [...]`. Audit cost rolls up under the same `session_id` tagged `purpose: "audit"`. |
 | `update_crosscheck` | Compares your local git HEAD against `main` at https://github.com/fxspeiser/crosscheck-agent. With `apply: true`, runs `git pull --ff-only` in the install directory; the server can't reload itself, so the response asks you to restart Claude Code. The first crosscheck call per server process runs the same check (cached 6h) and attaches an `update_notice` to the result so Claude can offer the upgrade proactively. |
+
+### Usage + cost reporting
+
+Every multi-LLM tool now returns a `usage` block (per-call, per-provider, totals
+incl. estimated USD cost from [`config/pricing.json`](config/pricing.json)) and
+a `timing` block (per-call + total `wall_ms` / `cpu_ms`). Sessions accumulate
+the same totals so you can see lifetime spend per `session_id`.
+
+Set `CROSSCHECK_PRICING_PATH=/path/to/pricing.json` to override the bundled
+table. Missing-model lookups return `cost: 0, estimated: true` with a logged
+warning rather than failing the call.
+
+### Live progress
+
+When an MCP client passes `_meta.progressToken` with a tool call, the server
+emits `notifications/progress` messages as each node / round / synth step
+runs — including running CPU and wall time, tokens consumed, and cumulative
+cost. Without a token, the same progress lines are written as structured
+JSON to stderr so they appear in the MCP debug pane.
 
 ### Ad-hoc panels
 

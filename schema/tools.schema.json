@@ -698,6 +698,131 @@
         ]
       }
     },
+    "orchestrate": {
+      "description": "Plan-then-execute: the moderator decomposes the goal into a DAG of subtasks (or you pass a pre-authored `dag`), workers run in parallel where deps allow, and a final synthesizer recombines node outputs into a coherent deliverable. Each node declares `difficulty` (low|med|high) which feeds the cheap-mode router; with `cheap_mode:true` the cheapest sufficient model in the declared tier is picked per node. Default failure semantics: partial-recombine with [MISSING: ...] markers; set `fail_fast:true` for strict workflows. Every node's CPU/wall time and token cost is rolled up in the response `usage` + `timing` blocks.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "goal":         { "type": "string", "description": "High-level goal; the moderator drafts the DAG. Mutually exclusive with `dag`." },
+          "dag":          {
+            "type": "object",
+            "description": "Pre-authored DAG; skips the planning round. Mutually exclusive with `goal`.",
+            "properties": {
+              "summary": { "type": "string" },
+              "nodes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id":         { "type": "string" },
+                    "task":       { "type": "string" },
+                    "difficulty": { "type": "string", "enum": ["low", "med", "high"] },
+                    "role":       { "type": "string" },
+                    "depends_on": { "type": "array", "items": { "type": "string" } },
+                    "provider":   { "type": "string", "description": "Pin a specific provider for this node (overrides cheap-mode pick)." },
+                    "model":      { "type": "string", "description": "Pin a specific model for this node." }
+                  },
+                  "required": ["id", "task", "difficulty"]
+                }
+              }
+            },
+            "required": ["nodes"]
+          },
+          "context":      { "type": "string" },
+          "providers":    { "$ref": "#/$defs/ProviderArrayArg" },
+          "moderator":    { "type": "string", "description": "Provider used to plan the DAG and recombine the final result." },
+          "fail_fast":    { "type": "boolean", "default": false, "description": "Stop on first node failure instead of partial-recombine with [MISSING: ...] markers." },
+          "cheap_mode":   { "type": "boolean", "default": false, "description": "Route each node to the cheapest model in its declared difficulty tier." },
+          "max_parallel": { "type": "integer", "minimum": 1, "default": 4 },
+          "session_id":   { "type": "string" },
+          "untrusted_input": { "type": "boolean", "default": false }
+        }
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "tool":       { "const": "orchestrate" },
+          "dag":        { "type": "object" },
+          "nodes":      { "type": "array",
+                          "items": { "type": "object",
+                                     "properties": {
+                                       "id":       { "type": "string" },
+                                       "status":   { "type": "string", "enum": ["ok", "failed", "skipped", "not_run"] },
+                                       "provider": { "type": ["string", "null"] },
+                                       "model":    { "type": ["string", "null"] },
+                                       "output":   { "type": ["string", "null"] },
+                                       "error":    { "type": ["string", "null"] },
+                                       "wall_ms":  { "type": "integer" },
+                                       "cpu_ms":   { "type": "integer" }
+                                     },
+                                     "required": ["id", "status"] } },
+          "final":      { "type": "string" },
+          "missing":    { "type": "array", "items": { "type": "string" } },
+          "partial":    { "type": "boolean" },
+          "fail_fast":  { "type": "boolean" },
+          "cheap_mode": { "type": "boolean" },
+          "budget":     { "$ref": "#/$defs/BudgetSummary" }
+        },
+        "required": ["tool"]
+      }
+    },
+    "audit": {
+      "description": "Post-run audit: score an output (from `output_to_audit`, or pulled from the latest transcript for `session_id`) against a rubric. The auditor is selected to exclude the producing panel (`producing_panelists`) so the same model cannot grade its own work; set `allow_self_audit:true` to bypass. Default rubrics check factual grounding, constraint adherence, PII leak, internal consistency, open-question coverage, and actionability — override with `rubric`. With `cheap_mode:true` (default) the cheapest sufficient med-tier auditor is picked. Audit cost rolls up under `session_id` tagged `purpose:audit` so audit spend is distinct but unified.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "output_to_audit":    { "type": "string", "description": "The text to audit. Either this or `session_id` is required." },
+          "session_id":         { "type": "string", "description": "If `output_to_audit` is omitted, the latest transcript for this session is loaded." },
+          "rubric":             {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id":          { "type": "string" },
+                "description": { "type": "string" },
+                "severity":    { "type": "string", "enum": ["low", "med", "high"] }
+              },
+              "required": ["id", "description"]
+            },
+            "description": "Override the default rubric. Pass an empty array or omit to use defaults."
+          },
+          "producing_panelists":{ "type": "array", "items": { "type": "string" },
+                                   "description": "Provider names that produced the audited output; excluded from the auditor pool to avoid self-grading." },
+          "auditor":            { "type": "string", "description": "Explicit auditor provider. Overrides cheap-mode pick." },
+          "cheap_mode":         { "type": "boolean", "default": true },
+          "allow_self_audit":   { "type": "boolean", "default": false },
+          "constraints":        { "type": "string", "description": "User constraints the output should respect; surfaced to the auditor." }
+        }
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "tool":          { "const": "audit" },
+          "auditor":       { "type": "object",
+                             "properties": {
+                               "provider": { "type": "string" },
+                               "model":    { "type": "string" }
+                             }, "required": ["provider", "model"] },
+          "rubric":        { "type": "array", "items": { "type": "object" } },
+          "items":         { "type": "array",
+                             "items": { "type": "object",
+                                        "properties": {
+                                          "id":          { "type": "string" },
+                                          "description": { "type": "string" },
+                                          "severity":    { "type": "string" },
+                                          "score":       { "type": "number" },
+                                          "pass":        { "type": "boolean" },
+                                          "rationale":   { "type": "string" }
+                                        }, "required": ["id", "score", "pass"] } },
+          "overall_score": { "type": ["number", "null"] },
+          "passed":        { "type": "boolean" },
+          "budget":        { "$ref": "#/$defs/BudgetSummary" }
+        },
+        "required": ["tool", "auditor"]
+      }
+    },
     "update_crosscheck": {
       "description": "Check whether a newer version of crosscheck-agent is available at https://github.com/fxspeiser/crosscheck-agent (compares local git HEAD against the remote main HEAD via the GitHub API). With apply=true, runs `git pull --ff-only` in the install directory; the MCP server cannot reload itself, so the response asks the user to restart Claude Code afterwards. Requires the install to be a git checkout with the standard remote. The first crosscheck tool call per server process automatically performs the same check (cached 6h) and attaches an `update_notice` to its result so Claude can surface the upgrade offer.",
       "input": {

@@ -215,6 +215,89 @@ def _emit_event(kind: str, **fields: Any) -> None:
 
 
 # ------------------------------------------------------------
+# Live progress channel (stderr structured logs + MCP progress notifications)
+#
+# When an MCP client passes `_meta.progressToken` with a tool call, we emit
+# `notifications/progress` JSON-RPC messages on stdout so the client can render
+# step-by-step progress. We always emit a structured line on stderr too, so
+# even clients that don't honor progress notifications surface it in their
+# MCP debug pane.
+# ------------------------------------------------------------
+_PROGRESS_CTX = threading.local()
+_PROGRESS_STDOUT_LOCK = threading.Lock()
+_STDOUT_WRITER: Any = None  # set by run_jsonrpc() so progress can share the writer
+
+
+def _progress_set(token: Any, started_wall: float | None = None,
+                  started_cpu: float | None = None) -> None:
+    """Bind a progressToken (and timing origin) to the current thread."""
+    _PROGRESS_CTX.token = token
+    _PROGRESS_CTX.wall_start = started_wall if started_wall is not None else time.monotonic()
+    _PROGRESS_CTX.cpu_start = started_cpu if started_cpu is not None else time.process_time()
+    _PROGRESS_CTX.step = 0
+
+
+def _progress_clear() -> None:
+    for attr in ("token", "wall_start", "cpu_start", "step"):
+        if hasattr(_PROGRESS_CTX, attr):
+            delattr(_PROGRESS_CTX, attr)
+
+
+def _progress_token() -> Any:
+    return getattr(_PROGRESS_CTX, "token", None)
+
+
+def _emit_progress(message: str, *, total: float | None = None,
+                   progress: float | None = None, **extra: Any) -> None:
+    """Emit a live progress update. Always logs to stderr; also writes an
+    MCP `notifications/progress` JSON-RPC message to stdout if the caller
+    supplied a progressToken."""
+    now_wall = time.monotonic()
+    now_cpu = time.process_time()
+    wall_start = getattr(_PROGRESS_CTX, "wall_start", now_wall)
+    cpu_start = getattr(_PROGRESS_CTX, "cpu_start", now_cpu)
+    wall_ms = int((now_wall - wall_start) * 1000)
+    cpu_ms = int((now_cpu - cpu_start) * 1000)
+    step = getattr(_PROGRESS_CTX, "step", 0) + 1
+    try:
+        _PROGRESS_CTX.step = step
+    except Exception:
+        pass
+
+    rec: dict[str, Any] = {
+        "kind": "progress", "step": step,
+        "wall_ms": wall_ms, "cpu_ms": cpu_ms, "message": message,
+    }
+    if extra:
+        rec.update(_redact_obj(extra))
+
+    # stderr line — always.
+    try:
+        print(json.dumps(rec, separators=(",", ":")), file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+    # MCP progress notification — only if the caller asked for it.
+    token = _progress_token()
+    if token is not None and _STDOUT_WRITER is not None:
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "notifications/progress",
+            "params": {
+                "progressToken": token,
+                "progress": progress if progress is not None else step,
+                **({"total": total} if total is not None else {}),
+                "message": message,
+            },
+        }
+        try:
+            with _PROGRESS_STDOUT_LOCK:
+                _STDOUT_WRITER(json.dumps(payload, separators=(",", ":")) + "\n")
+        except Exception:
+            pass
+
+
+# ------------------------------------------------------------
 # Disk cache (exact-match, SHA256 of canonicalized request)
 # ------------------------------------------------------------
 def _cache_cfg() -> dict:
@@ -373,6 +456,26 @@ def _db_init() -> None:
                   cache_hits INTEGER NOT NULL DEFAULT 0
                 );
 
+                CREATE TABLE IF NOT EXISTS usage_log (
+                  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                  session_id      TEXT NOT NULL,
+                  ts              INTEGER NOT NULL,
+                  tool            TEXT,
+                  purpose         TEXT NOT NULL,
+                  provider        TEXT NOT NULL,
+                  model           TEXT NOT NULL,
+                  prompt_tokens   INTEGER NOT NULL DEFAULT 0,
+                  completion_tokens INTEGER NOT NULL DEFAULT 0,
+                  cached_tokens   INTEGER NOT NULL DEFAULT 0,
+                  total_tokens    INTEGER NOT NULL DEFAULT 0,
+                  cost_usd        REAL    NOT NULL DEFAULT 0.0,
+                  estimated       INTEGER NOT NULL DEFAULT 0,
+                  wall_ms         INTEGER NOT NULL DEFAULT 0,
+                  cpu_ms          INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_log(session_id);
+                CREATE INDEX IF NOT EXISTS idx_usage_provider ON usage_log(provider);
+
                 CREATE TABLE IF NOT EXISTS claims (
                   id             INTEGER PRIMARY KEY AUTOINCREMENT,
                   session_id     TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
@@ -417,11 +520,39 @@ def _db_init() -> None:
                 CREATE INDEX IF NOT EXISTS idx_deleg_req     ON delegations(requester);
                 """
             )
+            _add_session_usage_columns(conn)
         _DB_INIT_DONE = True
+
+
+def _add_session_usage_columns(conn: sqlite3.Connection) -> None:
+    """Idempotently add token/cost columns to sessions. SQLite doesn't support
+    `ADD COLUMN IF NOT EXISTS`, so we read PRAGMA table_info and add what's missing."""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+    add = [
+        ("total_prompt_tokens",     "INTEGER NOT NULL DEFAULT 0"),
+        ("total_completion_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("total_cached_tokens",     "INTEGER NOT NULL DEFAULT 0"),
+        ("total_tokens",            "INTEGER NOT NULL DEFAULT 0"),
+        ("total_cost_usd",          "REAL    NOT NULL DEFAULT 0.0"),
+        ("total_cpu_ms",            "INTEGER NOT NULL DEFAULT 0"),
+    ]
+    for name, decl in add:
+        if name not in cols:
+            try:
+                conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} {decl}")
+            except sqlite3.OperationalError:
+                pass
 
 
 def _safe_session_id(session_id: str) -> str:
     return _SESSION_ID_RE.sub("", session_id)[:64] or "default"
+
+
+_SESSION_BASE_COLS = ["session_id", "started_at", "last_at", "calls", "wall_ms", "cache_hits"]
+_SESSION_USAGE_COLS = [
+    "total_prompt_tokens", "total_completion_tokens", "total_cached_tokens",
+    "total_tokens", "total_cost_usd", "total_cpu_ms",
+]
 
 
 def _session_load(session_id: str | None) -> dict | None:
@@ -429,10 +560,10 @@ def _session_load(session_id: str | None) -> dict | None:
         return None
     sid = _safe_session_id(session_id)
     _db_init()
+    cols = ", ".join(_SESSION_BASE_COLS + _SESSION_USAGE_COLS)
     with _db_conn() as conn:
         row = conn.execute(
-            "SELECT session_id, started_at, last_at, calls, wall_ms, cache_hits "
-            "FROM sessions WHERE session_id = ?",
+            f"SELECT {cols} FROM sessions WHERE session_id = ?",
             (sid,),
         ).fetchone()
         if row is None:
@@ -443,7 +574,10 @@ def _session_load(session_id: str | None) -> dict | None:
                 (sid, now),
             )
             return {"session_id": sid, "started_at": now, "last_at": None,
-                    "calls": 0, "wall_ms": 0, "cache_hits": 0}
+                    "calls": 0, "wall_ms": 0, "cache_hits": 0,
+                    "total_prompt_tokens": 0, "total_completion_tokens": 0,
+                    "total_cached_tokens": 0, "total_tokens": 0,
+                    "total_cost_usd": 0.0, "total_cpu_ms": 0}
         return {k: row[k] for k in row.keys()}
 
 
@@ -453,28 +587,98 @@ def _session_save(state: dict | None) -> None:
     _db_init()
     with _db_conn() as conn:
         conn.execute(
-            "INSERT INTO sessions(session_id, started_at, last_at, calls, wall_ms, cache_hits) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
+            "INSERT INTO sessions(session_id, started_at, last_at, calls, "
+            "                     wall_ms, cache_hits, total_prompt_tokens, "
+            "                     total_completion_tokens, total_cached_tokens, "
+            "                     total_tokens, total_cost_usd, total_cpu_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(session_id) DO UPDATE SET "
             "  last_at=excluded.last_at, calls=excluded.calls, "
-            "  wall_ms=excluded.wall_ms, cache_hits=excluded.cache_hits",
+            "  wall_ms=excluded.wall_ms, cache_hits=excluded.cache_hits, "
+            "  total_prompt_tokens=excluded.total_prompt_tokens, "
+            "  total_completion_tokens=excluded.total_completion_tokens, "
+            "  total_cached_tokens=excluded.total_cached_tokens, "
+            "  total_tokens=excluded.total_tokens, "
+            "  total_cost_usd=excluded.total_cost_usd, "
+            "  total_cpu_ms=excluded.total_cpu_ms",
             (state["session_id"],
              int(state.get("started_at") or time.time()),
              int(state.get("last_at") or time.time()),
              int(state.get("calls", 0)),
              int(state.get("wall_ms", 0)),
-             int(state.get("cache_hits", 0))),
+             int(state.get("cache_hits", 0)),
+             int(state.get("total_prompt_tokens", 0)),
+             int(state.get("total_completion_tokens", 0)),
+             int(state.get("total_cached_tokens", 0)),
+             int(state.get("total_tokens", 0)),
+             float(state.get("total_cost_usd", 0.0)),
+             int(state.get("total_cpu_ms", 0))),
         )
 
 
-def _session_record(state: dict | None, answers: list[dict], call_started: float) -> None:
+def _session_record(state: dict | None, answers: list[dict], call_started: float,
+                    cpu_started: float | None = None) -> None:
     if not state:
         return
     elapsed_ms = int((time.monotonic() - call_started) * 1000)
+    cpu_ms     = int((time.process_time() - cpu_started) * 1000) if cpu_started is not None else 0
     state["calls"]      = int(state.get("calls", 0))      + len(answers)
     state["wall_ms"]    = int(state.get("wall_ms", 0))    + elapsed_ms
     state["cache_hits"] = int(state.get("cache_hits", 0)) + sum(1 for a in answers if a.get("cache_hit"))
     state["last_at"]    = int(time.time())
+    state["total_cpu_ms"] = int(state.get("total_cpu_ms", 0)) + cpu_ms
+    # Accumulate token/cost rollups from each answer.usage block.
+    for a in answers:
+        u = a.get("usage") or {}
+        state["total_prompt_tokens"]     = int(state.get("total_prompt_tokens", 0))     + int(u.get("prompt_tokens", 0))
+        state["total_completion_tokens"] = int(state.get("total_completion_tokens", 0)) + int(u.get("completion_tokens", 0))
+        state["total_cached_tokens"]     = int(state.get("total_cached_tokens", 0))     + int(u.get("cached_tokens", 0))
+        state["total_tokens"]            = int(state.get("total_tokens", 0))            + int(u.get("total_tokens", 0))
+        state["total_cost_usd"]          = float(state.get("total_cost_usd", 0.0))      + float(u.get("cost_usd", 0.0))
+
+
+_USAGE_LOG_LOCK = threading.Lock()
+
+
+def log_usage(session_id: str | None, tool: str | None, answers: list[dict]) -> None:
+    """Append a usage_log row for each answer that carries a usage block.
+    Safe to call without a session_id (skips logging). Never raises."""
+    if not session_id or not answers:
+        return
+    sid = _safe_session_id(session_id)
+    rows = []
+    now = int(time.time())
+    for a in answers:
+        u = a.get("usage") or {}
+        if not u.get("provider"):
+            continue
+        rows.append((
+            sid, now, tool, u.get("purpose", "worker"),
+            u.get("provider", ""), u.get("model", ""),
+            int(u.get("prompt_tokens", 0)),
+            int(u.get("completion_tokens", 0)),
+            int(u.get("cached_tokens", 0)),
+            int(u.get("total_tokens", 0)),
+            float(u.get("cost_usd", 0.0)),
+            1 if u.get("estimated") else 0,
+            int(a.get("elapsed_ms", 0)),
+            int(a.get("cpu_ms", 0)),
+        ))
+    if not rows:
+        return
+    try:
+        _db_init()
+        with _USAGE_LOG_LOCK, _db_conn() as conn:
+            conn.executemany(
+                "INSERT INTO usage_log(session_id, ts, tool, purpose, provider, model, "
+                "  prompt_tokens, completion_tokens, cached_tokens, total_tokens, "
+                "  cost_usd, estimated, wall_ms, cpu_ms) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+    except Exception:
+        # Logging must never break a tool call.
+        pass
 
 
 # ------------------------------------------------------------
@@ -640,13 +844,249 @@ def _session_claim_links(session_id: str) -> list[dict]:
 
 
 # ------------------------------------------------------------
+# Token usage, timing, and pricing
+# ------------------------------------------------------------
+PRICING_PATH = Path(os.environ.get("CROSSCHECK_PRICING_PATH") or (ROOT / "config" / "pricing.json"))
+_PRICING_CACHE: dict[str, Any] | None = None
+_PRICING_WARNED: set[str] = set()
+_PRICING_LOCK = threading.Lock()
+
+
+def _load_pricing() -> dict[str, Any]:
+    """Load pricing.json once and cache it. Returns {} on missing/invalid file
+    so cost calculation degrades to estimated=true rather than erroring."""
+    global _PRICING_CACHE
+    if _PRICING_CACHE is not None:
+        return _PRICING_CACHE
+    with _PRICING_LOCK:
+        if _PRICING_CACHE is not None:
+            return _PRICING_CACHE
+        try:
+            data = json.loads(PRICING_PATH.read_text())
+            if not isinstance(data, dict):
+                raise ValueError("pricing.json root must be an object")
+            _PRICING_CACHE = data
+        except FileNotFoundError:
+            print(f"crosscheck: pricing file not found at {PRICING_PATH}; "
+                  "cost will be reported as 0 with estimated=true",
+                  file=sys.stderr)
+            _PRICING_CACHE = {}
+        except Exception as e:
+            print(f"crosscheck: failed to load pricing.json ({e}); "
+                  "cost will be reported as 0 with estimated=true",
+                  file=sys.stderr)
+            _PRICING_CACHE = {}
+        return _PRICING_CACHE
+
+
+def _model_pricing(provider: str, model: str) -> dict[str, float] | None:
+    data = _load_pricing()
+    block = data.get(provider) if isinstance(data, dict) else None
+    if not isinstance(block, dict):
+        return None
+    entry = block.get(model)
+    if not isinstance(entry, dict):
+        return None
+    return {
+        "prompt_per_1k":     float(entry.get("prompt_per_1k", 0.0)),
+        "completion_per_1k": float(entry.get("completion_per_1k", 0.0)),
+        "cached_per_1k":     float(entry.get("cached_per_1k", 0.0)),
+    }
+
+
+def _calculate_cost(provider: str, model: str,
+                    prompt_tokens: int, completion_tokens: int,
+                    cached_tokens: int = 0) -> tuple[float, bool]:
+    """Returns (cost_usd, estimated). estimated=True when the model is missing
+    from pricing.json (cost falls back to 0)."""
+    rates = _model_pricing(provider, model)
+    if rates is None:
+        key = f"{provider}:{model}"
+        if key not in _PRICING_WARNED:
+            _PRICING_WARNED.add(key)
+            print(f"crosscheck: no pricing for {key}; "
+                  "reporting cost=0, estimated=true",
+                  file=sys.stderr)
+        return 0.0, True
+    # Cached tokens are billed at a discount; treat them as a subset of prompt
+    # tokens so callers can pass prompt_tokens = total_prompt incl. cached.
+    cached = max(0, int(cached_tokens))
+    prompt = max(0, int(prompt_tokens) - cached)
+    completion = max(0, int(completion_tokens))
+    cost = (
+        (prompt     / 1000.0) * rates["prompt_per_1k"] +
+        (completion / 1000.0) * rates["completion_per_1k"] +
+        (cached     / 1000.0) * rates["cached_per_1k"]
+    )
+    return round(cost, 8), False
+
+
+def _tier_ladder() -> dict[str, list[dict[str, str]]]:
+    """Return the configured tier ladder from pricing.json (`_tiers` key)."""
+    data = _load_pricing()
+    tiers = data.get("_tiers") if isinstance(data, dict) else None
+    if not isinstance(tiers, dict):
+        return {}
+    out: dict[str, list[dict[str, str]]] = {}
+    for name in ("low", "med", "high"):
+        spec = tiers.get(name) or {}
+        models = spec.get("models") if isinstance(spec, dict) else None
+        if not isinstance(models, list):
+            continue
+        out[name] = [
+            {"provider": str(m.get("provider", "")), "model": str(m.get("model", ""))}
+            for m in models if isinstance(m, dict) and m.get("provider") and m.get("model")
+        ]
+    return out
+
+
+# Valid `purpose` values for usage records. Kept as a set for fast validation
+# but informational only — adapters do not reject unknown values.
+USAGE_PURPOSES = frozenset({
+    "worker", "moderator", "synth", "audit",
+    "confer", "debate", "plan", "review", "coordinate",
+    "solve", "triangulate", "pick", "bench", "delegate",
+    "orchestrate", "fetch",
+})
+
+
+@dataclass
+class Usage:
+    """Normalized token-usage record for one provider call."""
+    provider: str
+    model: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cached_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0.0
+    estimated: bool = False
+    purpose: str = "worker"
+
+    @classmethod
+    def empty(cls, provider: str, model: str, purpose: str = "worker") -> "Usage":
+        return cls(provider=provider, model=model, purpose=purpose,
+                   estimated=True)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "provider":         self.provider,
+            "model":            self.model,
+            "prompt_tokens":    int(self.prompt_tokens),
+            "completion_tokens":int(self.completion_tokens),
+            "cached_tokens":    int(self.cached_tokens),
+            "total_tokens":     int(self.total_tokens or (self.prompt_tokens + self.completion_tokens)),
+            "cost_usd":         float(self.cost_usd),
+            "estimated":        bool(self.estimated),
+            "purpose":          self.purpose,
+        }
+
+    def with_cost(self) -> "Usage":
+        """Populate cost_usd from pricing.json based on current token counts."""
+        cost, estimated = _calculate_cost(
+            self.provider, self.model,
+            self.prompt_tokens, self.completion_tokens, self.cached_tokens,
+        )
+        self.cost_usd = cost
+        # Preserve existing estimated=True (e.g. provider didn't report usage).
+        self.estimated = self.estimated or estimated
+        if not self.total_tokens:
+            self.total_tokens = int(self.prompt_tokens + self.completion_tokens)
+        return self
+
+
+@dataclass
+class Timing:
+    """CPU + wall clock timing for one provider call or one tool run."""
+    wall_ms: int = 0
+    cpu_ms: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        return {"wall_ms": int(self.wall_ms), "cpu_ms": int(self.cpu_ms)}
+
+
+@dataclass
+class SendResult:
+    """Return value from Provider.send(). Replaces the (text, attempts) tuple
+    while preserving tuple-style unpacking for backwards compat at call sites
+    that haven't been updated yet (see __iter__)."""
+    text: str
+    attempts: int = 1
+    usage: Usage | None = None
+
+    def __iter__(self):
+        # Allow `text, attempts = result` unpacking during migration.
+        yield self.text
+        yield self.attempts
+
+
+def _aggregate_usage(usages: list[Usage]) -> dict[str, Any]:
+    """Roll up a list of Usage records into the standard `usage` block."""
+    by_call = [u.to_dict() for u in usages]
+    by_provider: dict[str, dict[str, Any]] = {}
+    total_prompt = 0
+    total_completion = 0
+    total_cached = 0
+    total_cost = 0.0
+    any_estimated = False
+    for u in usages:
+        d = u.to_dict()
+        bp = by_provider.setdefault(u.provider, {
+            "provider":          u.provider,
+            "prompt_tokens":     0,
+            "completion_tokens": 0,
+            "cached_tokens":     0,
+            "total_tokens":      0,
+            "cost_usd":          0.0,
+            "calls":             0,
+            "estimated":         False,
+        })
+        bp["prompt_tokens"]     += d["prompt_tokens"]
+        bp["completion_tokens"] += d["completion_tokens"]
+        bp["cached_tokens"]     += d["cached_tokens"]
+        bp["total_tokens"]      += d["total_tokens"]
+        bp["cost_usd"]           = round(bp["cost_usd"] + d["cost_usd"], 8)
+        bp["calls"]             += 1
+        bp["estimated"]          = bp["estimated"] or d["estimated"]
+        total_prompt     += d["prompt_tokens"]
+        total_completion += d["completion_tokens"]
+        total_cached     += d["cached_tokens"]
+        total_cost       += d["cost_usd"]
+        any_estimated     = any_estimated or d["estimated"]
+    return {
+        "by_call":     by_call,
+        "by_provider": list(by_provider.values()),
+        "totals": {
+            "prompt_tokens":     int(total_prompt),
+            "completion_tokens": int(total_completion),
+            "cached_tokens":     int(total_cached),
+            "total_tokens":      int(total_prompt + total_completion),
+            "cost_usd":          round(total_cost, 8),
+            "estimated":         bool(any_estimated),
+            "calls":             len(usages),
+        },
+    }
+
+
+def _aggregate_timing(timings: list[Timing], started_wall: float, started_cpu: float) -> dict[str, Any]:
+    total_wall = int((time.monotonic() - started_wall) * 1000)
+    total_cpu = int((time.process_time() - started_cpu) * 1000)
+    return {
+        "wall_ms": total_wall,
+        "cpu_ms":  total_cpu,
+        "by_call": [t.to_dict() for t in timings],
+    }
+
+
+# ------------------------------------------------------------
 # Provider adapters — all normalised to chat(messages) -> text
 # ------------------------------------------------------------
 @dataclass
 class Provider:
     name: str
-    # send(messages, max_tokens, temperature) -> (text, attempts_used)
-    send: Callable[[list[dict], int, float], tuple[str, int]]
+    # send(messages, max_tokens, temperature, purpose="worker") -> SendResult.
+    # SendResult is also tuple-iterable as (text, attempts) for legacy callers.
+    send: Callable[..., SendResult]
     model: str
 
 
@@ -815,7 +1255,8 @@ def openai_compatible(name: str, url: str, key_env: str, model_env: str, default
         return None
     model = ENV.get(model_env, default_model)
 
-    def send(messages: list[dict], max_tokens: int, temperature: float) -> tuple[str, int]:
+    def send(messages: list[dict], max_tokens: int, temperature: float,
+             purpose: str = "worker") -> SendResult:
         body: dict = {"model": model, "messages": messages}
         if _supports_temperature(name, model):
             body["max_tokens"] = max_tokens
@@ -835,7 +1276,23 @@ def openai_compatible(name: str, url: str, key_env: str, model_env: str, default
             text = resp["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:
             raise ProviderError("parse", f"{name}: unexpected response shape: {str(resp)[:200]}") from e
-        return text, attempts
+        # OpenAI / xAI / Mistral / Groq / Deepseek all return usage in the same shape.
+        u = resp.get("usage") or {}
+        # OpenAI exposes cached prompt tokens via prompt_tokens_details.cached_tokens.
+        cached = 0
+        details = u.get("prompt_tokens_details") or {}
+        if isinstance(details, dict):
+            cached = int(details.get("cached_tokens") or 0)
+        usage = Usage(
+            provider=name, model=model,
+            prompt_tokens=int(u.get("prompt_tokens") or 0),
+            completion_tokens=int(u.get("completion_tokens") or 0),
+            cached_tokens=cached,
+            total_tokens=int(u.get("total_tokens") or 0),
+            purpose=purpose,
+            estimated=not bool(u),
+        ).with_cost()
+        return SendResult(text=text, attempts=attempts, usage=usage)
 
     return Provider(name=name, send=send, model=model)
 
@@ -846,7 +1303,8 @@ def anthropic_provider() -> Provider | None:
         return None
     model = ENV.get("ANTHROPIC_MODEL", "claude-opus-4-5")
 
-    def send(messages: list[dict], max_tokens: int, temperature: float) -> tuple[str, int]:
+    def send(messages: list[dict], max_tokens: int, temperature: float,
+             purpose: str = "worker") -> SendResult:
         system = next((m["content"] for m in messages if m["role"] == "system"), None)
         convo = [m for m in messages if m["role"] != "system"]
         body = {"model": model, "max_tokens": max_tokens, "temperature": temperature,
@@ -866,7 +1324,19 @@ def anthropic_provider() -> Provider | None:
             text = "".join(block.get("text", "") for block in resp.get("content", []))
         except Exception as e:
             raise ProviderError("parse", f"anthropic: unexpected response shape: {str(resp)[:200]}") from e
-        return text, attempts
+        u = resp.get("usage") or {}
+        prompt = int(u.get("input_tokens") or 0)
+        cached = int(u.get("cache_read_input_tokens") or 0)
+        completion = int(u.get("output_tokens") or 0)
+        usage = Usage(
+            provider="anthropic", model=model,
+            prompt_tokens=prompt + cached,  # Anthropic reports cache reads separately
+            completion_tokens=completion,
+            cached_tokens=cached,
+            purpose=purpose,
+            estimated=not bool(u),
+        ).with_cost()
+        return SendResult(text=text, attempts=attempts, usage=usage)
 
     return Provider(name="anthropic", send=send, model=model)
 
@@ -877,7 +1347,8 @@ def gemini_provider() -> Provider | None:
         return None
     model = ENV.get("GEMINI_MODEL", "gemini-2.5-pro")
 
-    def send(messages: list[dict], max_tokens: int, temperature: float) -> tuple[str, int]:
+    def send(messages: list[dict], max_tokens: int, temperature: float,
+             purpose: str = "worker") -> SendResult:
         contents = []
         system = None
         for m in messages:
@@ -901,13 +1372,26 @@ def gemini_provider() -> Provider | None:
             url, {}, body, timeout=CFG.get("max_time_seconds", 120), deadline=deadline
         )
         cands = resp.get("candidates", [])
+        u = resp.get("usageMetadata") or {}
+        prompt = int(u.get("promptTokenCount") or 0)
+        cached = int(u.get("cachedContentTokenCount") or 0)
+        completion = int(u.get("candidatesTokenCount") or 0)
+        usage = Usage(
+            provider="gemini", model=model,
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            cached_tokens=cached,
+            total_tokens=int(u.get("totalTokenCount") or 0),
+            purpose=purpose,
+            estimated=not bool(u),
+        ).with_cost()
         if not cands:
-            return "", attempts
+            return SendResult(text="", attempts=attempts, usage=usage)
         try:
             text = "".join(p.get("text", "") for p in cands[0]["content"]["parts"])
         except Exception as e:
             raise ProviderError("parse", f"gemini: unexpected response shape: {str(resp)[:200]}") from e
-        return text, attempts
+        return SendResult(text=text, attempts=attempts, usage=usage)
 
     return Provider(name="gemini", send=send, model=model)
 
@@ -965,74 +1449,211 @@ def _time_left(deadline: float) -> float:
     return max(0.0, deadline - time.monotonic())
 
 
-def _ask_one(p: Provider, messages: list[dict], deadline: float, max_tokens: int) -> dict:
+def _ask_one(p: Provider, messages: list[dict], deadline: float, max_tokens: int,
+             purpose: str = "worker") -> dict:
     temp = float(CFG.get("temperature", 0.4))
     if _time_left(deadline) <= 0:
         ans = {"provider": p.name, "model": p.model, "error": "time budget exhausted",
-               "error_kind": "timeout", "cache_hit": False, "elapsed_ms": 0, "attempts": 0}
+               "error_kind": "timeout", "cache_hit": False, "elapsed_ms": 0,
+               "cpu_ms": 0, "attempts": 0,
+               "usage": Usage.empty(p.name, p.model, purpose).to_dict(),
+               "timing": Timing().to_dict()}
         _emit_event("provider_call", provider=p.name, model=p.model,
-                    cache_hit=False, error_kind="timeout", elapsed_ms=0, attempts=0)
+                    cache_hit=False, error_kind="timeout", elapsed_ms=0, attempts=0,
+                    purpose=purpose)
+        _emit_progress(f"{p.name}: time budget exhausted",
+                       provider=p.name, model=p.model, purpose=purpose)
         return ans
 
     key = _cache_key(p.name, p.model, messages, max_tokens, temp)
     cached = _cache_get(key)
     if cached is not None:
+        # Cache hits incur no token cost — emit a zero-usage record with the
+        # original provider/model so call totals stay coherent.
+        u = Usage(provider=p.name, model=p.model, purpose=purpose,
+                  estimated=False).to_dict()
         _emit_event("provider_call", provider=p.name, model=p.model,
-                    cache_hit=True, elapsed_ms=0, attempts=0, request_hash=key)
+                    cache_hit=True, elapsed_ms=0, attempts=0, request_hash=key,
+                    purpose=purpose)
+        _emit_progress(f"{p.name}: cache hit",
+                       provider=p.name, model=p.model, purpose=purpose)
         return {"provider": p.name, "model": p.model, "response": cached["text"],
-                "cache_hit": True, "elapsed_ms": 0, "attempts": 0}
+                "cache_hit": True, "elapsed_ms": 0, "cpu_ms": 0,
+                "attempts": 0, "usage": u, "timing": {"wall_ms": 0, "cpu_ms": 0}}
 
-    started = time.monotonic()
+    _emit_progress(f"{p.name}: dispatch",
+                   provider=p.name, model=p.model, purpose=purpose)
+    started_wall = time.monotonic()
+    started_cpu  = time.process_time()
     try:
-        result = p.send(messages, max_tokens, temp)
-        if isinstance(result, tuple):
+        try:
+            result = p.send(messages, max_tokens, temp, purpose)
+        except TypeError:
+            # Legacy adapters / test stubs with a 3-arg `send` signature.
+            # We accept them and synthesize a zero-usage record for the call.
+            result = p.send(messages, max_tokens, temp)
+        # Tolerate legacy adapters still returning (text, attempts) tuples.
+        if isinstance(result, SendResult):
+            out, attempts, usage = result.text, result.attempts, result.usage
+        elif isinstance(result, tuple):
             out, attempts = result
+            usage = None
         else:
-            out, attempts = result, 1
-        elapsed_ms = int((time.monotonic() - started) * 1000)
+            out, attempts, usage = result, 1, None
+        if usage is None:
+            usage = Usage.empty(p.name, p.model, purpose)
+        elapsed_ms = int((time.monotonic() - started_wall) * 1000)
+        cpu_ms     = int((time.process_time() - started_cpu) * 1000)
         _cache_put(key, {"text": out, "stored_at": int(time.time())})
         _emit_event("provider_call", provider=p.name, model=p.model,
                     cache_hit=False, elapsed_ms=elapsed_ms, attempts=attempts,
-                    request_hash=key)
+                    request_hash=key, purpose=purpose,
+                    cost_usd=usage.cost_usd, total_tokens=usage.total_tokens,
+                    cpu_ms=cpu_ms)
+        _emit_progress(
+            f"{p.name}: ok ({elapsed_ms}ms wall / {cpu_ms}ms cpu, "
+            f"{usage.total_tokens or (usage.prompt_tokens + usage.completion_tokens)} tok, "
+            f"${usage.cost_usd:.4f})",
+            provider=p.name, model=p.model, purpose=purpose,
+            wall_ms=elapsed_ms, cpu_ms=cpu_ms,
+            tokens=usage.total_tokens, cost_usd=usage.cost_usd,
+        )
         return {"provider": p.name, "model": p.model, "response": out,
-                "cache_hit": False, "elapsed_ms": elapsed_ms, "attempts": attempts}
+                "cache_hit": False, "elapsed_ms": elapsed_ms, "cpu_ms": cpu_ms,
+                "attempts": attempts, "usage": usage.to_dict(),
+                "timing": {"wall_ms": elapsed_ms, "cpu_ms": cpu_ms}}
     except ProviderError as e:
-        elapsed_ms = int((time.monotonic() - started) * 1000)
+        elapsed_ms = int((time.monotonic() - started_wall) * 1000)
+        cpu_ms     = int((time.process_time() - started_cpu) * 1000)
         ans = {"provider": p.name, "model": p.model, "error": str(e),
                "error_kind": e.kind, "cache_hit": False,
-               "elapsed_ms": elapsed_ms, "attempts": 0}
+               "elapsed_ms": elapsed_ms, "cpu_ms": cpu_ms, "attempts": 0,
+               "usage": Usage.empty(p.name, p.model, purpose).to_dict(),
+               "timing": {"wall_ms": elapsed_ms, "cpu_ms": cpu_ms}}
         if e.retry_after_s is not None:
             ans["retry_after_s"] = e.retry_after_s
         _emit_event("provider_call", provider=p.name, model=p.model,
                     cache_hit=False, elapsed_ms=elapsed_ms,
-                    error_kind=e.kind, attempts=0, request_hash=key)
+                    error_kind=e.kind, attempts=0, request_hash=key,
+                    purpose=purpose, cpu_ms=cpu_ms)
+        _emit_progress(
+            f"{p.name}: error ({e.kind})",
+            provider=p.name, model=p.model, purpose=purpose,
+            wall_ms=elapsed_ms, cpu_ms=cpu_ms, error_kind=e.kind,
+        )
         return ans
     except Exception as e:
-        elapsed_ms = int((time.monotonic() - started) * 1000)
+        elapsed_ms = int((time.monotonic() - started_wall) * 1000)
+        cpu_ms     = int((time.process_time() - started_cpu) * 1000)
         _emit_event("provider_call", provider=p.name, model=p.model,
                     cache_hit=False, elapsed_ms=elapsed_ms,
-                    error_kind="other", attempts=0, request_hash=key)
+                    error_kind="other", attempts=0, request_hash=key,
+                    purpose=purpose, cpu_ms=cpu_ms)
+        _emit_progress(
+            f"{p.name}: error (other)",
+            provider=p.name, model=p.model, purpose=purpose,
+            wall_ms=elapsed_ms, cpu_ms=cpu_ms, error_kind="other",
+        )
         return {"provider": p.name, "model": p.model, "error": str(e),
                 "error_kind": "other", "cache_hit": False,
-                "elapsed_ms": elapsed_ms, "attempts": 0}
+                "elapsed_ms": elapsed_ms, "cpu_ms": cpu_ms, "attempts": 0,
+                "usage": Usage.empty(p.name, p.model, purpose).to_dict(),
+                "timing": {"wall_ms": elapsed_ms, "cpu_ms": cpu_ms}}
 
 
-def _budget_summary(call_started: float, deadline: float, answers: list[dict]) -> dict:
+def _budget_summary(call_started: float, deadline: float, answers: list[dict],
+                    cpu_started: float | None = None) -> dict:
+    cpu_ms = int((time.process_time() - cpu_started) * 1000) if cpu_started is not None else 0
+    total_cost = 0.0
+    total_tokens = 0
+    estimated = False
+    for a in answers:
+        u = a.get("usage") or {}
+        total_cost += float(u.get("cost_usd", 0.0))
+        total_tokens += int(u.get("total_tokens", 0))
+        estimated = estimated or bool(u.get("estimated", False))
     return {
         "wall_used_ms":      int((time.monotonic() - call_started) * 1000),
         "wall_remaining_ms": int(max(0.0, deadline - time.monotonic()) * 1000),
+        "cpu_used_ms":       cpu_ms,
         "max_time_seconds":  int(CFG.get("max_time_seconds", 120)),
         "token_cap":         int(CFG.get("token_cap", 8000)),
         "cache_hits":        sum(1 for a in answers if a.get("cache_hit")),
         "provider_calls":    len(answers),
+        "total_tokens":      int(total_tokens),
+        "total_cost_usd":    round(total_cost, 8),
+        "cost_estimated":    bool(estimated),
     }
 
-def _ask_many_parallel(providers: list[Provider], messages: list[dict], deadline: float, max_tokens: int) -> list[dict]:
+def _ask_many_parallel(providers: list[Provider], messages: list[dict], deadline: float,
+                       max_tokens: int, purpose: str = "worker") -> list[dict]:
     if len(providers) <= 1:
-        return [_ask_one(providers[0], messages, deadline, max_tokens)] if providers else []
+        return [_ask_one(providers[0], messages, deadline, max_tokens, purpose)] if providers else []
+    # Carry the parent thread's progress token into each worker so MCP
+    # notifications keep flowing during parallel dispatch.
+    parent_token = _progress_token()
+    parent_wall = getattr(_PROGRESS_CTX, "wall_start", None)
+    parent_cpu = getattr(_PROGRESS_CTX, "cpu_start", None)
+
+    def _run(provider: Provider) -> dict:
+        if parent_token is not None:
+            _progress_set(parent_token, parent_wall, parent_cpu)
+        try:
+            return _ask_one(provider, messages, deadline, max_tokens, purpose)
+        finally:
+            if parent_token is not None:
+                _progress_clear()
+
     with ThreadPoolExecutor(max_workers=len(providers)) as ex:
-        futures = [ex.submit(_ask_one, p, messages, deadline, max_tokens) for p in providers]
+        futures = [ex.submit(_run, p) for p in providers]
         return [f.result() for f in futures]
+
+
+def _attach_usage_block(result: dict, answers: list[dict],
+                        extra_calls: list[dict] | None = None) -> dict:
+    """Attach a `usage` block (per-call + per-provider + totals) and a `timing`
+    block (totals + per-call wall/cpu) to a tool result. `extra_calls` lets
+    moderator/synth answers join the rollup."""
+    all_calls = list(answers)
+    if extra_calls:
+        all_calls.extend(extra_calls)
+    usages: list[Usage] = []
+    timings: list[Timing] = []
+    for a in all_calls:
+        u = a.get("usage")
+        if isinstance(u, dict) and u.get("provider"):
+            usages.append(Usage(
+                provider=u.get("provider", ""),
+                model=u.get("model", ""),
+                prompt_tokens=int(u.get("prompt_tokens", 0)),
+                completion_tokens=int(u.get("completion_tokens", 0)),
+                cached_tokens=int(u.get("cached_tokens", 0)),
+                total_tokens=int(u.get("total_tokens", 0)),
+                cost_usd=float(u.get("cost_usd", 0.0)),
+                estimated=bool(u.get("estimated", False)),
+                purpose=u.get("purpose", "worker"),
+            ))
+        timings.append(Timing(
+            wall_ms=int(a.get("elapsed_ms", 0)),
+            cpu_ms=int(a.get("cpu_ms", 0)),
+        ))
+    result["usage"] = _aggregate_usage(usages)
+    result["timing"] = {
+        "wall_ms": sum(t.wall_ms for t in timings),
+        "cpu_ms":  sum(t.cpu_ms  for t in timings),
+        "by_call": [
+            {
+                "provider": a.get("provider"),
+                "model":    a.get("model"),
+                "purpose":  (a.get("usage") or {}).get("purpose"),
+                "wall_ms":  int(a.get("elapsed_ms", 0)),
+                "cpu_ms":   int(a.get("cpu_ms", 0)),
+                "cache_hit": bool(a.get("cache_hit")),
+            }
+            for a in all_calls
+        ],
+    }
+    return result
 
 
 def _resolve_providers(names: list[str] | None) -> tuple[list[Provider], list[str]]:
@@ -1132,17 +1753,32 @@ def tool_confer(args: dict) -> dict:
     messages.append({"role": "user", "content": user_q})
 
     call_started = time.monotonic()
+    cpu_started = time.process_time()
     deadline = _deadline()
     per_call = _per_call_tokens(len(selected))
     session = _session_load(args.get("session_id"))
     _emit_event("tool_start", tool="confer", providers=[p.name for p in selected],
                 untrusted_input=untrusted, session_id=session.get("session_id") if session else None)
-    answers = _ask_many_parallel(selected, messages, deadline, per_call)
-    _session_record(session, answers, call_started)
+    _emit_progress(f"confer: dispatching {len(selected)} panelist(s)",
+                   tool="confer", providers=[p.name for p in selected])
+    answers = _ask_many_parallel(selected, messages, deadline, per_call, purpose="confer")
+    _session_record(session, answers, call_started, cpu_started)
     _session_save(session)
+    log_usage(session.get("session_id") if session else args.get("session_id"),
+              "confer", answers)
 
     result = {"tool": "confer", "question": question, "answers": answers,
-              "budget": _budget_summary(call_started, deadline, answers)}
+              "budget": _budget_summary(call_started, deadline, answers, cpu_started)}
+    _attach_usage_block(result, answers)
+    _emit_progress(
+        f"confer: done ({result['budget']['wall_used_ms']}ms wall / "
+        f"{result['budget']['cpu_used_ms']}ms cpu, "
+        f"${result['budget']['total_cost_usd']:.4f})",
+        tool="confer",
+        wall_ms=result["budget"]["wall_used_ms"],
+        cpu_ms=result["budget"]["cpu_used_ms"],
+        cost_usd=result["budget"]["total_cost_usd"],
+    )
     if session:
         result["session"] = session
     if unknown:
@@ -1155,7 +1791,8 @@ def tool_confer(args: dict) -> dict:
         result["transcript"] = path  # backwards-compatible alias
     _emit_event("tool_end", tool="confer", provider_calls=len(answers),
                 cache_hits=result["budget"]["cache_hits"],
-                wall_used_ms=result["budget"]["wall_used_ms"])
+                wall_used_ms=result["budget"]["wall_used_ms"],
+                cost_usd=result["budget"]["total_cost_usd"])
     return result
 
 
@@ -1178,6 +1815,7 @@ def tool_debate(args: dict) -> dict:
 
     max_rounds = int(args.get("max_rounds", CFG.get("max_rounds", 3)))
     call_started = time.monotonic()
+    cpu_started = time.process_time()
     deadline = _deadline()
     transcript: list[dict] = []
     shared_context = context
@@ -1186,6 +1824,8 @@ def tool_debate(args: dict) -> dict:
     _emit_event("tool_start", tool="debate", providers=[p.name for p in selected],
                 max_rounds=max_rounds,
                 session_id=session.get("session_id") if session else None)
+    _emit_progress(f"debate: starting {max_rounds}-round panel of {len(selected)}",
+                   tool="debate", providers=[p.name for p in selected], rounds=max_rounds)
 
     for rnd in range(1, max_rounds + 1):
         if _time_left(deadline) <= 1:
@@ -1207,10 +1847,12 @@ def tool_debate(args: dict) -> dict:
             )
             round_messages.append({"role": "user", "content": f"PRIOR TURNS:\n{prior}"})
 
+        _emit_progress(f"debate: round {rnd}/{max_rounds}",
+                       tool="debate", round=rnd, total_rounds=max_rounds)
         for p in selected:
             if _time_left(deadline) <= 1:
                 break
-            entry = _ask_one(p, round_messages, deadline, per_call)
+            entry = _ask_one(p, round_messages, deadline, per_call, purpose="debate")
             entry["round"] = rnd
             transcript.append(entry)
 
@@ -1229,20 +1871,25 @@ def tool_debate(args: dict) -> dict:
             {"role": "system", "content": "You are the moderator. Synthesise the debate into a single grounded recommendation."},
             {"role": "user", "content": f"TOPIC: {topic}\n\nTRANSCRIPT:\n{condensed}"},
         ]
+        _emit_progress(f"debate: moderator synthesis ({moderator.name})",
+                       tool="debate", moderator=moderator.name)
         if bool(args.get("structured", False)):
             obj, ans, errs = _request_structured(
                 moderator, synth_messages, _structured_synthesis_schema(),
                 per_call, deadline, max_retries=1,
+                purpose="synth",
             )
             synthesis = ans
             synthesis_structured = obj
             synthesis_errors = errs
         else:
-            synthesis = _ask_one(moderator, synth_messages, deadline, per_call)
+            synthesis = _ask_one(moderator, synth_messages, deadline, per_call, purpose="synth")
 
     all_answers = transcript + ([synthesis] if synthesis else [])
-    _session_record(session, all_answers, call_started)
+    _session_record(session, all_answers, call_started, cpu_started)
     _session_save(session)
+    log_usage(session.get("session_id") if session else args.get("session_id"),
+              "debate", all_answers)
 
     # Persist claims when both session and structured synthesis are available.
     if session and synthesis_structured and isinstance(synthesis_structured, dict):
@@ -1272,8 +1919,20 @@ def tool_debate(args: dict) -> dict:
         "rounds_completed": max((e["round"] for e in transcript), default=0),
         "transcript": transcript,
         "synthesis": synthesis,
-        "budget": _budget_summary(call_started, deadline, all_answers),
+        "budget": _budget_summary(call_started, deadline, all_answers, cpu_started),
     }
+    _attach_usage_block(result, all_answers)
+    _emit_progress(
+        f"debate: done ({result['rounds_completed']} rounds, "
+        f"{result['budget']['wall_used_ms']}ms wall / "
+        f"{result['budget']['cpu_used_ms']}ms cpu, "
+        f"${result['budget']['total_cost_usd']:.4f})",
+        tool="debate",
+        rounds=result["rounds_completed"],
+        wall_ms=result["budget"]["wall_used_ms"],
+        cpu_ms=result["budget"]["cpu_used_ms"],
+        cost_usd=result["budget"]["total_cost_usd"],
+    )
     if synthesis_structured is not None:
         result["synthesis_structured"] = synthesis_structured
     if synthesis_errors:
@@ -1288,7 +1947,8 @@ def tool_debate(args: dict) -> dict:
     _emit_event("tool_end", tool="debate", provider_calls=len(all_answers),
                 cache_hits=result["budget"]["cache_hits"],
                 wall_used_ms=result["budget"]["wall_used_ms"],
-                rounds_completed=result["rounds_completed"])
+                rounds_completed=result["rounds_completed"],
+                cost_usd=result["budget"]["total_cost_usd"])
     return result
 
 
@@ -1370,6 +2030,7 @@ def tool_coordinate(args: dict) -> dict:
                 "available_now": sorted(ALL_PROVIDERS.keys())}
 
     call_started = time.monotonic()
+    cpu_started = time.process_time()
     deadline = _deadline()
     # Three role steps share the per-call budget; weight: proposer 1, each critic 1, synth 1.5.
     per_call = _per_call_tokens(2 + len(critics))
@@ -1380,6 +2041,9 @@ def tool_coordinate(args: dict) -> dict:
                        "synthesizer": synth.name},
                 untrusted_input=untrusted,
                 session_id=session.get("session_id") if session else None)
+    _emit_progress(f"coordinate: proposer={proposer.name} critics={len(critics)} synth={synth.name}",
+                   tool="coordinate", proposer=proposer.name,
+                   critics=[c.name for c in critics], synthesizer=synth.name)
 
     base_system_lines = [
         "You are part of a structured coordination flow with three roles: "
@@ -1407,6 +2071,7 @@ def tool_coordinate(args: dict) -> dict:
     proposal_obj, proposal_ans, _prop_errs = _request_structured(
         proposer, prop_messages, _role_turn_schema(),
         max_tokens=per_call, deadline=deadline, max_retries=1,
+        purpose="worker",
     )
     proposal_render = _format_role_turn("proposer", proposal_obj,
                                         fallback_text=proposal_ans.get("response", "") if proposal_ans else "")
@@ -1424,6 +2089,7 @@ def tool_coordinate(args: dict) -> dict:
         obj, ans, errs = _request_structured(
             p, msgs, _role_turn_schema(), max_tokens=per_call,
             deadline=deadline, max_retries=1,
+            purpose="worker",
         )
         return p, obj, ans, errs
 
@@ -1465,11 +2131,14 @@ def tool_coordinate(args: dict) -> dict:
     synthesis_obj, synthesis_ans, synthesis_errs = _request_structured(
         synth, synth_messages, _structured_synthesis_schema(),
         max_tokens=per_call, deadline=deadline, max_retries=1,
+        purpose="synth",
     )
 
     all_answers = [proposal_ans] + critique_answers + ([synthesis_ans] if synthesis_ans else [])
-    _session_record(session, all_answers, call_started)
+    _session_record(session, all_answers, call_started, cpu_started)
     _session_save(session)
+    log_usage(session.get("session_id") if session else args.get("session_id"),
+              "coordinate", all_answers)
 
     # Persist structured output to the SQLite claim-list when we have a session.
     if session and synthesis_obj:
@@ -1510,8 +2179,18 @@ def tool_coordinate(args: dict) -> dict:
         "critique_structured":  critique_structured,
         "synthesis_answer":     synthesis_ans,
         "synthesis_structured": synthesis_obj,
-        "budget": _budget_summary(call_started, deadline, all_answers),
+        "budget": _budget_summary(call_started, deadline, all_answers, cpu_started),
     }
+    _attach_usage_block(result, all_answers)
+    _emit_progress(
+        f"coordinate: done ({result['budget']['wall_used_ms']}ms wall / "
+        f"{result['budget']['cpu_used_ms']}ms cpu, "
+        f"${result['budget']['total_cost_usd']:.4f})",
+        tool="coordinate",
+        wall_ms=result["budget"]["wall_used_ms"],
+        cpu_ms=result["budget"]["cpu_used_ms"],
+        cost_usd=result["budget"]["total_cost_usd"],
+    )
     if synthesis_errs:
         result["synthesis_errors"] = synthesis_errs
     if session:
@@ -1523,7 +2202,8 @@ def tool_coordinate(args: dict) -> dict:
     result["transcript_path"] = write_transcript("coordinate", result)
     _emit_event("tool_end", tool="coordinate", provider_calls=len(all_answers),
                 cache_hits=result["budget"]["cache_hits"],
-                wall_used_ms=result["budget"]["wall_used_ms"])
+                wall_used_ms=result["budget"]["wall_used_ms"],
+                cost_usd=result["budget"]["total_cost_usd"])
     return result
 
 
@@ -1975,9 +2655,13 @@ def tool_pick(args: dict) -> dict:
         return {"error": "no active providers have API keys in .env"}
 
     call_started = time.monotonic()
+    cpu_started = time.process_time()
     deadline = _deadline()
     session = _session_load(args.get("session_id"))
     per_call = _per_call_tokens(len(selected) + 1)
+    _emit_progress(f"pick: scoring {len(options)} option(s) across {len(selected)} provider(s)",
+                   tool="pick", providers=[p.name for p in selected],
+                   options=len(options), criteria=len(criteria))
 
     option_names = [o["name"] for o in options]
     criterion_names = [c["name"] for c in criteria]
@@ -2102,8 +2786,10 @@ def tool_pick(args: dict) -> dict:
     dissent_pool.sort(key=lambda d: (-d["stddev"], -d["spread"], d["option"], d["criterion"]))
     dissent_deltas = dissent_pool[:max_dissent]
 
-    _session_record(session, answers_collected, call_started)
+    _session_record(session, answers_collected, call_started, cpu_started)
     _session_save(session)
+    log_usage(session.get("session_id") if session else args.get("session_id"),
+              "pick", answers_collected)
 
     if session and ranking_rows:
         try:
@@ -2123,8 +2809,18 @@ def tool_pick(args: dict) -> dict:
         "dissent_deltas": dissent_deltas,
         "scores_by_provider": scores_by_provider,
         "providers_used": [p.name for p in selected],
-        "budget": _budget_summary(call_started, deadline, answers_collected),
+        "budget": _budget_summary(call_started, deadline, answers_collected, cpu_started),
     }
+    _attach_usage_block(result, answers_collected)
+    _emit_progress(
+        f"pick: done ({result['budget']['wall_used_ms']}ms wall / "
+        f"{result['budget']['cpu_used_ms']}ms cpu, "
+        f"${result['budget']['total_cost_usd']:.4f})",
+        tool="pick",
+        wall_ms=result["budget"]["wall_used_ms"],
+        cpu_ms=result["budget"]["cpu_used_ms"],
+        cost_usd=result["budget"]["total_cost_usd"],
+    )
     if scoring_errors:
         result["scoring_errors"] = scoring_errors
     if session:
@@ -2358,9 +3054,13 @@ def tool_solve(args: dict) -> dict:
         return {"error": "no active providers have API keys in .env"}
 
     call_started = time.monotonic()
+    cpu_started = time.process_time()
     deadline = _deadline()
     session = _session_load(args.get("session_id"))
     per_call = _per_call_tokens(max_attempts)
+    _emit_progress(f"solve: starting (max_attempts={max_attempts})",
+                   tool="solve", max_attempts=max_attempts,
+                   providers=[p.name for p in selected])
 
     system_msg = (
         "You are solving a problem step-by-step. Produce ONLY the literal solution "
@@ -2393,7 +3093,10 @@ def tool_solve(args: dict) -> dict:
             msgs.append({"role": "user", "content": feedback})
 
         attempt_started = time.monotonic()
-        ans = _ask_one(provider, msgs, deadline, per_call)
+        _emit_progress(f"solve: attempt {i}/{max_attempts} via {provider.name}",
+                       tool="solve", attempt=i, total_attempts=max_attempts,
+                       provider=provider.name)
+        ans = _ask_one(provider, msgs, deadline, per_call, purpose="solve")
         answers_collected.append(ans)
         if "error" in ans:
             attempts.append({
@@ -2421,8 +3124,10 @@ def tool_solve(args: dict) -> dict:
             winning_provider = provider.name
             break
 
-    _session_record(session, answers_collected, call_started)
+    _session_record(session, answers_collected, call_started, cpu_started)
     _session_save(session)
+    log_usage(session.get("session_id") if session else args.get("session_id"),
+              "solve", answers_collected)
 
     patch: str | None = None
     target_path = args.get("target_path")
@@ -2451,8 +3156,19 @@ def tool_solve(args: dict) -> dict:
         "attempts": attempts,
         "final_proposal": final_proposal,
         "winning_provider": winning_provider,
-        "budget": _budget_summary(call_started, deadline, answers_collected),
+        "budget": _budget_summary(call_started, deadline, answers_collected, cpu_started),
     }
+    _attach_usage_block(result, answers_collected)
+    _emit_progress(
+        f"solve: {'solved' if solved else 'failed'} "
+        f"({result['budget']['wall_used_ms']}ms wall / "
+        f"{result['budget']['cpu_used_ms']}ms cpu, "
+        f"${result['budget']['total_cost_usd']:.4f})",
+        tool="solve", solved=solved,
+        wall_ms=result["budget"]["wall_used_ms"],
+        cpu_ms=result["budget"]["cpu_used_ms"],
+        cost_usd=result["budget"]["total_cost_usd"],
+    )
     if target_path:
         result["target_path"] = str(target_path)
         result["patch"] = patch
@@ -2542,8 +3258,12 @@ def tool_bench(args: dict) -> dict:
     dir_path = _bench_goldens_dir(args.get("goldens_dir"))
     goldens = _load_goldens(dir_path, args.get("filter"))
     call_started = time.monotonic()
+    cpu_started = time.process_time()
     deadline = _deadline()
     session = _session_load(args.get("session_id"))
+    _emit_progress(f"bench: {len(goldens)} golden(s) x {len(selected)} provider(s)",
+                   tool="bench", goldens=len(goldens),
+                   providers=[p.name for p in selected])
 
     by_provider: dict[str, dict] = {
         p.name: {"passed": 0, "failed": 0, "errored": 0, "score": 0.0, "details": []}
@@ -2629,8 +3349,10 @@ def tool_bench(args: dict) -> dict:
         key=lambda r: (-r["score"], r["provider"]),
     )
 
-    _session_record(session, answers_collected, call_started)
+    _session_record(session, answers_collected, call_started, cpu_started)
     _session_save(session)
+    log_usage(session.get("session_id") if session else args.get("session_id"),
+              "bench", answers_collected)
 
     result = {
         "tool": "bench",
@@ -2639,8 +3361,18 @@ def tool_bench(args: dict) -> dict:
         "providers_used": [p.name for p in selected],
         "results_by_provider": by_provider,
         "ranking": ranking,
-        "budget": _budget_summary(call_started, deadline, answers_collected),
+        "budget": _budget_summary(call_started, deadline, answers_collected, cpu_started),
     }
+    _attach_usage_block(result, answers_collected)
+    _emit_progress(
+        f"bench: done ({result['budget']['wall_used_ms']}ms wall / "
+        f"{result['budget']['cpu_used_ms']}ms cpu, "
+        f"${result['budget']['total_cost_usd']:.4f})",
+        tool="bench",
+        wall_ms=result["budget"]["wall_used_ms"],
+        cpu_ms=result["budget"]["cpu_used_ms"],
+        cost_usd=result["budget"]["total_cost_usd"],
+    )
     if session:
         result["session"] = session
     return result
@@ -2840,6 +3572,816 @@ def tool_review(args: dict) -> dict:
 
 
 # ------------------------------------------------------------
+# Cheap-mode router (tier ladder + scoreboard tiebreaker)
+# ------------------------------------------------------------
+_DIFFICULTY_TIERS = ("low", "med", "high")
+
+
+def _provider_weight(name: str) -> float:
+    """Return the scoreboard win-rate weight for a provider (0..1).
+    Used only as a within-tier tie-breaker by the cheap-mode router."""
+    try:
+        with _db_conn() as conn:
+            row = conn.execute(
+                "SELECT wins, losses, abstains FROM provider_stats WHERE provider = ?",
+                (name,),
+            ).fetchone()
+        if row is None:
+            return 0.5
+        w, l, a = int(row["wins"]), int(row["losses"]), int(row["abstains"])
+        total = w + l + a
+        if total <= 0:
+            return 0.5
+        return (w + 0.5 * a) / total
+    except Exception:
+        return 0.5
+
+
+def _select_for_difficulty(difficulty: str,
+                           exclude_providers: list[str] | None = None,
+                           allow_only: list[str] | None = None,
+                           ) -> tuple[Provider | None, str | None, str | None]:
+    """Pick the cheapest registered provider/model in the requested difficulty
+    tier. Returns (provider, picked_model, reason_or_none). The picked model
+    overrides the provider's default for this call; we don't mutate state.
+
+    Scoreboard win-rate breaks ties among models with identical pricing."""
+    if difficulty not in _DIFFICULTY_TIERS:
+        return None, None, f"unknown difficulty: {difficulty!r}"
+    tiers = _tier_ladder()
+    candidates = tiers.get(difficulty) or []
+    if not candidates:
+        return None, None, f"no models configured for tier {difficulty!r}"
+    excl = {n.lower() for n in (exclude_providers or [])}
+    allow = {n.lower() for n in (allow_only or [])} if allow_only else None
+
+    # Score each candidate by (cost_for_typical_call, -weight). Lower cost wins;
+    # weight (higher = better) breaks ties.
+    scored: list[tuple[float, float, str, str]] = []
+    for entry in candidates:
+        prov_name = entry["provider"].lower()
+        model     = entry["model"]
+        if prov_name in excl:
+            continue
+        if allow is not None and prov_name not in allow:
+            continue
+        if prov_name not in ALL_PROVIDERS:
+            continue  # no API key
+        rates = _model_pricing(prov_name, model) or {
+            "prompt_per_1k": 0.0, "completion_per_1k": 0.0, "cached_per_1k": 0.0,
+        }
+        # Synthetic 1k prompt / 256 completion typical call.
+        typ = rates["prompt_per_1k"] + 0.256 * rates["completion_per_1k"]
+        scored.append((typ, -_provider_weight(prov_name), prov_name, model))
+    if not scored:
+        return None, None, (f"no available provider in tier {difficulty!r} "
+                            f"(after exclude={list(excl)}, allow_only={allow_only})")
+    scored.sort()
+    _, _, pick_name, pick_model = scored[0]
+    prov = ALL_PROVIDERS[pick_name]
+    # Build a transient Provider that points at the picked model, reusing the
+    # registered send() (the underlying adapter captures `model` at closure
+    # time, so we need a wrapped send for the override).
+    if pick_model == prov.model:
+        return prov, pick_model, None
+    # Wrap: rebuild the provider with the picked model by re-running the
+    # registry factory if available. Simpler: just monkey-route via a closure
+    # that pretends to be the requested model.
+    chosen = _retarget_provider(prov, pick_model)
+    return chosen, pick_model, None
+
+
+def _retarget_provider(p: Provider, model: str) -> Provider:
+    """Return a Provider whose model is `model` but whose HTTP path matches
+    p.name. Reuses the existing factory functions to avoid duplicating adapter
+    logic; falls back to the original provider on mismatch."""
+    name = p.name
+    # Re-resolve key from env, build a new Provider via the same factory used
+    # in build_providers() so usage parsing stays consistent.
+    if name == "anthropic":
+        original_model = ENV.get("ANTHROPIC_MODEL")
+        try:
+            ENV["ANTHROPIC_MODEL"] = model
+            new = anthropic_provider()
+        finally:
+            if original_model is None:
+                ENV.pop("ANTHROPIC_MODEL", None)
+            else:
+                ENV["ANTHROPIC_MODEL"] = original_model
+        return new or p
+    if name == "gemini":
+        original_model = ENV.get("GEMINI_MODEL")
+        try:
+            ENV["GEMINI_MODEL"] = model
+            new = gemini_provider()
+        finally:
+            if original_model is None:
+                ENV.pop("GEMINI_MODEL", None)
+            else:
+                ENV["GEMINI_MODEL"] = original_model
+        return new or p
+    # OpenAI-compatible family: rebuild via openai_compatible factory.
+    _OAI_FACTORIES = {
+        "openai":   ("https://api.openai.com/v1/chat/completions",          "OPENAI_API_KEY",   "OPENAI_MODEL"),
+        "xai":      ("https://api.x.ai/v1/chat/completions",                "XAI_API_KEY",      "XAI_MODEL"),
+        "mistral":  ("https://api.mistral.ai/v1/chat/completions",          "MISTRAL_API_KEY",  "MISTRAL_MODEL"),
+        "groq":     ("https://api.groq.com/openai/v1/chat/completions",     "GROQ_API_KEY",     "GROQ_MODEL"),
+        "deepseek": ("https://api.deepseek.com/v1/chat/completions",        "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL"),
+    }
+    spec = _OAI_FACTORIES.get(name)
+    if not spec:
+        return p
+    url, key_env, model_env = spec
+    original_model = ENV.get(model_env)
+    try:
+        ENV[model_env] = model
+        new = openai_compatible(name, url, key_env, model_env, model)
+    finally:
+        if original_model is None:
+            ENV.pop(model_env, None)
+        else:
+            ENV[model_env] = original_model
+    return new or p
+
+
+# ------------------------------------------------------------
+# Orchestrate: DAG planner + parallel sub-agent dispatch + recombine
+# ------------------------------------------------------------
+def _orchestrate_dag_schema() -> dict:
+    """JSON schema the planner LLM is asked to produce."""
+    return {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "nodes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id":         {"type": "string"},
+                        "task":       {"type": "string"},
+                        "difficulty": {"type": "string", "enum": list(_DIFFICULTY_TIERS)},
+                        "role":       {"type": "string"},
+                        "depends_on": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["id", "task", "difficulty"],
+                },
+            },
+        },
+        "required": ["nodes"],
+    }
+
+
+def _validate_dag(dag: dict) -> list[str]:
+    """Return a list of validation errors. Empty list = valid.
+    Catches: missing/dup ids, unknown deps, cycles, bad difficulty enum."""
+    errors: list[str] = []
+    if not isinstance(dag, dict) or "nodes" not in dag:
+        return ["dag must be an object with a 'nodes' array"]
+    nodes = dag["nodes"]
+    if not isinstance(nodes, list) or not nodes:
+        return ["dag.nodes must be a non-empty array"]
+    ids: set[str] = set()
+    for i, n in enumerate(nodes):
+        if not isinstance(n, dict):
+            errors.append(f"node[{i}] is not an object")
+            continue
+        nid = n.get("id")
+        if not isinstance(nid, str) or not nid:
+            errors.append(f"node[{i}] missing string id")
+            continue
+        if nid in ids:
+            errors.append(f"duplicate node id: {nid!r}")
+        ids.add(nid)
+        if not isinstance(n.get("task"), str) or not n["task"]:
+            errors.append(f"node {nid!r}: missing 'task' string")
+        diff = n.get("difficulty")
+        if diff not in _DIFFICULTY_TIERS:
+            errors.append(f"node {nid!r}: difficulty must be one of {list(_DIFFICULTY_TIERS)}")
+    # Deps must reference existing ids.
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        deps = n.get("depends_on") or []
+        if not isinstance(deps, list):
+            errors.append(f"node {n.get('id')!r}: depends_on must be an array")
+            continue
+        for d in deps:
+            if d not in ids:
+                errors.append(f"node {n.get('id')!r}: unknown dep {d!r}")
+    # Cycle check via graphlib (only when basic checks pass).
+    if not errors:
+        try:
+            import graphlib
+            ts = graphlib.TopologicalSorter({n["id"]: set(n.get("depends_on") or []) for n in nodes})
+            list(ts.static_order())
+        except Exception as e:
+            errors.append(f"dag has a cycle or invalid topology: {e}")
+    return errors
+
+
+def _plan_dag_from_goal(goal: str, context: str, providers: list[Provider],
+                        moderator: Provider, deadline: float,
+                        per_call: int, session_id: str | None) -> tuple[dict | None, dict, list[str]]:
+    """Ask the moderator to draft a DAG matching the schema. Returns
+    (parsed_dag_or_None, raw_answer, validation_errors). The DAG is *also*
+    validated by _validate_dag downstream."""
+    prompt = (
+        "You are the orchestrator. Decompose the goal into a small DAG of "
+        "subtasks suitable for parallel execution by worker LLMs. Each node "
+        "must declare a difficulty (low | med | high) — that's the input to "
+        "the cheap-mode router. Use `depends_on` to express ordering. Keep "
+        "the DAG small (<= 8 nodes) and decisive — favor leaves over chains."
+        "\n\n"
+        f"GOAL:\n{goal}\n\n"
+        f"CONTEXT:\n{context or '(none)'}"
+    )
+    msgs = [
+        {"role": "system", "content":
+            "You produce orchestration DAGs as JSON. Return only the JSON object."},
+        {"role": "user", "content": prompt},
+    ]
+    obj, ans, errs = _request_structured(
+        moderator, msgs, _orchestrate_dag_schema(),
+        max_tokens=per_call, deadline=deadline, max_retries=1,
+        purpose="orchestrate",
+    )
+    return obj, ans, errs
+
+
+def tool_orchestrate(args: dict) -> dict:
+    goal       = args.get("goal")
+    dag        = args.get("dag")
+    fail_fast  = bool(args.get("fail_fast", False))
+    cheap_mode = bool(args.get("cheap_mode", False))
+    untrusted  = bool(args.get("untrusted_input", False))
+    max_parallel = int(args.get("max_parallel", 4))
+
+    if (goal is None) == (dag is None):
+        return {"tool": "orchestrate",
+                "error": "exactly one of `goal` or `dag` must be provided"}
+
+    selected, unknown = _resolve_providers(args.get("providers"))
+    selected, blocked = _filter_by_allowlist(selected)
+    if not selected:
+        return {"tool": "orchestrate",
+                "error": "no active providers have API keys in .env",
+                "unknown": unknown, "blocked": blocked}
+
+    moderator_name = args.get("moderator") or CFG.get("moderator", "anthropic")
+    moderator = ALL_PROVIDERS.get(moderator_name) or selected[0]
+
+    session = _session_load(args.get("session_id"))
+    call_started = time.monotonic()
+    cpu_started  = time.process_time()
+    deadline = _deadline()
+    per_call = _per_call_tokens(8)  # rough budget per node
+    answers_collected: list[dict] = []
+
+    _emit_event("tool_start", tool="orchestrate",
+                providers=[p.name for p in selected],
+                moderator=moderator.name, cheap_mode=cheap_mode,
+                fail_fast=fail_fast,
+                session_id=session.get("session_id") if session else None)
+    _emit_progress(
+        f"orchestrate: starting (moderator={moderator.name}, "
+        f"cheap_mode={cheap_mode}, fail_fast={fail_fast})",
+        tool="orchestrate", moderator=moderator.name,
+        cheap_mode=cheap_mode, fail_fast=fail_fast,
+    )
+
+    # ---- Plan: build or accept a DAG ---------------------------------------
+    planner_errs: list[str] = []
+    planner_answer: dict | None = None
+    if dag is None:
+        _emit_progress("orchestrate: planner drafting DAG", tool="orchestrate", step="plan")
+        dag, planner_answer, planner_errs = _plan_dag_from_goal(
+            goal or "", args.get("context", ""), selected, moderator,
+            deadline, per_call,
+            session.get("session_id") if session else args.get("session_id"),
+        )
+        if planner_answer:
+            answers_collected.append(planner_answer)
+        if dag is None:
+            result = {
+                "tool": "orchestrate",
+                "error": "planner could not produce a valid DAG",
+                "planner_errors": planner_errs,
+                "budget": _budget_summary(call_started, deadline, answers_collected, cpu_started),
+            }
+            _attach_usage_block(result, answers_collected)
+            return result
+
+    val_errors = _validate_dag(dag)
+    if val_errors:
+        result = {
+            "tool": "orchestrate",
+            "error": "dag failed validation",
+            "validation_errors": val_errors,
+            "dag": dag,
+            "budget": _budget_summary(call_started, deadline, answers_collected, cpu_started),
+        }
+        _attach_usage_block(result, answers_collected)
+        return result
+
+    # ---- Execute nodes topologically with bounded parallelism --------------
+    import graphlib
+    nodes_by_id: dict[str, dict] = {n["id"]: n for n in dag["nodes"]}
+    ts = graphlib.TopologicalSorter(
+        {nid: set(n.get("depends_on") or []) for nid, n in nodes_by_id.items()}
+    )
+    ts.prepare()
+
+    node_results: dict[str, dict] = {}
+    failed_ids: set[str] = set()
+    selected_names = [p.name for p in selected]
+
+    def _run_node(node: dict) -> dict:
+        nid = node["id"]
+        difficulty = node["difficulty"]
+        # Cheap-mode routing: pick a model from the difficulty tier.
+        chosen: Provider | None
+        reason: str | None
+        if cheap_mode and not (node.get("provider") or node.get("model")):
+            chosen, _model, reason = _select_for_difficulty(
+                difficulty, allow_only=selected_names,
+            )
+        else:
+            # Caller-pinned model overrides everything.
+            if node.get("provider") in ALL_PROVIDERS:
+                base = ALL_PROVIDERS[node["provider"]]
+                chosen = (_retarget_provider(base, node["model"])
+                          if node.get("model") and node["model"] != base.model
+                          else base)
+                reason = None
+            else:
+                # Default: pick a node provider from the active selection. We
+                # rotate by node id so multiple nodes share load.
+                idx = hash(nid) % max(1, len(selected))
+                chosen = selected[idx]
+                reason = None
+        if chosen is None:
+            return {"id": nid, "status": "failed",
+                    "error": f"no provider available: {reason or 'unknown'}",
+                    "provider": None, "model": None,
+                    "wall_ms": 0, "cpu_ms": 0}
+
+        # Build the node prompt with upstream outputs.
+        upstream = []
+        for d in node.get("depends_on") or []:
+            ur = node_results.get(d)
+            if ur and ur.get("status") == "ok":
+                upstream.append(f"[node {d} output]\n{ur.get('output','')}")
+            elif ur and ur.get("status") == "failed":
+                upstream.append(f"[node {d}] [MISSING: failed — {ur.get('error','')}]")
+        ctx_block = "\n\n".join(upstream) if upstream else "(no upstream nodes)"
+        sys_msg = (
+            "You are a worker LLM in an orchestrated DAG. Complete the assigned "
+            "task using outputs from upstream nodes when relevant. Be concise."
+        )
+        if untrusted:
+            sys_msg += "\n" + _UNTRUSTED_SYSTEM_NOTE
+        task_text = node["task"]
+        if untrusted:
+            task_text = _wrap_untrusted(task_text)
+        msgs = [
+            {"role": "system", "content": sys_msg},
+            {"role": "user", "content": (
+                f"ROLE: {node.get('role','worker')}\n"
+                f"DIFFICULTY: {difficulty}\n\n"
+                f"UPSTREAM:\n{ctx_block}\n\n"
+                f"TASK:\n{task_text}"
+            )},
+        ]
+        _emit_progress(
+            f"orchestrate: node {nid} -> {chosen.name}:{chosen.model} ({difficulty})",
+            tool="orchestrate", node=nid, provider=chosen.name,
+            model=chosen.model, difficulty=difficulty,
+        )
+        ans = _ask_one(chosen, msgs, deadline, per_call, purpose="worker")
+        ok = "error" not in ans
+        return {
+            "id":      nid,
+            "status":  "ok" if ok else "failed",
+            "provider": ans.get("provider"),
+            "model":    ans.get("model"),
+            "output":   ans.get("response", "") if ok else None,
+            "error":    None if ok else ans.get("error"),
+            "usage":    ans.get("usage"),
+            "wall_ms":  int(ans.get("elapsed_ms", 0)),
+            "cpu_ms":   int(ans.get("cpu_ms", 0)),
+            "answer":   ans,
+        }
+
+    # Walk topologically, dispatching ready nodes in parallel batches.
+    while ts.is_active():
+        if _time_left(deadline) <= 1:
+            break
+        ready = list(ts.get_ready())
+        if not ready:
+            break
+        # If fail_fast: skip nodes whose deps failed.
+        runnable: list[dict] = []
+        for nid in ready:
+            node = nodes_by_id[nid]
+            unmet = [d for d in (node.get("depends_on") or []) if d in failed_ids]
+            if unmet and fail_fast:
+                node_results[nid] = {"id": nid, "status": "skipped",
+                                     "error": f"upstream failed: {unmet}",
+                                     "provider": None, "model": None,
+                                     "wall_ms": 0, "cpu_ms": 0}
+                failed_ids.add(nid)
+                ts.done(nid)
+                continue
+            runnable.append(node)
+
+        if not runnable:
+            continue
+        if len(runnable) == 1:
+            res = _run_node(runnable[0])
+            node_results[res["id"]] = res
+            if res["status"] != "ok":
+                failed_ids.add(res["id"])
+            if "answer" in res:
+                answers_collected.append(res.pop("answer"))
+            ts.done(res["id"])
+        else:
+            with ThreadPoolExecutor(max_workers=max(1, min(max_parallel, len(runnable)))) as ex:
+                # Carry progress token into children.
+                parent_token = _progress_token()
+                parent_wall = getattr(_PROGRESS_CTX, "wall_start", None)
+                parent_cpu = getattr(_PROGRESS_CTX, "cpu_start", None)
+
+                def _wrap(n: dict) -> dict:
+                    if parent_token is not None:
+                        _progress_set(parent_token, parent_wall, parent_cpu)
+                    try:
+                        return _run_node(n)
+                    finally:
+                        if parent_token is not None:
+                            _progress_clear()
+
+                for res in ex.map(_wrap, runnable):
+                    node_results[res["id"]] = res
+                    if res["status"] != "ok":
+                        failed_ids.add(res["id"])
+                    if "answer" in res:
+                        answers_collected.append(res.pop("answer"))
+                    ts.done(res["id"])
+
+        if fail_fast and failed_ids:
+            # Mark remaining-but-not-yet-ready nodes as skipped.
+            for nid, n in nodes_by_id.items():
+                if nid in node_results:
+                    continue
+                if any(d in failed_ids for d in (n.get("depends_on") or [])) or failed_ids:
+                    node_results[nid] = {"id": nid, "status": "skipped",
+                                         "error": "fail_fast: prior node failed",
+                                         "provider": None, "model": None,
+                                         "wall_ms": 0, "cpu_ms": 0}
+                    failed_ids.add(nid)
+            break
+
+    # ---- Recombine ---------------------------------------------------------
+    missing = sorted(nid for nid in nodes_by_id if nid not in node_results
+                     or node_results[nid].get("status") != "ok")
+    partial = bool(missing)
+
+    if _time_left(deadline) > 1:
+        recombine_lines = []
+        for nid in nodes_by_id:
+            r = node_results.get(nid)
+            if r and r.get("status") == "ok":
+                recombine_lines.append(f"[node {nid}] {r.get('output','')}")
+            else:
+                err = (r or {}).get("error", "node did not run")
+                recombine_lines.append(f"[node {nid}] [MISSING: {err}]")
+        recombine_prompt = (
+            f"GOAL: {goal or '(provided as pre-authored DAG)'}\n\n"
+            f"NODE OUTPUTS:\n" + "\n\n".join(recombine_lines) + "\n\n"
+            "Synthesize the node outputs into a single coherent deliverable. "
+            "Preserve any [MISSING: ...] markers verbatim where the upstream "
+            "node failed so the caller sees what is incomplete."
+        )
+        rec_msgs = [
+            {"role": "system",
+             "content": "You are the orchestrator. Combine node outputs into the final result."},
+            {"role": "user", "content": recombine_prompt},
+        ]
+        _emit_progress("orchestrate: recombining", tool="orchestrate", step="recombine",
+                       missing=missing, partial=partial)
+        synth_ans = _ask_one(moderator, rec_msgs, deadline, per_call, purpose="synth")
+        answers_collected.append(synth_ans)
+        final_text = synth_ans.get("response", "") if "error" not in synth_ans else ""
+        synth_err = synth_ans.get("error")
+    else:
+        final_text = ""
+        synth_err = "deadline reached before recombine"
+
+    _session_record(session, answers_collected, call_started, cpu_started)
+    _session_save(session)
+    log_usage(session.get("session_id") if session else args.get("session_id"),
+              "orchestrate", answers_collected)
+
+    # Strip transient `answer` field from public node records (kept earlier
+    # for usage rollup), keep public-facing fields only.
+    public_nodes = []
+    for nid in nodes_by_id:
+        r = node_results.get(nid) or {
+            "id": nid, "status": "not_run", "error": "deadline reached",
+            "provider": None, "model": None, "wall_ms": 0, "cpu_ms": 0,
+        }
+        public_nodes.append({k: v for k, v in r.items() if k != "answer"})
+
+    result = {
+        "tool":       "orchestrate",
+        "dag":        dag,
+        "nodes":      public_nodes,
+        "final":      final_text,
+        "missing":    missing,
+        "partial":    partial,
+        "fail_fast":  fail_fast,
+        "cheap_mode": cheap_mode,
+        "budget":     _budget_summary(call_started, deadline, answers_collected, cpu_started),
+    }
+    if synth_err:
+        result["synth_error"] = synth_err
+    if planner_errs:
+        result["planner_errors"] = planner_errs
+    _attach_usage_block(result, answers_collected)
+    _emit_progress(
+        f"orchestrate: done ({len(public_nodes) - len(missing)}/{len(public_nodes)} ok, "
+        f"{result['budget']['wall_used_ms']}ms wall / {result['budget']['cpu_used_ms']}ms cpu, "
+        f"${result['budget']['total_cost_usd']:.4f})",
+        tool="orchestrate", partial=partial, missing=missing,
+        wall_ms=result["budget"]["wall_used_ms"],
+        cpu_ms=result["budget"]["cpu_used_ms"],
+        cost_usd=result["budget"]["total_cost_usd"],
+    )
+    if session:
+        result["session"] = session
+    if unknown:
+        result["skipped_unknown_providers"] = unknown
+    if blocked:
+        result["blocked_by_allowlist"] = blocked
+    result["transcript_path"] = write_transcript("orchestrate", result)
+    _emit_event("tool_end", tool="orchestrate",
+                provider_calls=len(answers_collected),
+                missing=missing, partial=partial,
+                cost_usd=result["budget"]["total_cost_usd"])
+    return result
+
+
+# ------------------------------------------------------------
+# Audit: post-run rubric scoring with auditor exclusion
+# ------------------------------------------------------------
+DEFAULT_AUDIT_RUBRICS: list[dict[str, Any]] = [
+    {"id": "factual_grounding",
+     "description": "Claims are grounded in evidence, sources, or stated assumptions; no hallucinated facts or APIs.",
+     "severity": "high"},
+    {"id": "constraint_adherence",
+     "description": "Output respects all stated user constraints (scope, language, format, budget).",
+     "severity": "high"},
+    {"id": "no_pii_leak",
+     "description": "Output does not echo or leak emails, secrets, API keys, IPs, or other personally identifying data.",
+     "severity": "high"},
+    {"id": "internally_consistent",
+     "description": "Output is internally consistent; later statements do not contradict earlier ones.",
+     "severity": "med"},
+    {"id": "covers_open_questions",
+     "description": "Identifies and surfaces open questions or unresolved trade-offs instead of papering over them.",
+     "severity": "med"},
+    {"id": "actionability",
+     "description": "Output is concrete and actionable for the stated audience; not vague hand-waving.",
+     "severity": "low"},
+]
+
+
+def _audit_rubric_schema() -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id":        {"type": "string"},
+                        "score":     {"type": "number"},
+                        "pass":      {"type": "boolean"},
+                        "rationale": {"type": "string"},
+                    },
+                    "required": ["id", "score", "pass", "rationale"],
+                },
+            },
+            "overall_score": {"type": "number"},
+        },
+        "required": ["items"],
+    }
+
+
+def _select_auditor(exclude_providers: list[str], cheap_mode: bool,
+                    explicit: str | None) -> tuple[Provider | None, str | None]:
+    """Pick an auditor. Order: explicit > cheap_mode med tier > configured
+    moderator (only if not in the exclude list). Returns (provider, reason)."""
+    if explicit:
+        p = ALL_PROVIDERS.get(explicit.lower())
+        if p is None:
+            return None, f"explicit auditor {explicit!r} is not configured"
+        if p.name in {x.lower() for x in exclude_providers}:
+            return None, (f"explicit auditor {explicit!r} is in the producing "
+                          f"panel; pick a different auditor or omit `auditor`")
+        return p, None
+    if cheap_mode:
+        prov, _model, reason = _select_for_difficulty(
+            "med", exclude_providers=exclude_providers,
+        )
+        if prov is not None:
+            return prov, None
+        # Fall through to moderator pick.
+    mod_name = CFG.get("moderator", "anthropic")
+    if mod_name and mod_name.lower() not in {x.lower() for x in exclude_providers}:
+        p = ALL_PROVIDERS.get(mod_name)
+        if p is not None:
+            return p, None
+    # Last resort: any provider not in the exclude list.
+    for name, p in ALL_PROVIDERS.items():
+        if name not in {x.lower() for x in exclude_providers}:
+            return p, None
+    return None, ("no auditor available — every registered provider was on the "
+                  "producing panel; widen the panel or set `allow_self_audit=true`")
+
+
+def tool_audit(args: dict) -> dict:
+    output_to_audit = args.get("output_to_audit")
+    session_id      = args.get("session_id")
+    rubric_override = args.get("rubric")
+    producing       = [p.lower() for p in (args.get("producing_panelists") or [])]
+    explicit        = args.get("auditor")
+    cheap_mode      = bool(args.get("cheap_mode", True))
+    allow_self      = bool(args.get("allow_self_audit", False))
+    user_constraints = args.get("constraints", "")
+
+    if not output_to_audit and not session_id:
+        return {"tool": "audit",
+                "error": "must provide `output_to_audit` or `session_id`"}
+
+    # If only session_id given, pull the latest synth/output from usage_log
+    # transcript. (Best-effort.)
+    if not output_to_audit and session_id:
+        path = _latest_transcript_for_session(session_id)
+        if path:
+            try:
+                doc = json.loads(Path(path).read_text())
+                # Reasonable extraction targets across tools.
+                output_to_audit = (
+                    (doc.get("synthesis") or {}).get("response")
+                    or doc.get("final")
+                    or (doc.get("synthesis_answer") or {}).get("response")
+                    or json.dumps(doc, indent=2)[:8000]
+                )
+            except Exception:
+                output_to_audit = ""
+    if not output_to_audit:
+        return {"tool": "audit",
+                "error": "could not load output to audit from session_id; "
+                         "pass `output_to_audit` explicitly"}
+
+    exclude = list(producing) if not allow_self else []
+    auditor, reason = _select_auditor(exclude, cheap_mode, explicit)
+    if auditor is None:
+        return {"tool": "audit", "error": reason or "no auditor"}
+
+    rubric_items: list[dict] = []
+    if isinstance(rubric_override, list) and rubric_override:
+        for r in rubric_override:
+            if isinstance(r, dict) and "id" in r and "description" in r:
+                rubric_items.append({
+                    "id":          str(r["id"]),
+                    "description": str(r["description"]),
+                    "severity":    str(r.get("severity", "med")),
+                })
+    if not rubric_items:
+        rubric_items = list(DEFAULT_AUDIT_RUBRICS)
+
+    rubric_text = "\n".join(
+        f"- {it['id']} (severity={it['severity']}): {it['description']}"
+        for it in rubric_items
+    )
+    sys_msg = (
+        "You are an independent auditor. Score the OUTPUT against each rubric "
+        "item on a 0..1 likelihood that the rubric is satisfied. Set pass=true "
+        "iff score >= 0.7. Be concise in `rationale` (1-2 sentences each)."
+    )
+    user_msg = (
+        (f"USER CONSTRAINTS:\n{user_constraints}\n\n" if user_constraints else "")
+        + f"OUTPUT TO AUDIT:\n{output_to_audit}\n\n"
+        + f"RUBRIC ITEMS:\n{rubric_text}"
+    )
+
+    session = _session_load(session_id) if session_id else None
+    call_started = time.monotonic()
+    cpu_started  = time.process_time()
+    deadline = _deadline()
+    per_call = _per_call_tokens(2)
+    _emit_event("tool_start", tool="audit", auditor=auditor.name,
+                rubric_count=len(rubric_items),
+                session_id=session.get("session_id") if session else None)
+    _emit_progress(
+        f"audit: scoring {len(rubric_items)} rubric item(s) via {auditor.name}",
+        tool="audit", auditor=auditor.name, rubric_count=len(rubric_items),
+    )
+
+    msgs = [
+        {"role": "system", "content": sys_msg},
+        {"role": "user",   "content": user_msg},
+    ]
+    obj, raw_ans, errs = _request_structured(
+        auditor, msgs, _audit_rubric_schema(),
+        max_tokens=per_call, deadline=deadline, max_retries=1,
+        purpose="audit",
+    )
+
+    answers_collected = [raw_ans] if raw_ans else []
+    _session_record(session, answers_collected, call_started, cpu_started)
+    _session_save(session)
+    log_usage(session.get("session_id") if session else session_id,
+              "audit", answers_collected)
+
+    items_with_meta: list[dict] = []
+    if obj and isinstance(obj.get("items"), list):
+        by_id = {it.get("id"): it for it in obj["items"] if isinstance(it, dict)}
+        for ri in rubric_items:
+            scored = by_id.get(ri["id"]) or {"score": 0.0, "pass": False,
+                                             "rationale": "(no rationale)"}
+            items_with_meta.append({
+                "id":          ri["id"],
+                "description": ri["description"],
+                "severity":    ri["severity"],
+                "score":       float(scored.get("score", 0.0)),
+                "pass":        bool(scored.get("pass", False)),
+                "rationale":   str(scored.get("rationale", "")),
+            })
+        overall = obj.get("overall_score")
+        if overall is None and items_with_meta:
+            overall = sum(it["score"] for it in items_with_meta) / len(items_with_meta)
+    else:
+        overall = None
+
+    result = {
+        "tool":     "audit",
+        "auditor":  {"provider": auditor.name, "model": auditor.model},
+        "rubric":   rubric_items,
+        "items":    items_with_meta,
+        "overall_score": overall,
+        "passed":   bool(items_with_meta and all(it["pass"] for it in items_with_meta)),
+        "budget":   _budget_summary(call_started, deadline, answers_collected, cpu_started),
+    }
+    _attach_usage_block(result, answers_collected)
+    _emit_progress(
+        f"audit: done (overall={overall}, "
+        f"{result['budget']['wall_used_ms']}ms wall / "
+        f"{result['budget']['cpu_used_ms']}ms cpu, "
+        f"${result['budget']['total_cost_usd']:.4f})",
+        tool="audit", overall_score=overall,
+        wall_ms=result["budget"]["wall_used_ms"],
+        cpu_ms=result["budget"]["cpu_used_ms"],
+        cost_usd=result["budget"]["total_cost_usd"],
+    )
+    if errs:
+        result["validation_errors"] = errs
+    if session:
+        result["session"] = session
+    result["transcript_path"] = write_transcript("audit", result)
+    _emit_event("tool_end", tool="audit", overall_score=overall,
+                cost_usd=result["budget"]["total_cost_usd"])
+    return result
+
+
+def _latest_transcript_for_session(session_id: str) -> str | None:
+    """Find the most recent transcript JSON whose `session.session_id` matches.
+    Best-effort, returns None on failure."""
+    try:
+        if not TRANSCRIPT_DIR.exists():
+            return None
+        sid = _safe_session_id(session_id)
+        candidates: list[tuple[float, Path]] = []
+        for p in TRANSCRIPT_DIR.glob("*.json"):
+            try:
+                doc = json.loads(p.read_text())
+            except Exception:
+                continue
+            if (doc.get("session") or {}).get("session_id") == sid:
+                candidates.append((p.stat().st_mtime, p))
+        if not candidates:
+            return None
+        candidates.sort()
+        return str(candidates[-1][1])
+    except Exception:
+        return None
+
+
+# ------------------------------------------------------------
 # MCP server (JSON-RPC 2.0 over stdio)
 # ------------------------------------------------------------
 _HANDLERS: dict[str, Callable[[dict], dict]] = {
@@ -2856,6 +4398,8 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "fetch":          tool_fetch,
     "pick":           tool_pick,
     "scoreboard":     tool_scoreboard,
+    "orchestrate":    tool_orchestrate,
+    "audit":          tool_audit,
     "update_crosscheck": tool_update_crosscheck,
 }
 
@@ -3035,7 +4579,8 @@ def _extract_json(text: str) -> Any | None:
 
 
 def _request_structured(p: "Provider", base_messages: list[dict], schema: dict,
-                        max_tokens: int, deadline: float, max_retries: int = 1
+                        max_tokens: int, deadline: float, max_retries: int = 1,
+                        purpose: str = "worker"
                         ) -> tuple[Any | None, dict, list[str]]:
     """Ask provider for JSON matching `schema`. Validate; retry once on failure
     with the errors fed back in the prompt. Returns (parsed_or_None, raw_answer, errors)."""
@@ -3059,7 +4604,7 @@ def _request_structured(p: "Provider", base_messages: list[dict], schema: dict,
                          "content": "Your previous response failed validation:\n- "
                                     + "\n- ".join(last_errs[:5])
                                     + "\nFix the issues and re-emit valid JSON only."})
-        ans = _ask_one(p, msgs, deadline, max_tokens)
+        ans = _ask_one(p, msgs, deadline, max_tokens, purpose)
         last_answer = ans
         if "error" in ans:
             return None, ans, [f"provider error: {ans.get('error_kind', 'other')}: {ans['error']}"]
@@ -3147,18 +4692,35 @@ def handle(req: dict) -> dict | None:
         err = _validate_input(name, tool["inputSchema"], args)
         if err:
             return rpc_error(id_, -32602, err)
+        # MCP clients may pass a progressToken under _meta to opt in to
+        # `notifications/progress` updates. Bind it to the current thread so
+        # _emit_progress() can stream live timing/cost as the tool runs.
+        meta = params.get("_meta") or {}
+        progress_token = meta.get("progressToken") if isinstance(meta, dict) else None
+        _progress_set(progress_token)
         try:
             out = tool["handler"](args)
             out = _attach_update_notice(out, name)
             return rpc_result(id_, {"content": [{"type": "text", "text": json.dumps(out, indent=2)}]})
         except Exception as e:
             return rpc_error(id_, -32000, str(e))
+        finally:
+            _progress_clear()
     if id_ is None:
         return None  # unknown notification, ignore
     return rpc_error(id_, -32601, f"unknown method: {method}")
 
 
+def _stdout_write(line: str) -> None:
+    sys.stdout.write(line)
+    sys.stdout.flush()
+
+
 def main() -> None:
+    # Share the writer with the progress emitter so notifications/progress
+    # messages interleave correctly with JSON-RPC responses on stdout.
+    global _STDOUT_WRITER
+    _STDOUT_WRITER = _stdout_write
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -3169,8 +4731,7 @@ def main() -> None:
             continue
         resp = handle(req)
         if resp is not None:
-            sys.stdout.write(json.dumps(resp) + "\n")
-            sys.stdout.flush()
+            _stdout_write(json.dumps(resp) + "\n")
 
 
 if __name__ == "__main__":
