@@ -1228,7 +1228,11 @@ def _bucket_for(provider_name: str) -> _Bucket:
 # Provider capability matrix
 # ------------------------------------------------------------
 PROVIDER_CAPS: dict[str, dict[str, Any]] = {
-    "anthropic": {"family": "anthropic",   "system_role": "separate", "supports_temperature": True},
+    # Anthropic: claude-opus-4-7 (and presumably later reasoning-class Claude
+    # variants) reject the `temperature` parameter with HTTP 400. Match by
+    # prefix so model-stamp suffixes (e.g. claude-opus-4-7-20251224) also hit.
+    "anthropic": {"family": "anthropic",   "system_role": "separate", "supports_temperature": "model",
+                  "reasoning_prefixes": ("claude-opus-4-7",)},
     "openai":    {"family": "openai_chat", "system_role": "inline",   "supports_temperature": "model",
                   "reasoning_prefixes": ("gpt-5", "o1", "o3", "o4")},
     "xai":       {"family": "openai_chat", "system_role": "inline",   "supports_temperature": True},
@@ -1307,8 +1311,11 @@ def anthropic_provider() -> Provider | None:
              purpose: str = "worker") -> SendResult:
         system = next((m["content"] for m in messages if m["role"] == "system"), None)
         convo = [m for m in messages if m["role"] != "system"]
-        body = {"model": model, "max_tokens": max_tokens, "temperature": temperature,
-                "messages": convo}
+        body: dict = {"model": model, "max_tokens": max_tokens, "messages": convo}
+        if _supports_temperature("anthropic", model):
+            body["temperature"] = temperature
+        # else: claude-opus-4-7 and similar reasoning-class models reject
+        # `temperature` with HTTP 400; omitting it lets the model pick its own.
         if system:
             body["system"] = system
         deadline = _deadline()
