@@ -314,12 +314,61 @@ def _cache_dir() -> Path:
     return p if p.is_absolute() else (ROOT / p)
 
 
+# Prompt canonicalization patterns. Volatile substrings (timestamps, UUIDs,
+# transcript paths, session ids, long hex hashes) are replaced with stable
+# placeholders BEFORE the cache key is computed, so structurally identical
+# prompts hit the same cache row even when their volatile bits differ.
+#
+# The cache key is versioned (`v2:` prefix) so canonicalized entries don't
+# collide with the legacy byte-exact entries on disk; both can coexist while
+# old entries age out under the LRU cap.
+_CACHE_KEY_VERSION = "v2"
+_CANON_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # ISO-8601 timestamps (with or without seconds / Z / fractional seconds)
+    (re.compile(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?\b"), "<ts>"),
+    # Unix epoch ms (13-digit) and seconds (10-digit, current era)
+    (re.compile(r"\b1[6789]\d{12}\b"),                                          "<unix_ms>"),
+    (re.compile(r"\b1[6789]\d{9}\b"),                                            "<unix_ts>"),
+    # UUIDs (any case)
+    (re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"),
+     "<uuid>"),
+    # Generic transcript paths (`.crosscheck/transcripts/<ts>-<tool>.json`)
+    (re.compile(r"\.crosscheck/transcripts/\d+-[\w-]+\.json"),                  "<transcript_path>"),
+    # Long hex hashes (32+ contiguous hex chars; SHA-256/SHA-1 in prompts)
+    (re.compile(r"\b[0-9a-fA-F]{32,64}\b"),                                     "<hash>"),
+)
+
+
+def _canonicalize_text(s: str) -> str:
+    if not isinstance(s, str):
+        return s
+    out = s
+    for pat, repl in _CANON_PATTERNS:
+        out = pat.sub(repl, out)
+    return out
+
+
+def _canonicalize_messages(messages: list[dict]) -> list[dict]:
+    """Return a copy of `messages` with volatile substrings normalized."""
+    out: list[dict] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            out.append(m)
+            continue
+        cm = dict(m)
+        if isinstance(cm.get("content"), str):
+            cm["content"] = _canonicalize_text(cm["content"])
+        out.append(cm)
+    return out
+
+
 def _cache_key(provider_name: str, model: str, messages: list[dict], max_tokens: int, temperature: float) -> str:
     payload = json.dumps(
         {
+            "v":    _CACHE_KEY_VERSION,
             "p":    provider_name,
             "m":    model,
-            "msgs": messages,
+            "msgs": _canonicalize_messages(messages),
             "mt":   max_tokens,
             "t":    round(float(temperature), 4),
         },
@@ -1104,6 +1153,28 @@ class ProviderError(RuntimeError):
         self.retry_after_s = retry_after_s
 
 
+# Standardized error envelope for tool-level errors (DAG validation, no
+# auditor available, missing config, etc.) — distinct from provider HTTP
+# errors which use ProviderError + the existing `error_kind` field.
+#
+# Shape:
+#   {"error": <human msg>, "error_code": <stable id>,
+#    "error_kind": <bucket: client|config|logic|...>,
+#    "operator_hint": <what the human / caller should do>,
+#    "transient": bool}
+def _error(code: str, message: str, *, kind: str = "client",
+           hint: str = "", transient: bool = False, **extra: Any) -> dict:
+    out: dict = {
+        "error":         message,
+        "error_code":    code,
+        "error_kind":    kind,
+        "operator_hint": hint,
+        "transient":     bool(transient),
+    }
+    out.update(extra)
+    return out
+
+
 def _classify_http_error(e: urllib.error.HTTPError) -> ProviderError:
     body = e.read().decode("utf-8", "ignore")
     msg = f"HTTP {e.code}: {body[:512]}"
@@ -1443,6 +1514,37 @@ def write_transcript(kind: str, payload: dict) -> str | None:
 # ------------------------------------------------------------
 # Tool implementations
 # ------------------------------------------------------------
+# Per-purpose completion budgets — used to right-size `max_tokens` per call
+# so audits don't pay for 2k of headroom they never use. Override in
+# `crosscheck.config.json` via `token_budgets.<purpose>`; missing purposes
+# fall through to the legacy `_per_call_tokens` split of `token_cap`.
+_DEFAULT_TOKEN_BUDGETS: dict[str, int] = {
+    "audit":       512,
+    "synth":       1024,
+    "moderator":   1024,
+    "worker":      2048,
+    "orchestrate": 2048,
+    "confer":      1500,
+    "debate":      1500,
+    "plan":        2048,
+    "review":      1500,
+    "coordinate":  1500,
+    "solve":       2048,
+}
+
+
+def _budget_for_purpose(purpose: str) -> int | None:
+    """Return the configured ceiling for `purpose`, or None if no override
+    applies. Caller uses min(default_from_token_cap, this_ceiling)."""
+    custom = (CFG.get("token_budgets") or {}).get(purpose)
+    if isinstance(custom, int) and custom > 0:
+        return int(custom)
+    default = _DEFAULT_TOKEN_BUDGETS.get(purpose)
+    if default is not None:
+        return int(default)
+    return None
+
+
 def _per_call_tokens(total_calls: int) -> int:
     calls = max(1, int(total_calls))
     return max(256, int(CFG.get("token_cap", 8000)) // calls)
@@ -1459,6 +1561,13 @@ def _time_left(deadline: float) -> float:
 def _ask_one(p: Provider, messages: list[dict], deadline: float, max_tokens: int,
              purpose: str = "worker") -> dict:
     temp = float(CFG.get("temperature", 0.4))
+    # Right-size the completion budget to the call's purpose so audits don't
+    # waste the worker-sized cap. The purpose ceiling is the MINIMUM of what
+    # the caller passed and the per-purpose default — never expands what the
+    # caller requested.
+    purpose_ceiling = _budget_for_purpose(purpose)
+    if purpose_ceiling is not None and purpose_ceiling < max_tokens:
+        max_tokens = purpose_ceiling
     if _time_left(deadline) <= 0:
         ans = {"provider": p.name, "model": p.model, "error": "time budget exhausted",
                "error_kind": "timeout", "cache_hit": False, "elapsed_ms": 0,
@@ -4011,6 +4120,106 @@ def _plan_dag_from_goal(goal: str, context: str, providers: list[Provider],
     return obj, ans, errs
 
 
+def _estimate_call_cost(provider: str, model: str, prompt_tokens_est: int,
+                        completion_tokens_est: int) -> tuple[float, bool]:
+    """Best-effort cost estimate for a hypothetical call. Returns (usd, estimated)."""
+    return _calculate_cost(provider, model, prompt_tokens_est, completion_tokens_est, 0)
+
+
+def _plan_only_estimate(dag: dict, selected_names: list[str], moderator_name: str,
+                        cheap_mode: bool) -> dict:
+    """Resolve the DAG without executing it: pick a provider per node (cheap-
+    mode or default rotation), look up its pricing, and tally an estimated
+    total cost using rough token defaults per purpose. Returns the dry-run
+    envelope additions: per-node plan + cost estimate + an explanatory note.
+
+    The estimates are intentionally coarse — caller is expected to treat
+    them as ballpark numbers ("$0.01" vs "$1.00"), not invoice line items."""
+    nodes_by_id = {n["id"]: n for n in dag["nodes"]}
+    plan_nodes: list[dict] = []
+    total_cost = 0.0
+    any_estimated = False
+
+    # Coarse token budget per purpose for the estimate (prompt+completion).
+    EST_TOKENS = {"low": (800, 400), "med": (1500, 800), "high": (2500, 1500)}
+
+    for nid, n in nodes_by_id.items():
+        difficulty = n.get("difficulty", "med")
+        # Cheap-mode picks the cheapest in the tier; otherwise we rotate
+        # across the selected panel just like the executor would.
+        chosen_provider: str | None = None
+        chosen_model: str | None = None
+        reason: str | None = None
+        if n.get("provider"):
+            chosen_provider = n["provider"]
+            chosen_model    = n.get("model") or (
+                ALL_PROVIDERS[n["provider"]].model if n["provider"] in ALL_PROVIDERS else None)
+        elif cheap_mode:
+            prov, model, why = _select_for_difficulty(
+                difficulty, allow_only=selected_names or None,
+            )
+            if prov is not None and model is not None:
+                chosen_provider, chosen_model = prov.name, model
+            else:
+                reason = why
+        if not chosen_provider:
+            idx = hash(nid) % max(1, len(selected_names))
+            chosen_provider = selected_names[idx] if selected_names else None
+            if chosen_provider and chosen_provider in ALL_PROVIDERS:
+                chosen_model = ALL_PROVIDERS[chosen_provider].model
+
+        prompt_est, completion_est = EST_TOKENS.get(difficulty, EST_TOKENS["med"])
+        if chosen_provider and chosen_model:
+            cost, estimated = _estimate_call_cost(
+                chosen_provider, chosen_model, prompt_est, completion_est,
+            )
+        else:
+            cost, estimated = 0.0, True
+        any_estimated = any_estimated or estimated
+        total_cost += cost
+        plan_nodes.append({
+            "id":         nid,
+            "task":       n.get("task"),
+            "difficulty": difficulty,
+            "depends_on": n.get("depends_on") or [],
+            "provider":   chosen_provider,
+            "model":      chosen_model,
+            "estimated_cost_usd":    round(cost, 6),
+            "estimated_tokens":      prompt_est + completion_est,
+            "estimated_prompt":      prompt_est,
+            "estimated_completion":  completion_est,
+            "cost_estimated":        estimated,
+            "router_note":           reason,
+        })
+
+    # Add a synth/recombine call cost too — orchestrate always runs one.
+    synth_prompt, synth_completion = 1500, 800
+    synth_cost, synth_est = _estimate_call_cost(
+        moderator_name,
+        ALL_PROVIDERS[moderator_name].model if moderator_name in ALL_PROVIDERS else "",
+        synth_prompt, synth_completion,
+    ) if moderator_name in ALL_PROVIDERS else (0.0, True)
+    total_cost += synth_cost
+    any_estimated = any_estimated or synth_est
+
+    return {
+        "plan_only":              True,
+        "nodes":                  plan_nodes,
+        "synth": {
+            "provider":             moderator_name,
+            "model":                ALL_PROVIDERS[moderator_name].model if moderator_name in ALL_PROVIDERS else None,
+            "estimated_cost_usd":   round(synth_cost, 6),
+            "estimated_tokens":     synth_prompt + synth_completion,
+        },
+        "estimated_total_cost_usd": round(total_cost, 6),
+        "estimated_total_tokens":   sum(p["estimated_tokens"] for p in plan_nodes) + synth_prompt + synth_completion,
+        "cost_estimated":         any_estimated,
+        "note": ("plan_only=true was set: no LLM calls were made. Per-node "
+                 "token estimates are coarse purpose-tier defaults; treat the "
+                 "total as a ballpark ($0.01 vs $1.00 scale), not an invoice."),
+    }
+
+
 def tool_orchestrate(args: dict) -> dict:
     goal       = args.get("goal")
     dag        = args.get("dag")
@@ -4018,16 +4227,25 @@ def tool_orchestrate(args: dict) -> dict:
     cheap_mode = bool(args.get("cheap_mode", False))
     untrusted  = bool(args.get("untrusted_input", False))
     max_parallel = int(args.get("max_parallel", 4))
+    plan_only  = bool(args.get("plan_only", False))
 
     if (goal is None) == (dag is None):
         return {"tool": "orchestrate",
-                "error": "exactly one of `goal` or `dag` must be provided"}
+                **_error("ORCHESTRATE_ARGS_MUTUALLY_EXCLUSIVE",
+                         "exactly one of `goal` or `dag` must be provided",
+                         hint="Pass `goal` to let the moderator plan, OR `dag` "
+                              "to execute a hand-authored plan — not both.")}
 
     selected, unknown = _resolve_providers(args.get("providers"))
     selected, blocked = _filter_by_allowlist(selected)
     if not selected:
         return {"tool": "orchestrate",
-                "error": "no active providers have API keys in .env",
+                **_error("NO_PROVIDERS_AVAILABLE",
+                         "no active providers have API keys in .env",
+                         kind="config",
+                         hint="Set at least one provider API key in .env "
+                              "(ANTHROPIC_API_KEY / OPENAI_API_KEY / etc.) and "
+                              "make sure it's in `providers` in crosscheck.config.json."),
                 "unknown": unknown, "blocked": blocked}
 
     moderator_name = args.get("moderator") or CFG.get("moderator", "anthropic")
@@ -4067,7 +4285,12 @@ def tool_orchestrate(args: dict) -> dict:
         if dag is None:
             result = {
                 "tool": "orchestrate",
-                "error": "planner could not produce a valid DAG",
+                **_error("PLANNER_FAILED",
+                         "planner could not produce a valid DAG",
+                         kind="logic",
+                         hint="The moderator's DAG JSON failed schema validation. "
+                              "Check `planner_errors` for specifics; try a more "
+                              "concrete `goal`, or hand-author the `dag` instead."),
                 "planner_errors": planner_errs,
                 "budget": _budget_summary(call_started, deadline, answers_collected, cpu_started),
             }
@@ -4080,7 +4303,12 @@ def tool_orchestrate(args: dict) -> dict:
     if val_errors:
         result = {
             "tool": "orchestrate",
-            "error": "dag failed validation",
+            **_error("DAG_INVALID",
+                     "dag failed validation",
+                     kind="client",
+                     hint="See `validation_errors` for the specific issues "
+                          "(duplicate / missing IDs, unknown deps, bad difficulty, "
+                          "or a cycle in the dependency graph)."),
             "validation_errors": val_errors,
             "dag": dag,
             "budget": _budget_summary(call_started, deadline, answers_collected, cpu_started),
@@ -4088,6 +4316,31 @@ def tool_orchestrate(args: dict) -> dict:
         _attach_usage_block(result, answers_collected,
                             session_id=session.get("session_id") if session else args.get("session_id"),
                             tool_name="orchestrate")
+        return result
+
+    # ---- plan_only: short-circuit before any worker/recombine LLM call ----
+    if plan_only:
+        estimate = _plan_only_estimate(dag, [p.name for p in selected],
+                                       moderator.name, cheap_mode)
+        result = {
+            "tool":       "orchestrate",
+            "dag":        dag,
+            "fail_fast":  fail_fast,
+            "cheap_mode": cheap_mode,
+            "budget":     _budget_summary(call_started, deadline, answers_collected, cpu_started),
+            **estimate,
+        }
+        _attach_usage_block(result, answers_collected,
+                            session_id=session.get("session_id") if session else args.get("session_id"),
+                            tool_name="orchestrate")
+        _emit_progress(
+            f"orchestrate: plan_only (est ${estimate['estimated_total_cost_usd']:.4f} "
+            f"across {len(estimate['nodes'])} node(s) + synth)",
+            tool="orchestrate", plan_only=True,
+            estimated_cost_usd=estimate["estimated_total_cost_usd"],
+        )
+        _emit_event("tool_end", tool="orchestrate", plan_only=True,
+                    estimated_cost_usd=estimate["estimated_total_cost_usd"])
         return result
 
     # ---- Execute nodes topologically with bounded parallelism --------------
@@ -4654,7 +4907,11 @@ def tool_audit(args: dict) -> dict:
 
     if not output_to_audit and not session_id:
         return {"tool": "audit",
-                "error": "must provide `output_to_audit` or `session_id`"}
+                **_error("AUDIT_MISSING_INPUT",
+                         "must provide `output_to_audit` or `session_id`",
+                         hint="Pass the text to grade as `output_to_audit`, or "
+                              "a `session_id` whose latest transcript will be "
+                              "auto-extracted.")}
 
     # If only session_id given, pull the latest synth/output from usage_log
     # transcript. (Best-effort.)
@@ -4673,8 +4930,13 @@ def tool_audit(args: dict) -> dict:
                 output_to_audit = ""
     if not output_to_audit:
         return {"tool": "audit",
-                "error": "could not load output to audit from session_id; "
-                         "pass `output_to_audit` explicitly"}
+                **_error("AUDIT_LOAD_FAILED",
+                         "could not load output to audit from session_id; "
+                         "pass `output_to_audit` explicitly",
+                         hint=f"No transcript found for session {session_id!r}. "
+                              "Either the session never ran a multi-LLM tool, "
+                              "or `log_transcripts` is disabled — pass the text "
+                              "directly via `output_to_audit`.")}
 
     # Auto-enable coalesce if the producing panel exhausts every available
     # provider — the old "no auditor" error is now a graceful self-audit.
@@ -4682,7 +4944,11 @@ def tool_audit(args: dict) -> dict:
     available = list(ALL_PROVIDERS.keys())
     if not available:
         return {"tool": "audit",
-                "error": "no providers registered (set API keys in .env)"}
+                **_error("NO_PROVIDERS_AVAILABLE",
+                         "no providers registered",
+                         kind="config",
+                         hint="Set at least one provider API key in .env "
+                              "(ANTHROPIC_API_KEY / OPENAI_API_KEY / etc.).")}
     panel_exhausted = all(p in exclude for p in available)
     if panel_exhausted and not coalesce:
         coalesce = True
@@ -5098,6 +5364,7 @@ def _run_create_pipeline(args: dict, cheap_default: bool, tool_name: str) -> dic
     audit_threshold = float(args.get("audit_threshold", _CREATE_AUDIT_THRESHOLD))
     untrusted   = bool(args.get("untrusted_input", False))
     dry_run     = bool(args.get("dry_run", False))
+    plan_only   = bool(args.get("plan_only", False))
     max_parallel = int(args.get("max_parallel", 4))
     moderator   = args.get("moderator") or CFG.get("moderator")
 
@@ -5170,10 +5437,49 @@ def _run_create_pipeline(args: dict, cheap_default: bool, tool_name: str) -> dic
             f"{context_block}"
         ),
     }
+    # `plan_only` short-circuits: the planner still runs so we have a DAG to
+    # display, but workers + recombine + review + audit are skipped. Caller
+    # gets the resolved plan + cost estimate without paying for execution.
+    if plan_only:
+        orchestrate_args["plan_only"] = True
     _emit_progress(f"{tool_name}: orchestrating",
-                   tool=tool_name, step="orchestrate", cheap_mode=cheap_mode)
+                   tool=tool_name, step="orchestrate", cheap_mode=cheap_mode,
+                   plan_only=plan_only)
     orchestration = tool_orchestrate(orchestrate_args)
     attempts = 1
+
+    if plan_only:
+        answers_collected: list[dict] = []
+        answers_collected.extend(fetch_answers)
+        answers_collected.extend(_extract_answers_from_subresult(scope))
+        answers_collected.extend(_extract_answers_from_subresult(orchestration))
+        result = {
+            "tool":                tool_name,
+            "status":              "plan_only",
+            "instruction":         instruction,
+            "session_id":          session_id,
+            "providers":           providers or CFG.get("providers", []),
+            "moderator":           moderator,
+            "cheap_mode":          cheap_mode,
+            "attempts":            1,
+            "documents_ingested":  [{k: v for k, v in d.items() if k != "content"}
+                                    for d in descriptors],
+            "scope_summary":       scope_answer,
+            "plan_only_estimate":  {k: v for k, v in orchestration.items()
+                                    if k in ("nodes", "synth",
+                                             "estimated_total_cost_usd",
+                                             "estimated_total_tokens",
+                                             "cost_estimated", "note")},
+            "dag":                 orchestration.get("dag"),
+            "warnings":            ["plan_only=true: orchestrate / review / audit "
+                                    "skipped; no LLM workers ran"],
+            "budget":              _budget_summary(call_started, deadline=_deadline(),
+                                                    answers=answers_collected,
+                                                    cpu_started=cpu_started),
+        }
+        _attach_usage_block(result, answers_collected,
+                            session_id=session_id, tool_name=tool_name)
+        return result
 
     # -- Phase: review ------------------------------------------------------
     review_envelope: dict | None = None

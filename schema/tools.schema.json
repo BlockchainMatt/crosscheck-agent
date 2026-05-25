@@ -736,7 +736,9 @@
           "cheap_mode":   { "type": "boolean", "default": false, "description": "Route each node to the cheapest model in its declared difficulty tier." },
           "max_parallel": { "type": "integer", "minimum": 1, "default": 4 },
           "session_id":   { "type": "string" },
-          "untrusted_input": { "type": "boolean", "default": false }
+          "untrusted_input": { "type": "boolean", "default": false },
+          "plan_only":    { "type": "boolean", "default": false,
+                            "description": "Return the resolved DAG with per-node provider/model + a coarse cost estimate WITHOUT running workers or recombine. The planner still runs (so a `goal` produces a DAG to display); only execution is skipped." }
         }
       },
       "output": {
@@ -882,6 +884,8 @@
           "untrusted_input":  { "type": "boolean", "default": false },
           "dry_run":          { "type": "boolean", "default": false,
                                  "description": "When true, never write to `target_path` (the deliverable is still in the response)." },
+          "plan_only":        { "type": "boolean", "default": false,
+                                 "description": "Confer (scope) + orchestrate planner still run so you see the resolved DAG; workers / recombine / review / audit are ALL skipped. Returns the plan + cost estimate. Cheap way to preview a `create` run before committing to the spend." },
           "max_parallel":     { "type": "integer", "minimum": 1, "default": 4 }
         },
         "required": ["instruction"]
@@ -890,7 +894,7 @@
         "type": "object",
         "properties": {
           "tool":               { "const": "create" },
-          "status":             { "type": "string", "enum": ["success", "audit_failed", "audit_failed_after_retry", "error"] },
+          "status":             { "type": "string", "enum": ["success", "audit_failed", "audit_failed_after_retry", "error", "plan_only"] },
           "instruction":        { "type": "string" },
           "session_id":         { "type": "string" },
           "providers":          { "type": "array", "items": { "type": "string" } },
