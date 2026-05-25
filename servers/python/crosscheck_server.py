@@ -1811,17 +1811,23 @@ def write_transcript(kind: str, payload: dict) -> str | None:
 # so audits don't pay for 2k of headroom they never use. Override in
 # `crosscheck.config.json` via `token_budgets.<purpose>`; missing purposes
 # fall through to the legacy `_per_call_tokens` split of `token_cap`.
+# Per-purpose completion-token ceilings. These are MINIMUMS that have to
+# accommodate reasoning-class models (o-series, Gemini 2.5 Pro, Claude opus
+# 4-7) which burn 500-2000+ tokens of internal thinking BEFORE emitting
+# their visible output. 512 was too tight: reasoning auditors hit MAX_TOKENS
+# before they could write the JSON envelope. Empirically 2048 lands every
+# audit response cleanly across the active provider mix.
 _DEFAULT_TOKEN_BUDGETS: dict[str, int] = {
-    "audit":       512,
-    "synth":       1024,
-    "moderator":   1024,
+    "audit":       2048,
+    "synth":       2048,
+    "moderator":   2048,
     "worker":      2048,
     "orchestrate": 2048,
-    "confer":      1500,
-    "debate":      1500,
+    "confer":      2048,
+    "debate":      2048,
     "plan":        2048,
-    "review":      1500,
-    "coordinate":  1500,
+    "review":      2048,
+    "coordinate":  2048,
     "solve":       2048,
 }
 

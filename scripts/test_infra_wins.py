@@ -62,8 +62,8 @@ def main() -> int:
     # 1) Per-purpose max_tokens budgets
     # ------------------------------------------------------------------
     # Defaults
-    assert srv._budget_for_purpose("audit")  == 512
-    assert srv._budget_for_purpose("synth")  == 1024
+    assert srv._budget_for_purpose("audit")  == 2048
+    assert srv._budget_for_purpose("synth")  == 2048
     assert srv._budget_for_purpose("worker") == 2048
     # Unknown purpose falls through to None (no cap applied)
     assert srv._budget_for_purpose("nope") is None
@@ -71,7 +71,7 @@ def main() -> int:
     srv.CFG["token_budgets"] = {"audit": 256, "custom": 999}
     assert srv._budget_for_purpose("audit")  == 256
     assert srv._budget_for_purpose("custom") == 999
-    assert srv._budget_for_purpose("synth")  == 1024   # default still applies
+    assert srv._budget_for_purpose("synth")  == 2048   # default still applies
     srv.CFG["token_budgets"] = {}                       # reset
 
     # Verify the budget actually caps `max_tokens` sent to the provider.
@@ -89,14 +89,14 @@ def main() -> int:
 
     # Call _ask_one with a large max_tokens but purpose=audit. The actual
     # `max_tokens` (OpenAI) or `max_tokens` (Anthropic) sent on the wire must
-    # be capped at the audit budget (512).
+    # be capped at the audit budget (2048).
     captured_bodies.clear()
     srv._ask_one(srv.ALL_PROVIDERS["openai"],
                  [{"role": "user", "content": "hi"}],
                  deadline=__import__("time").monotonic() + 10,
                  max_tokens=8000, purpose="audit")
     assert captured_bodies, "fake post should have been called"
-    assert captured_bodies[-1]["body"].get("max_tokens") == 512, captured_bodies[-1]
+    assert captured_bodies[-1]["body"].get("max_tokens") == 2048, captured_bodies[-1]
 
     captured_bodies.clear()
     srv._ask_one(srv.ALL_PROVIDERS["anthropic"],
