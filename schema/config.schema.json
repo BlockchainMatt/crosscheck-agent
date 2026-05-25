@@ -104,10 +104,13 @@
       "additionalProperties": false,
       "description": "DAG-node cache (separate from the message cache). Caches a node's output keyed on (id, task, difficulty, provider, model, canonicalized upstream outputs) so a partial-recombine retry cache-hits unchanged nodes.",
       "properties": {
-        "enabled":      { "type": "boolean", "default": true },
-        "dir":          { "type": "string",  "default": ".crosscheck/node_cache" },
-        "ttl_seconds":  { "type": "integer", "minimum": 0, "default": 604800 },
-        "max_entries":  { "type": "integer", "minimum": 0, "default": 2000 }
+        "enabled":         { "type": "boolean", "default": true },
+        "dir":             { "type": "string",  "default": ".crosscheck/node_cache" },
+        "ttl_seconds":     { "type": "integer", "minimum": 0, "default": 604800 },
+        "max_entries":     { "type": "integer", "minimum": 0, "default": 2000,
+                             "description": "LRU-by-count cap. Setting to 0 disables this cap." },
+        "max_cache_bytes": { "type": "integer", "minimum": 0, "default": 104857600,
+                             "description": "LRU-by-size cap (default 100 MiB). Defense against fill-disk DoS. 0 disables." }
       }
     },
     "token_budgets": {

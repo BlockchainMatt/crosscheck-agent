@@ -23,6 +23,7 @@ import random
 import re
 import sqlite3
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -298,6 +299,29 @@ def _emit_progress(message: str, *, total: float | None = None,
 
 
 # ------------------------------------------------------------
+# Atomic JSON write helper — concurrent orchestrate workers can race on
+# the same cache file. Write to a tempfile in the same directory, then
+# os.replace() so a reader sees either the old or new payload, never a
+# half-written one.
+# ------------------------------------------------------------
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(payload, separators=(",", ":"))
+    fd, tmp_path = tempfile.mkstemp(prefix=".tmp.", suffix=".json",
+                                     dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(data)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        raise
+
+
+# ------------------------------------------------------------
 # Disk cache (exact-match, SHA256 of canonicalized request)
 # ------------------------------------------------------------
 def _cache_cfg() -> dict:
@@ -404,8 +428,7 @@ def _cache_put(key: str, value: dict) -> None:
     if not _cache_enabled():
         return
     p = _cache_path(key)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(value, separators=(",", ":")))
+    _atomic_write_json(p, value)
     _cache_evict_if_needed()
 
 
@@ -455,15 +478,22 @@ def _node_cache_dir() -> Path:
 def _node_cache_key(node: dict, upstream_outputs: dict[str, str],
                     provider: str, model: str) -> str:
     """Compute a SHA256 over the semantic inputs of a node. Volatile
-    substrings in upstream outputs are normalized so a retry whose
-    upstream nodes produced semantically-equivalent text cache-hits."""
-    canon_upstream = {dep: _canonicalize_text(text)
-                      for dep, text in sorted(upstream_outputs.items())}
+    substrings in upstream outputs are normalized so a retry whose upstream
+    nodes produced semantically-equivalent text cache-hits.
+
+    We hash each upstream value before embedding so the cache key stays
+    small + cheap to compute even when upstream outputs are large."""
+    canon_upstream = {
+        dep: hashlib.sha256(_canonicalize_text(text).encode("utf-8")).hexdigest()
+        for dep, text in sorted(upstream_outputs.items())
+    }
     payload = json.dumps(
         {
             "v":          _CACHE_KEY_VERSION,
             "id":         node.get("id"),
-            "task":       _canonicalize_text(str(node.get("task") or "")),
+            "task":       hashlib.sha256(
+                              _canonicalize_text(str(node.get("task") or ""))
+                              .encode("utf-8")).hexdigest(),
             "difficulty": node.get("difficulty"),
             "deps":       sorted(node.get("depends_on") or []),
             "role":       node.get("role"),
@@ -502,21 +532,33 @@ def _node_cache_put(key: str, value: dict) -> None:
     if not _node_cache_enabled():
         return
     p = _node_cache_path(key)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(value, separators=(",", ":")))
-    # LRU eviction at write time, same pattern as the message cache.
-    max_entries = int(_node_cache_cfg().get("max_entries", 2000))
-    if max_entries > 0:
-        base = _node_cache_dir()
-        if base.exists():
-            entries = [(q.stat().st_mtime, q) for q in base.rglob("*.json")]
-            if len(entries) > max_entries:
-                entries.sort()
-                for _, q in entries[: len(entries) - max_entries]:
-                    try:
-                        q.unlink()
-                    except Exception:
-                        pass
+    _atomic_write_json(p, value)
+    # LRU eviction by entry count + by total bytes (defense against fill-disk
+    # DoS). Both caps are configurable; setting either to 0 disables it.
+    cfg = _node_cache_cfg()
+    max_entries = int(cfg.get("max_entries", 2000))
+    max_bytes   = int(cfg.get("max_cache_bytes", 100 * 1024 * 1024))  # 100 MiB default
+    if max_entries <= 0 and max_bytes <= 0:
+        return
+    base = _node_cache_dir()
+    if not base.exists():
+        return
+    entries = [(q.stat().st_mtime, q.stat().st_size, q) for q in base.rglob("*.json")]
+    total_bytes = sum(sz for _, sz, _ in entries)
+    if (max_entries > 0 and len(entries) <= max_entries
+            and (max_bytes <= 0 or total_bytes <= max_bytes)):
+        return
+    entries.sort()      # oldest first
+    while entries and (
+        (max_entries > 0 and len(entries) > max_entries)
+        or (max_bytes  > 0 and total_bytes > max_bytes)
+    ):
+        _, sz, q = entries.pop(0)
+        try:
+            q.unlink()
+            total_bytes -= sz
+        except Exception:
+            pass
 
 
 # ------------------------------------------------------------
@@ -1650,20 +1692,32 @@ def _check_dag_breakers(dag: dict) -> tuple[str, str] | None:
     max_depth = int(cfg.get("max_dag_depth") or 0)
     if max_depth > 0:
         # Topological depth = longest path from any root to any leaf.
+        # Cycles fail-closed: we trip the breaker rather than silently
+        # treating them as depth 0 (which would let an oversized cyclic DAG
+        # slip past the cap if _validate_dag was ever bypassed).
         deps = {n.get("id"): list(n.get("depends_on") or []) for n in nodes
                 if isinstance(n, dict)}
         memo: dict[str, int] = {}
+
+        class _CycleError(Exception):
+            pass
+
         def _depth(nid: str, stack: set[str]) -> int:
             if nid in memo:
                 return memo[nid]
-            if nid in stack:                # cycle — short-circuit, _validate_dag will catch
-                return 0
+            if nid in stack:
+                raise _CycleError(nid)
             ds = deps.get(nid) or []
             d = 1 + max((_depth(p, stack | {nid}) for p in ds), default=0)
             memo[nid] = d
             return d
-        depth = max((_depth(n.get("id"), set()) for n in nodes
-                     if isinstance(n, dict) and n.get("id")), default=0)
+        try:
+            depth = max((_depth(n.get("id"), set()) for n in nodes
+                         if isinstance(n, dict) and n.get("id")), default=0)
+        except _CycleError as e:
+            return ("max_dag_depth",
+                    f"cycle detected at node {e!s}; depth can't be bounded — "
+                    "fail-closed (this normally means _validate_dag missed it)")
         if depth > max_depth:
             return ("max_dag_depth",
                     f"dag depth {depth} > cap {max_depth}")
@@ -1684,20 +1738,49 @@ def _breaker_error(name: str, reason: str, *, session_id: str | None = None) -> 
     )
 
 
-def _maybe_breaker_response(session: dict | None, tool_name: str) -> dict | None:
-    """Convenience: returns a tool-response envelope when a session-level
-    breaker has tripped, else None. Caller does `if env: return env`."""
+def _project_session_with_answers(session: dict | None,
+                                  extra_answers: list[dict]) -> dict | None:
+    """Return a shallow-projected session dict that includes the usage from
+    `extra_answers` (which have NOT yet been written to usage_log / sessions).
+    Used by mid-tool breaker re-checks so an in-flight call's cost isn't
+    invisible to the breaker between phases."""
     if not isinstance(session, dict):
         return None
-    tripped = _check_session_breakers(session)
+    projected = dict(session)
+    for a in extra_answers or []:
+        u = a.get("usage") or {}
+        projected["total_cost_usd"] = float(projected.get("total_cost_usd", 0.0)) \
+                                      + float(u.get("cost_usd", 0.0))
+        projected["total_tokens"]   = int(projected.get("total_tokens", 0)) \
+                                      + int(u.get("total_tokens", 0))
+        projected["wall_ms"]        = int(projected.get("wall_ms", 0)) \
+                                      + int(a.get("elapsed_ms", 0))
+    return projected
+
+
+def _maybe_breaker_response(session: dict | None, tool_name: str,
+                            extra_answers: list[dict] | None = None) -> dict | None:
+    """Convenience: returns a tool-response envelope when a session-level
+    breaker has tripped, else None. Caller does `if env: return env`.
+
+    When `extra_answers` is supplied, the breaker check uses a forward-
+    projected view of the session that adds those answers' usage to the
+    persisted totals — so a mid-tool re-check sees the cost of in-flight
+    calls that haven't been logged to usage_log yet."""
+    target = (_project_session_with_answers(session, extra_answers)
+              if extra_answers else session)
+    if not isinstance(target, dict):
+        return None
+    tripped = _check_session_breakers(target)
     if tripped is None:
         return None
     name, reason = tripped
     _emit_event("circuit_breaker_tripped", tool=tool_name,
                 breaker=name, reason=reason,
-                session_id=session.get("session_id"))
+                session_id=(session or {}).get("session_id"))
     return {"tool": tool_name,
-            **_breaker_error(name, reason, session_id=session.get("session_id"))}
+            **_breaker_error(name, reason,
+                              session_id=(session or {}).get("session_id"))}
 
 
 def active_providers() -> list[Provider]:
@@ -2305,7 +2388,14 @@ def tool_confer(args: dict) -> dict:
                                     purpose="confer")
         phase1_clean = [a for a in phase1
                         if isinstance(a, dict) and not a.get("error")]
-        if len(phase1_clean) == 2 and _time_left(deadline) > 1:
+        # If a breaker would trip once phase-1's cost is rolled in, skip the
+        # judge call (and phase 2) — caller already burned the cap. Phase-1
+        # answers haven't been logged to usage_log yet, so we project them
+        # forward instead of re-loading the session.
+        if (len(phase1_clean) == 2
+                and _time_left(deadline) > 1
+                and _maybe_breaker_response(session, "confer",
+                                            extra_answers=phase1) is None):
             _emit_progress(
                 "confer: checking phase-1 agreement (early_stop)",
                 tool="confer", step="agreement_check",
