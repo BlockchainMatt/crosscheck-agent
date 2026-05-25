@@ -2663,6 +2663,17 @@ def tool_debate(args: dict) -> dict:
     _emit_progress(f"debate: starting {max_rounds}-round panel of {len(selected)}",
                    tool="debate", providers=[p.name for p in selected], rounds=max_rounds)
 
+    # Early-stop on debate: after each FULL round (every panelist has spoken),
+    # ask a cheap-tier judge whether the panel has converged. If yes (above
+    # threshold), skip remaining rounds. Saves N*(M-1) provider calls when
+    # debaters land on the same headline by round 2 or 3.
+    early_stop          = bool(args.get("early_stop", False))
+    early_stop_threshold = float(args.get("early_stop_threshold", 0.7))
+    early_stopped_round: int | None = None
+    agreement_obj: dict | None = None
+    agreement_raw: dict | None = None
+    agreement_extras: list[dict] = []   # one per round-check for usage rollup
+
     for rnd in range(1, max_rounds + 1):
         if _time_left(deadline) <= 1:
             break
@@ -2691,6 +2702,44 @@ def tool_debate(args: dict) -> dict:
             entry = _ask_one(p, round_messages, deadline, per_call, purpose="debate")
             entry["round"] = rnd
             transcript.append(entry)
+
+        # Post-round convergence check. Skip on the last planned round (no
+        # remaining rounds to short-circuit) and when fewer than 2 valid
+        # turns landed this round.
+        if (early_stop
+                and rnd < max_rounds
+                and _time_left(deadline) > 1):
+            this_round = [e for e in transcript
+                          if e.get("round") == rnd
+                          and isinstance(e, dict)
+                          and e.get("response")
+                          and not e.get("error")]
+            if len(this_round) >= 2:
+                # Project forward so the judge respects the breaker if this
+                # round's cost has just crossed the cap.
+                if _maybe_breaker_response(session, "debate",
+                                            extra_answers=this_round) is None:
+                    _emit_progress(
+                        f"debate: checking round-{rnd} agreement (early_stop)",
+                        tool="debate", step="agreement_check", round=rnd,
+                    )
+                    a_obj, a_raw = _check_panel_agreement(topic, this_round, deadline)
+                    if a_raw:
+                        agreement_extras.append(a_raw)
+                    if (a_obj
+                            and bool(a_obj.get("agreed"))
+                            and float(a_obj.get("confidence", 0)) >= early_stop_threshold):
+                        agreement_obj = a_obj
+                        agreement_raw = a_raw
+                        early_stopped_round = rnd
+                        _emit_progress(
+                            f"debate: EARLY-STOP after round {rnd}/{max_rounds} "
+                            f"(agreed conf={float(a_obj.get('confidence', 0)):.2f})",
+                            tool="debate", step="early_stop", round=rnd,
+                            confidence=float(a_obj.get("confidence", 0)),
+                            rounds_skipped=max_rounds - rnd,
+                        )
+                        break
 
     # Moderator synthesises.
     moderator_name = args.get("moderator") or CFG.get("moderator", "anthropic")
@@ -2737,8 +2786,10 @@ def tool_debate(args: dict) -> dict:
             session.get("session_id") if session else args.get("session_id"),
         )
 
-    all_answers = transcript + ([synthesis] if synthesis else []) \
-                            + ([claims_extractor_ans] if claims_extractor_ans else [])
+    all_answers = (transcript
+                   + ([synthesis] if synthesis else [])
+                   + ([claims_extractor_ans] if claims_extractor_ans else [])
+                   + list(agreement_extras))
     _session_record(session, all_answers, call_started, cpu_started)
     _session_save(session)
     log_usage(session.get("session_id") if session else args.get("session_id"),
@@ -2776,6 +2827,17 @@ def tool_debate(args: dict) -> dict:
     }
     if claims_block is not None:
         result["claims"] = claims_block
+    if early_stop:
+        result["early_stopped"]      = early_stopped_round is not None
+        result["early_stopped_round"] = early_stopped_round
+        result["rounds_skipped"]     = (max_rounds - early_stopped_round
+                                         if early_stopped_round is not None else 0)
+        if agreement_obj is not None:
+            result["agreement_check"] = {
+                "agreed":     bool(agreement_obj.get("agreed")),
+                "confidence": float(agreement_obj.get("confidence", 0)),
+                "summary":    str(agreement_obj.get("summary", "")),
+            }
     _attach_usage_block(result, all_answers,
                         session_id=session.get("session_id") if session else None,
                         tool_name="debate")
@@ -5284,6 +5346,44 @@ def _plan_only_estimate(dag: dict, selected_names: list[str], moderator_name: st
     }
 
 
+_REACTIVE_SIGNAL_RE = re.compile(
+    r"<signals>\s*(\{.*?\})\s*</signals>",
+    re.DOTALL,
+)
+
+
+def _parse_reactive_signals(output: str | None) -> list[dict]:
+    """Extract the `<signals>{...}</signals>` JSON block(s) emitted by a
+    reactive worker. Returns a list of `add_nodes` entries (the only
+    signal type currently supported). Malformed blocks are dropped silently
+    — they're hints, not commands."""
+    if not isinstance(output, str) or "<signals>" not in output:
+        return []
+    out: list[dict] = []
+    for match in _REACTIVE_SIGNAL_RE.finditer(output):
+        try:
+            obj = json.loads(match.group(1))
+        except Exception:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        for n in (obj.get("add_nodes") or []):
+            if isinstance(n, dict):
+                out.append(n)
+    return out
+
+
+_REACTIVE_SYS_NOTE = (
+    "If — and only if — your work surfaces an additional concrete sub-task "
+    "needed to complete the parent goal, append a final `<signals>{...}</signals>` "
+    "block to your output containing an `add_nodes` array. Each new node must "
+    "be a JSON object with: id (unique), task (one-sentence), difficulty "
+    "(low|med|high), and depends_on (array of EXISTING node ids only — you "
+    "cannot depend on nodes that haven't run yet). Use this sparingly; the "
+    "orchestrator caps total reactive signals per run."
+)
+
+
 def tool_orchestrate(args: dict) -> dict:
     goal       = args.get("goal")
     dag        = args.get("dag")
@@ -5292,6 +5392,8 @@ def tool_orchestrate(args: dict) -> dict:
     untrusted  = bool(args.get("untrusted_input", False))
     max_parallel = int(args.get("max_parallel", 4))
     plan_only  = bool(args.get("plan_only", False))
+    reactive   = bool(args.get("reactive", False))
+    max_reactive_signals = int(args.get("max_reactive_signals", 4))
 
     if (goal is None) == (dag is None):
         return {"tool": "orchestrate",
@@ -5484,6 +5586,8 @@ def tool_orchestrate(args: dict) -> dict:
         )
         if untrusted:
             sys_msg += "\n" + _UNTRUSTED_SYSTEM_NOTE
+        if reactive:
+            sys_msg += "\n" + _REACTIVE_SYS_NOTE
         task_text = node["task"]
         if untrusted:
             task_text = _wrap_untrusted(task_text)
@@ -5635,6 +5739,118 @@ def tool_orchestrate(args: dict) -> dict:
                     failed_ids.add(nid)
             break
 
+    # ---- Reactive signals: run any pending worker-requested nodes ----------
+    # Workers in `reactive` mode can emit `<signals>{add_nodes:[...]}</signals>`
+    # to extend the DAG. We process those signals after the main topological
+    # walk finishes, bounded by `max_reactive_signals` accepted nodes per run.
+    reactive_applied: list[dict] = []
+    reactive_rejected: list[dict] = []
+
+    if reactive:
+        # Collect signals from every completed worker output, validate, and
+        # dispatch the accepted nodes in batches. Each accepted node can in
+        # turn emit signals, capped by max_reactive_signals total.
+        def _ok_done_ids() -> set[str]:
+            return {nid for nid, r in node_results.items()
+                    if isinstance(r, dict) and r.get("status") == "ok"}
+
+        def _consume_signals(source_outputs: dict[str, str]) -> list[str]:
+            """Parse signals from `source_outputs` (node_id -> output text),
+            apply the ones that validate against the current DAG state,
+            return the list of newly-added node ids."""
+            newly_added: list[str] = []
+            valid_diffs = ("low", "med", "high")
+            for source_nid, output in source_outputs.items():
+                for sig in _parse_reactive_signals(output):
+                    nid = str(sig.get("id") or "").strip()
+                    task = str(sig.get("task") or "").strip()
+                    diff = str(sig.get("difficulty") or "").lower()
+                    deps_raw = sig.get("depends_on") or []
+                    deps = [str(d) for d in deps_raw if isinstance(d, str)]
+                    reject_reason: str | None = None
+                    if not nid:
+                        reject_reason = "missing id"
+                    elif nid in nodes_by_id:
+                        reject_reason = f"duplicate id (already exists in DAG)"
+                    elif not task:
+                        reject_reason = "missing task"
+                    elif diff not in valid_diffs:
+                        reject_reason = f"invalid difficulty {diff!r}"
+                    elif len(reactive_applied) >= max_reactive_signals:
+                        reject_reason = (f"max_reactive_signals="
+                                         f"{max_reactive_signals} already applied")
+                    else:
+                        ok_done = _ok_done_ids()
+                        bad_deps = [d for d in deps if d not in ok_done]
+                        if bad_deps:
+                            reject_reason = (
+                                f"deps must reference already-completed-ok nodes "
+                                f"(violating: {bad_deps})"
+                            )
+                    if reject_reason:
+                        reactive_rejected.append({
+                            "source_node":   source_nid,
+                            "signal":        sig,
+                            "reason":        reject_reason,
+                        })
+                        continue
+                    # Accept: register in DAG + queue.
+                    new_node = {
+                        "id":         nid, "task": task, "difficulty": diff,
+                        "depends_on": deps, "role": "reactive",
+                    }
+                    nodes_by_id[nid] = new_node
+                    reactive_applied.append({
+                        "source_node":  source_nid,
+                        "node":         new_node,
+                    })
+                    newly_added.append(nid)
+            return newly_added
+
+        # Initial pass: scan signals from main-DAG outputs.
+        signal_sources: dict[str, str] = {
+            nid: (r.get("output") or "")
+            for nid, r in node_results.items()
+            if isinstance(r, dict) and r.get("status") == "ok"
+        }
+        next_to_dispatch = _consume_signals(signal_sources)
+
+        # Now dispatch reactive nodes in batches, harvesting their signals too.
+        while next_to_dispatch and _time_left(deadline) > 1:
+            batch = [nodes_by_id[nid] for nid in next_to_dispatch]
+            _emit_progress(
+                f"orchestrate: reactive batch — running {len(batch)} new node(s)",
+                tool="orchestrate", step="reactive_batch",
+                added=[n["id"] for n in batch],
+            )
+            if len(batch) == 1:
+                results = [_run_node(batch[0])]
+            else:
+                with ThreadPoolExecutor(max_workers=max(1, min(max_parallel, len(batch)))) as ex:
+                    parent_token = _progress_token()
+                    parent_wall = getattr(_PROGRESS_CTX, "wall_start", None)
+                    parent_cpu  = getattr(_PROGRESS_CTX, "cpu_start", None)
+                    def _wrap(n: dict) -> dict:
+                        if parent_token is not None:
+                            _progress_set(parent_token, parent_wall, parent_cpu)
+                        try:
+                            return _run_node(n)
+                        finally:
+                            if parent_token is not None:
+                                _progress_clear()
+                    results = list(ex.map(_wrap, batch))
+
+            batch_outputs: dict[str, str] = {}
+            for res in results:
+                node_results[res["id"]] = res
+                if res["status"] != "ok":
+                    failed_ids.add(res["id"])
+                if "answer" in res:
+                    answers_collected.append(res.pop("answer"))
+                if res.get("status") == "ok":
+                    batch_outputs[res["id"]] = res.get("output") or ""
+            next_to_dispatch = _consume_signals(batch_outputs) if batch_outputs else []
+
     # ---- Recombine ---------------------------------------------------------
     missing = sorted(nid for nid in nodes_by_id if nid not in node_results
                      or node_results[nid].get("status") != "ok")
@@ -5697,6 +5913,10 @@ def tool_orchestrate(args: dict) -> dict:
         "cheap_mode": cheap_mode,
         "budget":     _budget_summary(call_started, deadline, answers_collected, cpu_started),
     }
+    if reactive:
+        result["reactive"]          = True
+        result["reactive_applied"]  = reactive_applied
+        result["reactive_rejected"] = reactive_rejected
     if synth_err:
         result["synth_error"] = synth_err
     if planner_errs:
