@@ -257,6 +257,10 @@
                                 "description": "Panel size when `auto_panel:true` (default 2 for confer)." },
           "extract_claims":   { "type": "boolean", "default": false,
                                 "description": "When true, an extra cheap-tier extractor call distills atomic claims with per-provider support/dissent maps. Adds one call's worth of cost; off by default." },
+          "early_stop":       { "type": "boolean", "default": false,
+                                "description": "When true (and panel size >= 3), dispatch the first 2 panelists, ask a cheap-tier judge whether they agree on the headline, and skip the remaining panelists if confidence >= `early_stop_threshold`. Right-sized for low-stakes questions." },
+          "early_stop_threshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7,
+                                "description": "Minimum agreement confidence required to short-circuit when `early_stop:true`." },
           "session_id":       { "type": "string", "description": "Optional id to accumulate usage across calls." },
           "untrusted_input":  { "type": "boolean", "default": false,
                                 "description": "When true, treat `context` and `question` as untrusted: wrap in tags, neutralize obvious injection phrases, instruct panelists to treat as data only." }

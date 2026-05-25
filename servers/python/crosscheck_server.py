@@ -428,6 +428,98 @@ def _cache_evict_if_needed() -> None:
 
 
 # ------------------------------------------------------------
+# DAG-node cache: orchestrate-only secondary cache keyed on the
+# SEMANTIC inputs of a node (node_id + task + difficulty + provider +
+# model + canonicalized upstream outputs), so re-running a partially-
+# failed orchestrate run cache-hits the nodes whose deps and inputs
+# didn't change — even when the message-level cache misses because of
+# scope-summary timestamps or other prompt-volatile bits.
+#
+# Separate from the message cache (different dir, different lifetime)
+# so we don't conflate "same prompt" with "same DAG step".
+# ------------------------------------------------------------
+def _node_cache_cfg() -> dict:
+    return CFG.get("node_cache") or {}
+
+
+def _node_cache_enabled() -> bool:
+    return bool(_node_cache_cfg().get("enabled", True))
+
+
+def _node_cache_dir() -> Path:
+    raw = _node_cache_cfg().get("dir") or ".crosscheck/node_cache"
+    p = Path(str(raw))
+    return p if p.is_absolute() else (ROOT / p)
+
+
+def _node_cache_key(node: dict, upstream_outputs: dict[str, str],
+                    provider: str, model: str) -> str:
+    """Compute a SHA256 over the semantic inputs of a node. Volatile
+    substrings in upstream outputs are normalized so a retry whose
+    upstream nodes produced semantically-equivalent text cache-hits."""
+    canon_upstream = {dep: _canonicalize_text(text)
+                      for dep, text in sorted(upstream_outputs.items())}
+    payload = json.dumps(
+        {
+            "v":          _CACHE_KEY_VERSION,
+            "id":         node.get("id"),
+            "task":       _canonicalize_text(str(node.get("task") or "")),
+            "difficulty": node.get("difficulty"),
+            "deps":       sorted(node.get("depends_on") or []),
+            "role":       node.get("role"),
+            "provider":   provider,
+            "model":      model,
+            "upstream":   canon_upstream,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _node_cache_path(key: str) -> Path:
+    return _node_cache_dir() / key[:2] / f"{key}.json"
+
+
+def _node_cache_get(key: str) -> dict | None:
+    if not _node_cache_enabled():
+        return None
+    p = _node_cache_path(key)
+    if not p.exists():
+        return None
+    ttl = int(_node_cache_cfg().get("ttl_seconds", 604800))    # 7 days default
+    if ttl > 0 and (time.time() - p.stat().st_mtime) > ttl:
+        return None
+    try:
+        data = json.loads(p.read_text())
+        os.utime(p, None)         # LRU touch
+        return data
+    except Exception:
+        return None
+
+
+def _node_cache_put(key: str, value: dict) -> None:
+    if not _node_cache_enabled():
+        return
+    p = _node_cache_path(key)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(value, separators=(",", ":")))
+    # LRU eviction at write time, same pattern as the message cache.
+    max_entries = int(_node_cache_cfg().get("max_entries", 2000))
+    if max_entries > 0:
+        base = _node_cache_dir()
+        if base.exists():
+            entries = [(q.stat().st_mtime, q) for q in base.rglob("*.json")]
+            if len(entries) > max_entries:
+                entries.sort()
+                for _, q in entries[: len(entries) - max_entries]:
+                    try:
+                        q.unlink()
+                    except Exception:
+                        pass
+
+
+# ------------------------------------------------------------
 # SQLite session memory + claim-list v0 (cross-call state)
 # ------------------------------------------------------------
 _SESSION_ID_RE = re.compile(r"[^A-Za-z0-9._-]")
@@ -1490,6 +1582,124 @@ def build_providers() -> dict[str, Provider]:
 ALL_PROVIDERS = build_providers()
 
 
+# ------------------------------------------------------------
+# Session circuit breakers
+#
+# Hard caps on cumulative session spend (cost / tokens / wall-time) and
+# on orchestrate DAG breadth/depth. Trip BEFORE the offending operation
+# runs and return a structured CIRCUIT_BREAKER_TRIPPED error envelope,
+# so a runaway loop can't burn through your budget.
+#
+# Configured via crosscheck.config.json:
+#   "circuit_breakers": {
+#     "max_session_cost_usd":      5.0,
+#     "max_session_tokens":        1000000,
+#     "max_session_wall_seconds":  600,
+#     "max_dag_nodes":             32,
+#     "max_dag_depth":             8
+#   }
+# Any field omitted (or set to 0) disables that specific check.
+# ------------------------------------------------------------
+_BREAKER_KEYS = (
+    "max_session_cost_usd",
+    "max_session_tokens",
+    "max_session_wall_seconds",
+    "max_dag_nodes",
+    "max_dag_depth",
+)
+
+
+def _breakers_cfg() -> dict:
+    return CFG.get("circuit_breakers") or {}
+
+
+def _check_session_breakers(session: dict | None) -> tuple[str, str] | None:
+    """Returns (breaker_name, reason) if a session-level breaker has tripped,
+    else None. Caller wraps the result in the structured error envelope."""
+    if not isinstance(session, dict):
+        return None
+    cfg = _breakers_cfg()
+    cost_cap = float(cfg.get("max_session_cost_usd") or 0)
+    if cost_cap > 0 and float(session.get("total_cost_usd", 0.0)) >= cost_cap:
+        return ("max_session_cost_usd",
+                f"session cost ${float(session.get('total_cost_usd', 0.0)):.4f} "
+                f">= cap ${cost_cap:.4f}")
+    tok_cap = int(cfg.get("max_session_tokens") or 0)
+    if tok_cap > 0 and int(session.get("total_tokens", 0)) >= tok_cap:
+        return ("max_session_tokens",
+                f"session tokens {int(session.get('total_tokens', 0))} "
+                f">= cap {tok_cap}")
+    wall_cap_s = int(cfg.get("max_session_wall_seconds") or 0)
+    if wall_cap_s > 0 and int(session.get("wall_ms", 0)) >= wall_cap_s * 1000:
+        return ("max_session_wall_seconds",
+                f"session wall {int(session.get('wall_ms', 0))}ms "
+                f">= cap {wall_cap_s * 1000}ms")
+    return None
+
+
+def _check_dag_breakers(dag: dict) -> tuple[str, str] | None:
+    """Returns (breaker_name, reason) if the DAG exceeds size/depth limits."""
+    cfg = _breakers_cfg()
+    nodes = dag.get("nodes") if isinstance(dag, dict) else None
+    if not isinstance(nodes, list):
+        return None
+    max_nodes = int(cfg.get("max_dag_nodes") or 0)
+    if max_nodes > 0 and len(nodes) > max_nodes:
+        return ("max_dag_nodes",
+                f"dag has {len(nodes)} nodes > cap {max_nodes}")
+    max_depth = int(cfg.get("max_dag_depth") or 0)
+    if max_depth > 0:
+        # Topological depth = longest path from any root to any leaf.
+        deps = {n.get("id"): list(n.get("depends_on") or []) for n in nodes
+                if isinstance(n, dict)}
+        memo: dict[str, int] = {}
+        def _depth(nid: str, stack: set[str]) -> int:
+            if nid in memo:
+                return memo[nid]
+            if nid in stack:                # cycle — short-circuit, _validate_dag will catch
+                return 0
+            ds = deps.get(nid) or []
+            d = 1 + max((_depth(p, stack | {nid}) for p in ds), default=0)
+            memo[nid] = d
+            return d
+        depth = max((_depth(n.get("id"), set()) for n in nodes
+                     if isinstance(n, dict) and n.get("id")), default=0)
+        if depth > max_depth:
+            return ("max_dag_depth",
+                    f"dag depth {depth} > cap {max_depth}")
+    return None
+
+
+def _breaker_error(name: str, reason: str, *, session_id: str | None = None) -> dict:
+    """Build the standardized CIRCUIT_BREAKER_TRIPPED error envelope."""
+    return _error(
+        "CIRCUIT_BREAKER_TRIPPED",
+        f"circuit breaker {name!r} tripped: {reason}",
+        kind="config",
+        hint=("Adjust the breaker in `circuit_breakers` in crosscheck.config.json, "
+              "or start a new `session_id` once the offending session has cooled off."),
+        breaker=name,
+        session_id=session_id,
+        transient=False,
+    )
+
+
+def _maybe_breaker_response(session: dict | None, tool_name: str) -> dict | None:
+    """Convenience: returns a tool-response envelope when a session-level
+    breaker has tripped, else None. Caller does `if env: return env`."""
+    if not isinstance(session, dict):
+        return None
+    tripped = _check_session_breakers(session)
+    if tripped is None:
+        return None
+    name, reason = tripped
+    _emit_event("circuit_breaker_tripped", tool=tool_name,
+                breaker=name, reason=reason,
+                session_id=session.get("session_id"))
+    return {"tool": tool_name,
+            **_breaker_error(name, reason, session_id=session.get("session_id"))}
+
+
 def active_providers() -> list[Provider]:
     return [ALL_PROVIDERS[p] for p in CFG.get("providers", []) if p in ALL_PROVIDERS]
 
@@ -2073,11 +2283,57 @@ def tool_confer(args: dict) -> dict:
     deadline = _deadline()
     per_call = _per_call_tokens(len(selected))
     session = _session_load(args.get("session_id"))
+    breaker_env = _maybe_breaker_response(session, "confer")
+    if breaker_env:
+        return breaker_env
     _emit_event("tool_start", tool="confer", providers=[p.name for p in selected],
                 untrusted_input=untrusted, session_id=session.get("session_id") if session else None)
     _emit_progress(f"confer: dispatching {len(selected)} panelist(s)",
                    tool="confer", providers=[p.name for p in selected])
-    answers = _ask_many_parallel(selected, messages, deadline, per_call, purpose="confer")
+
+    early_stop          = bool(args.get("early_stop", False))
+    early_stop_threshold = float(args.get("early_stop_threshold", 0.7))
+    early_stopped       = False
+    skipped_providers: list[str] = []
+    agreement_obj: dict | None = None
+    agreement_raw: dict | None = None
+
+    if early_stop and len(selected) >= 3:
+        # Phase 1: dispatch the first 2 panelists; check agreement; skip the
+        # rest when they agree above the threshold.
+        phase1 = _ask_many_parallel(selected[:2], messages, deadline, per_call,
+                                    purpose="confer")
+        phase1_clean = [a for a in phase1
+                        if isinstance(a, dict) and not a.get("error")]
+        if len(phase1_clean) == 2 and _time_left(deadline) > 1:
+            _emit_progress(
+                "confer: checking phase-1 agreement (early_stop)",
+                tool="confer", step="agreement_check",
+            )
+            agreement_obj, agreement_raw = _check_panel_agreement(
+                question, phase1_clean, deadline,
+            )
+        if (agreement_obj
+                and bool(agreement_obj.get("agreed"))
+                and float(agreement_obj.get("confidence", 0)) >= early_stop_threshold):
+            answers = phase1
+            early_stopped = True
+            skipped_providers = [p.name for p in selected[2:]]
+            _emit_progress(
+                f"confer: EARLY-STOP at 2 of {len(selected)} "
+                f"(agreed conf={float(agreement_obj.get('confidence', 0)):.2f}); "
+                f"skipping {skipped_providers}",
+                tool="confer", step="early_stop",
+                confidence=float(agreement_obj.get("confidence", 0)),
+                skipped=skipped_providers,
+            )
+        else:
+            phase2 = _ask_many_parallel(selected[2:], messages, deadline, per_call,
+                                        purpose="confer")
+            answers = phase1 + phase2
+    else:
+        answers = _ask_many_parallel(selected, messages, deadline, per_call,
+                                     purpose="confer")
 
     # Optional: distill atomic claims with per-provider support maps. One
     # extra cheap-tier call; opt-in via `extract_claims: true`.
@@ -2090,7 +2346,9 @@ def tool_confer(args: dict) -> dict:
             session.get("session_id") if session else args.get("session_id"),
         )
 
-    all_answers = list(answers) + ([claims_extractor_ans] if claims_extractor_ans else [])
+    all_answers = (list(answers)
+                   + ([agreement_raw] if agreement_raw else [])
+                   + ([claims_extractor_ans] if claims_extractor_ans else []))
     _session_record(session, all_answers, call_started, cpu_started)
     _session_save(session)
     log_usage(session.get("session_id") if session else args.get("session_id"),
@@ -2100,6 +2358,15 @@ def tool_confer(args: dict) -> dict:
               "budget": _budget_summary(call_started, deadline, all_answers, cpu_started)}
     if claims_block is not None:
         result["claims"] = claims_block
+    if early_stop:
+        result["early_stopped"]      = early_stopped
+        result["skipped_providers"]  = skipped_providers
+        if agreement_obj is not None:
+            result["agreement_check"] = {
+                "agreed":     bool(agreement_obj.get("agreed")),
+                "confidence": float(agreement_obj.get("confidence", 0)),
+                "summary":    str(agreement_obj.get("summary", "")),
+            }
     _attach_usage_block(result, all_answers,
                         session_id=session.get("session_id") if session else None,
                         tool_name="confer")
@@ -2161,6 +2428,9 @@ def tool_debate(args: dict) -> dict:
     shared_context = context
     per_call = _per_call_tokens(max(1, max_rounds) * len(selected) + 1)
     session = _session_load(args.get("session_id"))
+    breaker_env = _maybe_breaker_response(session, "debate")
+    if breaker_env:
+        return breaker_env
     _emit_event("tool_start", tool="debate", providers=[p.name for p in selected],
                 max_rounds=max_rounds,
                 session_id=session.get("session_id") if session else None)
@@ -2330,6 +2600,77 @@ def tool_plan(args: dict) -> dict:
         "session_id": args.get("session_id"),
         "structured": bool(args.get("structured", False)),
     })
+
+
+def _agreement_check_schema() -> dict:
+    """Schema the early-stop agreement check must emit."""
+    return {
+        "type": "object",
+        "properties": {
+            "agreed":     {"type": "boolean"},
+            "confidence": {"type": "number"},
+            "summary":    {"type": "string"},
+        },
+        "required": ["agreed", "confidence"],
+    }
+
+
+def _check_panel_agreement(question: str, answers: list[dict],
+                           deadline: float) -> tuple[dict | None, dict | None]:
+    """Run one cheap-tier structured call to ask whether the panelists' first-
+    phase answers agree on the headline. Returns (parsed_obj, raw_answer).
+
+    The judge is picked from the low tier first (cheapest), with the smart
+    router as the secondary signal and the configured moderator as the
+    last resort."""
+    valid = [a for a in answers
+             if isinstance(a, dict) and a.get("response") and not a.get("error")]
+    if len(valid) < 2:
+        return None, None
+
+    body = "\n\n".join(
+        f"### {a.get('provider', '?')} said:\n{a.get('response', '')[:3000]}"
+        for a in valid
+    )
+    prompt = (
+        "These are the first-phase answers from a panel of LLMs to the same "
+        "question. Decide if they AGREE on the headline answer.\n"
+        "Return ONLY a JSON object: {agreed: bool, confidence: 0..1, summary: short}.\n"
+        "Set agreed=true when they would give a stakeholder the same final "
+        "recommendation, even if their reasoning paths differ. Be strict: "
+        "any disagreement on a load-bearing claim is agreed=false."
+        f"\n\nQUESTION:\n{question}\n\nANSWERS:\n{body}"
+    )
+
+    # Pick the judge: prefer the cheapest available model in the low tier.
+    judge: Provider | None = None
+    tiers = _tier_ladder()
+    for entry in tiers.get("low", []):
+        n = (entry.get("provider") or "").lower()
+        if n in ALL_PROVIDERS:
+            base = ALL_PROVIDERS[n]
+            judge = (_retarget_provider(base, entry["model"])
+                     if entry.get("model") and entry["model"] != base.model
+                     else base)
+            break
+    if judge is None:
+        mod_name = CFG.get("moderator")
+        if mod_name and mod_name in ALL_PROVIDERS:
+            judge = ALL_PROVIDERS[mod_name]
+    if judge is None:
+        return None, None
+
+    msgs = [
+        {"role": "system",
+         "content": "You are a strict agreement checker. Return ONLY the JSON object."},
+        {"role": "user", "content": prompt},
+    ]
+    obj, raw_ans, _errs = _request_structured(
+        judge, msgs, _agreement_check_schema(),
+        max_tokens=256, deadline=deadline, max_retries=0,
+        purpose="synth",
+    )
+    return obj, raw_ans
 
 
 def _claims_extractor_schema() -> dict:
@@ -2509,6 +2850,9 @@ def tool_coordinate(args: dict) -> dict:
     # Three role steps share the per-call budget; weight: proposer 1, each critic 1, synth 1.5.
     per_call = _per_call_tokens(2 + len(critics))
     session = _session_load(args.get("session_id"))
+    breaker_env = _maybe_breaker_response(session, "coordinate")
+    if breaker_env:
+        return breaker_env
     _emit_event("tool_start", tool="coordinate",
                 roles={"proposer": proposer.name,
                        "critics": [c.name for c in critics],
@@ -3351,6 +3695,9 @@ def tool_pick(args: dict) -> dict:
     cpu_started = time.process_time()
     deadline = _deadline()
     session = _session_load(args.get("session_id"))
+    breaker_env = _maybe_breaker_response(session, "pick")
+    if breaker_env:
+        return breaker_env
     per_call = _per_call_tokens(len(selected) + 1)
     _emit_progress(f"pick: scoring {len(options)} option(s) across {len(selected)} provider(s)",
                    tool="pick", providers=[p.name for p in selected],
@@ -3752,6 +4099,9 @@ def tool_solve(args: dict) -> dict:
     cpu_started = time.process_time()
     deadline = _deadline()
     session = _session_load(args.get("session_id"))
+    breaker_env = _maybe_breaker_response(session, "solve")
+    if breaker_env:
+        return breaker_env
     per_call = _per_call_tokens(max_attempts)
     _emit_progress(f"solve: starting (max_attempts={max_attempts})",
                    tool="solve", max_attempts=max_attempts,
@@ -3958,6 +4308,9 @@ def tool_bench(args: dict) -> dict:
     cpu_started = time.process_time()
     deadline = _deadline()
     session = _session_load(args.get("session_id"))
+    breaker_env = _maybe_breaker_response(session, "bench")
+    if breaker_env:
+        return breaker_env
     _emit_progress(f"bench: {len(goldens)} golden(s) x {len(selected)} provider(s)",
                    tool="bench", goldens=len(goldens),
                    providers=[p.name for p in selected])
@@ -4640,6 +4993,9 @@ def tool_orchestrate(args: dict) -> dict:
     moderator = ALL_PROVIDERS.get(moderator_name) or selected[0]
 
     session = _session_load(args.get("session_id"))
+    breaker_env = _maybe_breaker_response(session, "orchestrate")
+    if breaker_env:
+        return breaker_env
     call_started = time.monotonic()
     cpu_started  = time.process_time()
     deadline = _deadline()
@@ -4704,6 +5060,23 @@ def tool_orchestrate(args: dict) -> dict:
         _attach_usage_block(result, answers_collected,
                             session_id=session.get("session_id") if session else args.get("session_id"),
                             tool_name="orchestrate")
+        return result
+
+    # DAG-size circuit breakers (max_dag_nodes / max_dag_depth).
+    tripped = _check_dag_breakers(dag)
+    if tripped is not None:
+        name, reason = tripped
+        sid_for_err = session.get("session_id") if session else args.get("session_id")
+        _emit_event("circuit_breaker_tripped", tool="orchestrate",
+                    breaker=name, reason=reason, session_id=sid_for_err)
+        result = {
+            "tool": "orchestrate",
+            **_breaker_error(name, reason, session_id=sid_for_err),
+            "dag": dag,
+            "budget": _budget_summary(call_started, deadline, answers_collected, cpu_started),
+        }
+        _attach_usage_block(result, answers_collected,
+                            session_id=sid_for_err, tool_name="orchestrate")
         return result
 
     # ---- plan_only: short-circuit before any worker/recombine LLM call ----
@@ -4800,6 +5173,48 @@ def tool_orchestrate(args: dict) -> dict:
                 f"TASK:\n{task_text}"
             )},
         ]
+        # Node-level cache lookup: keyed on the SEMANTIC inputs (task +
+        # difficulty + provider + model + canonicalized upstream outputs).
+        # Lets a partial-recombine retry skip nodes whose deps already
+        # succeeded, even when the message-level cache misses because of
+        # volatile bits in the rendered prompt.
+        upstream_outputs = {
+            d: (node_results.get(d) or {}).get("output") or ""
+            for d in (node.get("depends_on") or [])
+            if (node_results.get(d) or {}).get("status") == "ok"
+        }
+        nc_key = _node_cache_key(node, upstream_outputs, chosen.name, chosen.model)
+        cached_node = _node_cache_get(nc_key)
+        if cached_node is not None:
+            _emit_progress(
+                f"orchestrate: node {nid} -> CACHE HIT ({chosen.name}:{chosen.model})",
+                tool="orchestrate", node=nid, provider=chosen.name,
+                model=chosen.model, difficulty=difficulty, cache_hit=True,
+            )
+            return {
+                "id":         nid,
+                "status":     "ok",
+                "provider":   cached_node.get("provider"),
+                "model":      cached_node.get("model"),
+                "output":     cached_node.get("output", ""),
+                "error":      None,
+                "usage":      Usage.empty(cached_node.get("provider") or chosen.name,
+                                          cached_node.get("model")    or chosen.model,
+                                          "worker").to_dict(),
+                "wall_ms":    0,
+                "cpu_ms":     0,
+                "node_cache_hit": True,
+                "answer":     {"provider": cached_node.get("provider") or chosen.name,
+                               "model":    cached_node.get("model")    or chosen.model,
+                               "response": cached_node.get("output", ""),
+                               "cache_hit": True, "elapsed_ms": 0, "cpu_ms": 0,
+                               "attempts": 0,
+                               "usage": Usage.empty(cached_node.get("provider") or chosen.name,
+                                                    cached_node.get("model")    or chosen.model,
+                                                    "worker").to_dict(),
+                               "timing": {"wall_ms": 0, "cpu_ms": 0}},
+            }
+
         _emit_progress(
             f"orchestrate: node {nid} -> {chosen.name}:{chosen.model} ({difficulty})",
             tool="orchestrate", node=nid, provider=chosen.name,
@@ -4807,6 +5222,13 @@ def tool_orchestrate(args: dict) -> dict:
         )
         ans = _ask_one(chosen, msgs, deadline, per_call, purpose="worker")
         ok = "error" not in ans
+        if ok:
+            _node_cache_put(nc_key, {
+                "provider": ans.get("provider"),
+                "model":    ans.get("model"),
+                "output":   ans.get("response", ""),
+                "stored_at": int(time.time()),
+            })
         return {
             "id":      nid,
             "status":  "ok" if ok else "failed",
@@ -4817,6 +5239,7 @@ def tool_orchestrate(args: dict) -> dict:
             "usage":    ans.get("usage"),
             "wall_ms":  int(ans.get("elapsed_ms", 0)),
             "cpu_ms":   int(ans.get("cpu_ms", 0)),
+            "node_cache_hit": False,
             "answer":   ans,
         }
 
@@ -5371,6 +5794,9 @@ def tool_audit(args: dict) -> dict:
             {"role": "user",   "content": user_msg}]
 
     session = _session_load(session_id) if session_id else None
+    breaker_env = _maybe_breaker_response(session, "audit")
+    if breaker_env:
+        return breaker_env
     call_started = time.monotonic()
     cpu_started  = time.process_time()
     deadline = _deadline()

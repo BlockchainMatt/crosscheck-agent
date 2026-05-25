@@ -53,6 +53,7 @@ def main() -> int:
     srv.CFG["session_db"] = str(tmp / "sessions.db")
     srv.CFG["transcript_dir"] = str(tmp / "transcripts")
     srv.CFG["cache"] = {"enabled": False}  # bypass disk cache for deterministic stubs
+    srv.CFG["node_cache"] = {"enabled": False}  # ditto for the orchestrate node cache
     srv.TRANSCRIPT_DIR = Path(srv.CFG["transcript_dir"])
     srv._DB_INIT_DONE = False
     srv._PRICING_CACHE = None

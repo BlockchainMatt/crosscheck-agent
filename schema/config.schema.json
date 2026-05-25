@@ -87,6 +87,34 @@
       },
       "description": "Per-provider leaky-bucket rate limit; the special key `default` applies to any provider without an entry."
     },
+    "circuit_breakers": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Hard session/DAG safety caps. Any field set to 0 (or omitted) disables that specific check. Tripped breakers return CIRCUIT_BREAKER_TRIPPED before the offending operation runs.",
+      "properties": {
+        "max_session_cost_usd":     { "type": "number",  "minimum": 0, "description": "Reject when session.total_cost_usd >= this." },
+        "max_session_tokens":       { "type": "integer", "minimum": 0, "description": "Reject when session.total_tokens >= this." },
+        "max_session_wall_seconds": { "type": "integer", "minimum": 0, "description": "Reject when session.wall_ms / 1000 >= this." },
+        "max_dag_nodes":            { "type": "integer", "minimum": 0, "description": "Reject orchestrate when the DAG has more than this many nodes." },
+        "max_dag_depth":            { "type": "integer", "minimum": 0, "description": "Reject orchestrate when the longest path through the DAG exceeds this." }
+      }
+    },
+    "node_cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "DAG-node cache (separate from the message cache). Caches a node's output keyed on (id, task, difficulty, provider, model, canonicalized upstream outputs) so a partial-recombine retry cache-hits unchanged nodes.",
+      "properties": {
+        "enabled":      { "type": "boolean", "default": true },
+        "dir":          { "type": "string",  "default": ".crosscheck/node_cache" },
+        "ttl_seconds":  { "type": "integer", "minimum": 0, "default": 604800 },
+        "max_entries":  { "type": "integer", "minimum": 0, "default": 2000 }
+      }
+    },
+    "token_budgets": {
+      "type": "object",
+      "description": "Per-purpose `max_tokens` ceilings. Overrides built-in defaults (audit=512, synth=1024, worker=2048, …). Keys are purpose strings, values are positive integers.",
+      "additionalProperties": { "type": "integer", "minimum": 1 }
+    },
     "redaction": {
       "type": "object",
       "additionalProperties": false,
