@@ -1120,6 +1120,73 @@
         "required": ["tool", "per_provider", "weaknesses"]
       }
     },
+    "verify": {
+      "description": "Run a list of deterministic property checks against caller-supplied data — no LLM calls. Pairs with `audit` (rubric scoring) and `critique` (weakness listings): verify gives you a binary yes/no anchored to deterministic rules. Supported kinds: text-pattern checks (contains, not_contains, regex_match, contains_any, contains_all, min_length) using the same engine as `bench`/`solve`; `shell` (sandboxed subprocess, gated by `allow_shell:true`); `url_head` (HEAD request gated by `fetch.url_allowlist`).",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "checks": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "description": "One check. Required fields depend on `kind`. Optional `id` for cross-referencing in results.",
+              "properties": {
+                "kind":                   { "type": "string",
+                                             "enum": ["contains", "not_contains", "regex_match",
+                                                       "contains_any", "contains_all", "min_length",
+                                                       "shell", "url_head"] },
+                "id":                     { "type": "string" },
+                "target_text":            { "type": "string", "description": "For text-pattern kinds." },
+                "value":                  { "description": "For contains/not_contains/regex_match/min_length." },
+                "values":                 { "type": "array", "description": "For contains_any/contains_all." },
+                "case_insensitive":       { "type": "boolean", "default": false },
+                "cmd":                    { "type": "string", "description": "For kind:shell. Required when allow_shell:true." },
+                "timeout_s":              { "type": "number", "minimum": 1 },
+                "expect_exit":            { "type": "integer", "description": "For kind:shell." },
+                "expect_stdout_contains": { "type": "string", "description": "For kind:shell." },
+                "expect_stdout_regex":    { "type": "string", "description": "For kind:shell." },
+                "url":                    { "type": "string", "description": "For kind:url_head." },
+                "expect_status":          { "type": "integer", "description": "For kind:url_head; default 200." }
+              },
+              "required": ["kind"]
+            }
+          },
+          "allow_shell": { "type": "boolean", "default": false,
+                            "description": "Explicit opt-in for the `shell` kind. When false, any `shell` check fails immediately with reason 'shell checks disabled'." },
+          "session_id":  { "type": "string" }
+        },
+        "required": ["checks"]
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "tool":       { "const": "verify" },
+          "checks_run": { "type": "integer" },
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id":         { "type": "string" },
+                "kind":       { "type": ["string", "null"] },
+                "passed":     { "type": "boolean" },
+                "reason":     { "type": "string" },
+                "exit_code":  { "type": "integer", "description": "Present for kind:shell." },
+                "status":     { "type": "integer", "description": "Present for kind:url_head." },
+                "elapsed_ms": { "type": "integer" }
+              },
+              "required": ["id", "passed", "reason"]
+            }
+          },
+          "all_passed": { "type": "boolean" },
+          "summary":    { "type": "string" },
+          "timing":     { "type": "object" }
+        },
+        "required": ["tool", "checks_run", "results", "all_passed"]
+      }
+    },
     "scoreboard": {
       "description": "Read-only snapshot of accumulated provider performance and recent activity. Surfaces the per-repo win-rate that triangulate uses for weights, plus delegation counters and totals so a UI can render a 'who's winning here' panel.",
       "input": {

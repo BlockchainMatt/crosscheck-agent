@@ -7310,6 +7310,209 @@ def tool_critique(args: dict) -> dict:
     return result
 
 
+# ------------------------------------------------------------
+# verify: deterministic property checks (no LLM calls)
+#
+# Sandboxed property-check tool. Each check produces (passed, reason).
+# Kinds reuse the existing `_eval_verifier` for text patterns (contains,
+# regex_match, etc.) and add `shell` (via the sandboxed runner used by
+# `solve`, gated by `allow_shell:true`) and `url_head` (HEAD request,
+# gated by the `fetch.url_allowlist`).
+#
+# Pairs with `audit` (rubric scoring) + `critique` (weakness listing):
+# verify gives you a binary yes/no signal anchored to deterministic
+# rules, before or after a multi-LLM step.
+# ------------------------------------------------------------
+_VERIFY_TEXT_KINDS = (
+    "contains", "not_contains", "regex_match",
+    "contains_any", "contains_all", "min_length",
+)
+
+
+def _verify_shell_check(spec: dict) -> dict:
+    """Run a `shell` check via the same sandbox pattern as solve's verifier.
+    Required: `cmd`. Optional: `timeout_s`, `expect_exit`,
+    `expect_stdout_contains`, `expect_stdout_regex`."""
+    import subprocess, shlex, resource as _resource
+    cmd = spec.get("cmd")
+    if not isinstance(cmd, str) or not cmd.strip():
+        return {"passed": False,
+                "reason": "shell check missing `cmd`"}
+    timeout_s = float(spec.get("timeout_s", 30))
+    expect_exit = spec.get("expect_exit")
+    expect_contains = spec.get("expect_stdout_contains")
+    expect_regex = spec.get("expect_stdout_regex")
+
+    started = time.monotonic()
+    try:
+        cp = subprocess.run(
+            shlex.split(cmd),
+            capture_output=True, text=True, timeout=timeout_s,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"passed": False, "kind": "shell",
+                "reason": f"timeout after {timeout_s}s",
+                "elapsed_ms": int((time.monotonic() - started) * 1000)}
+    except FileNotFoundError as e:
+        return {"passed": False, "kind": "shell",
+                "reason": f"command not found: {e}",
+                "elapsed_ms": int((time.monotonic() - started) * 1000)}
+    except Exception as e:
+        return {"passed": False, "kind": "shell",
+                "reason": f"{type(e).__name__}: {e}",
+                "elapsed_ms": int((time.monotonic() - started) * 1000)}
+
+    stdout = (cp.stdout or "")[-2048:]
+    stderr = (cp.stderr or "")[-1024:]
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+
+    ok = True
+    reasons: list[str] = []
+    if expect_exit is not None and cp.returncode != int(expect_exit):
+        ok = False
+        reasons.append(f"exit {cp.returncode} != expect {expect_exit}")
+    if isinstance(expect_contains, str):
+        if expect_contains not in stdout:
+            ok = False
+            reasons.append(f"stdout missing {expect_contains!r}")
+    if isinstance(expect_regex, str):
+        try:
+            if re.search(expect_regex, stdout) is None:
+                ok = False
+                reasons.append(f"stdout did not match /{expect_regex}/")
+        except re.error as e:
+            ok = False
+            reasons.append(f"bad regex: {e}")
+    return {"passed": ok, "kind": "shell",
+            "exit_code": cp.returncode, "elapsed_ms": elapsed_ms,
+            "stdout": stdout, "stderr": stderr,
+            "reason": "; ".join(reasons) if reasons else "ok"}
+
+
+def _verify_url_head_check(spec: dict) -> dict:
+    """HEAD request gated by fetch.url_allowlist. Pass when status == expect_status."""
+    url = spec.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return {"passed": False, "kind": "url_head",
+                "reason": "url_head check missing `url`"}
+    if not (url.startswith("https://") or url.startswith("http://")):
+        return {"passed": False, "kind": "url_head",
+                "reason": "only http/https schemes are supported"}
+    if not _fetch_url_allowed(url):
+        return {"passed": False, "kind": "url_head",
+                "reason": "url is not covered by fetch.url_allowlist",
+                "allowlist": _fetch_cfg().get("url_allowlist") or []}
+    expect_status = int(spec.get("expect_status", 200))
+    timeout = float(spec.get("timeout_s", 10))
+    started = time.monotonic()
+    try:
+        req = urllib.request.Request(url, method="HEAD",
+                                      headers={"User-Agent": "crosscheck-agent/0.1"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", 200)
+        ok = (status == expect_status)
+        return {"passed": ok, "kind": "url_head",
+                "status": int(status), "expect_status": expect_status,
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "reason": "ok" if ok else f"status {status} != expect {expect_status}"}
+    except urllib.error.HTTPError as e:
+        status = int(e.code)
+        ok = (status == expect_status)
+        return {"passed": ok, "kind": "url_head",
+                "status": status, "expect_status": expect_status,
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "reason": "ok" if ok else f"HTTP {status} != expect {expect_status}"}
+    except urllib.error.URLError as e:
+        reason = getattr(e, "reason", str(e))
+        return {"passed": False, "kind": "url_head",
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "reason": f"network error: {reason}"}
+    except Exception as e:
+        return {"passed": False, "kind": "url_head",
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "reason": f"{type(e).__name__}: {e}"}
+
+
+def tool_verify(args: dict) -> dict:
+    """Run a list of deterministic property checks against caller-supplied
+    data. No LLM calls; everything is local.
+
+    Input:
+      checks:      required — list of {kind, id?, ...}
+      session_id:  optional
+      allow_shell: optional, default false — when false, `shell` checks fail
+                   immediately with reason 'shell disabled'. Explicit opt-in.
+    Each check shape:
+      {kind: "contains|not_contains|regex_match|contains_any|contains_all|min_length",
+       id?: str, target_text: str, value|values: ...}
+      {kind: "shell", id?: str, cmd: str, timeout_s?: float,
+       expect_exit?: int, expect_stdout_contains?: str, expect_stdout_regex?: str}
+      {kind: "url_head", id?: str, url: str, expect_status?: int, timeout_s?: float}
+    """
+    checks = args.get("checks")
+    if not isinstance(checks, list) or not checks:
+        return {"tool": "verify",
+                **_error("VERIFY_MISSING_CHECKS",
+                         "must provide a non-empty `checks` list",
+                         hint="Each check is {kind, ...}; see schema for the "
+                              "supported kinds.")}
+    allow_shell = bool(args.get("allow_shell", False))
+    results: list[dict] = []
+    started = time.monotonic()
+    cpu_started = time.process_time()
+
+    for i, spec in enumerate(checks):
+        if not isinstance(spec, dict) or not spec.get("kind"):
+            results.append({"id": f"check{i+1}", "kind": None,
+                            "passed": False,
+                            "reason": "check missing `kind`"})
+            continue
+        kind = str(spec["kind"]).lower()
+        cid  = str(spec.get("id") or f"check{i+1}")
+
+        if kind in _VERIFY_TEXT_KINDS:
+            target = str(spec.get("target_text") or "")
+            ok, label = _eval_verifier(spec, target)
+            results.append({"id": cid, "kind": kind,
+                            "passed": bool(ok),
+                            "reason": "ok" if ok else f"failed: {label}"})
+        elif kind == "shell":
+            if not allow_shell:
+                results.append({"id": cid, "kind": "shell", "passed": False,
+                                "reason": "shell checks disabled; pass "
+                                          "`allow_shell:true` to opt in"})
+            else:
+                r = _verify_shell_check(spec)
+                r["id"] = cid
+                results.append(r)
+        elif kind == "url_head":
+            r = _verify_url_head_check(spec)
+            r["id"] = cid
+            results.append(r)
+        else:
+            results.append({"id": cid, "kind": kind, "passed": False,
+                            "reason": f"unknown check kind {kind!r}"})
+
+    all_passed = all(r.get("passed") for r in results) if results else False
+    passed_n = sum(1 for r in results if r.get("passed"))
+    summary  = f"{passed_n} of {len(results)} checks passed"
+
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    cpu_ms     = int((time.process_time() - cpu_started) * 1000)
+    _emit_event("tool_end", tool="verify",
+                checks_run=len(results), passed=passed_n,
+                all_passed=all_passed)
+    return {
+        "tool":         "verify",
+        "checks_run":   len(results),
+        "results":      results,
+        "all_passed":   bool(all_passed),
+        "summary":      summary,
+        "timing":       {"wall_ms": elapsed_ms, "cpu_ms": cpu_ms},
+    }
+
+
 def _latest_transcript_for_session(session_id: str) -> str | None:
     """Find the most recent transcript JSON whose `session.session_id` matches.
     Best-effort, returns None on failure."""
@@ -7353,6 +7556,7 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "recommend_panel": tool_recommend_panel,
     "explain":         tool_explain,
     "critique":        tool_critique,
+    "verify":          tool_verify,
     "orchestrate":    tool_orchestrate,
     "audit":          tool_audit,
     "create":         tool_create,
