@@ -1955,6 +1955,17 @@ def _attach_run_summary(result: dict, session_id: str | None,
     return result
 
 
+def _auto_panel_providers(purpose: str, n: int = 2) -> list[str]:
+    """Return the smart-router's recommended panel names for `purpose`, or
+    an empty list if the recommendation comes back empty (caller falls back
+    to the configured active set)."""
+    try:
+        recommended, _meta = _router_recommend(purpose, n=n)
+        return [r["provider"] for r in recommended if r.get("provider")]
+    except Exception:
+        return []
+
+
 def _resolve_providers(names: list[str] | None) -> tuple[list[Provider], list[str]]:
     """Resolve requested provider names into Provider objects.
 
@@ -2027,7 +2038,13 @@ def tool_confer(args: dict) -> dict:
     question: str = args["question"]
     context: str = args.get("context", "")
     untrusted: bool = bool(args.get("untrusted_input", False))
-    selected, unknown = _resolve_providers(args.get("providers"))
+    requested = args.get("providers")
+    auto_panel = bool(args.get("auto_panel", False))
+    if auto_panel and not requested:
+        rec = _auto_panel_providers("confer", n=int(args.get("auto_panel_n", 2)))
+        if rec:
+            requested = rec
+    selected, unknown = _resolve_providers(requested)
     selected, blocked = _filter_by_allowlist(selected)
     if unknown and not selected:
         return _unknown_provider_error(unknown)
@@ -2100,7 +2117,14 @@ def tool_confer(args: dict) -> dict:
 def tool_debate(args: dict) -> dict:
     topic: str = args["topic"]
     context: str = args.get("context", "")
-    selected, unknown = _resolve_providers(args.get("providers"))
+    requested = args.get("providers")
+    auto_panel = bool(args.get("auto_panel", False))
+    if auto_panel and not requested:
+        # Debate needs ≥ 2 panelists; default n=3 lets us hit that with margin.
+        rec = _auto_panel_providers("debate", n=int(args.get("auto_panel_n", 3)))
+        if len(rec) >= 2:
+            requested = rec
+    selected, unknown = _resolve_providers(requested)
     selected, blocked = _filter_by_allowlist(selected)
     if unknown and len(selected) < 2:
         return _unknown_provider_error(unknown)
@@ -2938,6 +2962,223 @@ def _stddev(xs: list[float]) -> float:
     m = sum(xs) / len(xs)
     var = sum((x - m) ** 2 for x in xs) / len(xs)
     return var ** 0.5
+
+
+# ------------------------------------------------------------
+# Smart router: per-purpose win-rate-aware panel recommendation
+#
+# Reads usage_log for per-provider, per-purpose stats (calls, errors,
+# avg cost, avg latency) and proposes the smallest effective panel
+# for the requested purpose. Cold-start (no history) falls back to
+# the config's active set ordered by scoreboard win-rate.
+# ------------------------------------------------------------
+_ROUTER_DEFAULT_WINDOW_SECONDS = 30 * 24 * 3600   # 30 days
+_ROUTER_COLD_START_THRESHOLD = 5                  # need at least N calls for stats
+
+
+def _router_stats(purpose: str, since_seconds: int | None = None,
+                  exclude: list[str] | None = None) -> dict[str, dict]:
+    """Per-provider stats for a given purpose drawn from usage_log.
+
+    Returns {provider: {calls, errors, error_rate, avg_total_tokens,
+                        avg_cost_usd, avg_wall_ms, calls_in_window}}."""
+    since_seconds = since_seconds or _ROUTER_DEFAULT_WINDOW_SECONDS
+    cutoff = int(time.time()) - int(since_seconds)
+    excl = {x.lower() for x in (exclude or [])}
+    out: dict[str, dict] = {}
+    try:
+        _db_init()
+        with _db_conn() as conn:
+            rows = conn.execute(
+                "SELECT provider, "
+                "       COUNT(*)           AS calls, "
+                "       SUM(total_tokens)  AS tokens_sum, "
+                "       AVG(total_tokens)  AS tokens_avg, "
+                "       AVG(cost_usd)      AS cost_avg, "
+                "       AVG(wall_ms)       AS wall_avg "
+                "FROM usage_log "
+                "WHERE purpose = ? AND ts >= ? "
+                "GROUP BY provider",
+                (purpose, cutoff),
+            ).fetchall()
+        for r in rows:
+            provider = (r["provider"] or "").lower()
+            if not provider or provider in excl:
+                continue
+            out[provider] = {
+                "provider":           provider,
+                "calls":              int(r["calls"] or 0),
+                "errors":             0,            # filled below
+                "error_rate":         0.0,
+                "avg_total_tokens":   float(r["tokens_avg"] or 0.0),
+                "tokens_sum":         int(r["tokens_sum"] or 0),
+                "avg_cost_usd":       float(r["cost_avg"] or 0.0),
+                "avg_wall_ms":        float(r["wall_avg"] or 0.0),
+            }
+    except Exception:
+        return {}
+    # Error counts come from events_log (provider_call events with error_kind).
+    # We approximate by scanning recent events; cap to a sensible window so
+    # this stays cheap on a busy server.
+    try:
+        events_path = _events_path()
+        if events_path.exists():
+            error_counts: dict[str, int] = {}
+            with events_path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        ev = json.loads(line)
+                    except Exception:
+                        continue
+                    if ev.get("kind") != "provider_call":
+                        continue
+                    if ev.get("purpose") != purpose:
+                        continue
+                    ts_ms = int(ev.get("ts") or 0)
+                    if ts_ms and (ts_ms // 1000) < cutoff:
+                        continue
+                    if not ev.get("error_kind"):
+                        continue
+                    prov = (ev.get("provider") or "").lower()
+                    if prov:
+                        error_counts[prov] = error_counts.get(prov, 0) + 1
+            for prov, n in error_counts.items():
+                if prov in out:
+                    out[prov]["errors"] = n
+                    denom = out[prov]["calls"] + n
+                    out[prov]["error_rate"] = round(n / denom, 4) if denom else 0.0
+    except Exception:
+        pass
+    return out
+
+
+def _router_score(stats_entry: dict, min_cost: float, max_cost: float) -> float:
+    """Composite score in [0, 1+]. Higher = better.
+    Components:
+      reliability = 1 - error_rate                          (weight 0.6)
+      cost_factor = 1 - (cost - min)/(max - min)            (weight 0.3)
+      engagement  = clamp(avg_total_tokens / 1500, 0..1)    (weight 0.1)
+    """
+    reliability = max(0.0, 1.0 - float(stats_entry.get("error_rate", 0.0)))
+    if max_cost > min_cost:
+        cost_norm = (float(stats_entry.get("avg_cost_usd", 0.0)) - min_cost) / (max_cost - min_cost)
+        cost_factor = max(0.0, 1.0 - cost_norm)
+    else:
+        cost_factor = 1.0
+    engagement = min(1.0, float(stats_entry.get("avg_total_tokens", 0.0)) / 1500.0)
+    return round(0.6 * reliability + 0.3 * cost_factor + 0.1 * engagement, 4)
+
+
+def _router_recommend(purpose: str, n: int = 2,
+                      exclude: list[str] | None = None,
+                      since_seconds: int | None = None,
+                      available_only: bool = True,
+                      ) -> tuple[list[dict], dict]:
+    """Return (recommended_panel, meta) where:
+      recommended_panel = [{provider, model, score, error_rate, calls,
+                            avg_cost_usd, avg_wall_ms, rationale}]
+      meta             = {purpose, n_requested, n_available, history_calls,
+                          cold_start: bool, window_seconds}
+    Cold-start (no/insufficient history) falls back to the configured panel
+    ordered by `provider_stats` win-rate, then alphabetical."""
+    excl = {x.lower() for x in (exclude or [])}
+    stats = _router_stats(purpose, since_seconds, exclude=list(excl))
+    history_calls = sum(s["calls"] for s in stats.values())
+    cold_start = history_calls < _ROUTER_COLD_START_THRESHOLD
+
+    panel = list(ALL_PROVIDERS.keys()) if available_only else list(stats.keys())
+    panel = [p for p in panel if p not in excl]
+
+    meta = {
+        "purpose":         purpose,
+        "n_requested":     n,
+        "n_available":     len(panel),
+        "history_calls":   history_calls,
+        "cold_start":      cold_start,
+        "window_seconds":  since_seconds or _ROUTER_DEFAULT_WINDOW_SECONDS,
+    }
+
+    if cold_start:
+        # Use provider_stats win-rate as the cold-start signal.
+        ordered = sorted(panel, key=lambda p: (-_provider_weight(p), p))
+        recommended = []
+        for p in ordered[:n]:
+            recommended.append({
+                "provider":       p,
+                "model":          ALL_PROVIDERS[p].model if p in ALL_PROVIDERS else None,
+                "score":          round(_provider_weight(p), 4),
+                "error_rate":     None,
+                "calls":          stats.get(p, {}).get("calls", 0),
+                "avg_cost_usd":   stats.get(p, {}).get("avg_cost_usd"),
+                "avg_wall_ms":    stats.get(p, {}).get("avg_wall_ms"),
+                "rationale":      "cold-start; ordered by provider_stats win-rate "
+                                  "(insufficient usage_log history for this purpose)",
+            })
+        return recommended, meta
+
+    # Normalize cost across observed providers for the score.
+    costs = [s["avg_cost_usd"] for p, s in stats.items() if p in panel]
+    min_cost = min(costs) if costs else 0.0
+    max_cost = max(costs) if costs else 0.0
+
+    scored = []
+    for p in panel:
+        s = stats.get(p) or {"provider": p, "calls": 0, "error_rate": 0.0,
+                             "avg_total_tokens": 0.0, "avg_cost_usd": 0.0,
+                             "avg_wall_ms": 0.0}
+        score = _router_score(s, min_cost, max_cost)
+        scored.append((score, p, s))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+
+    recommended = []
+    for score, p, s in scored[:n]:
+        recommended.append({
+            "provider":       p,
+            "model":          ALL_PROVIDERS[p].model if p in ALL_PROVIDERS else None,
+            "score":          score,
+            "error_rate":     s["error_rate"],
+            "calls":          s["calls"],
+            "avg_cost_usd":   round(s["avg_cost_usd"], 6),
+            "avg_wall_ms":    int(s["avg_wall_ms"]),
+            "rationale":      (f"reliability={1 - s['error_rate']:.2f} "
+                               f"calls={s['calls']} "
+                               f"avg_cost=${s['avg_cost_usd']:.5f}"),
+        })
+    return recommended, meta
+
+
+def tool_recommend_panel(args: dict) -> dict:
+    """Recommend a minimal effective panel for a given purpose, based on
+    historical usage_log + audit signal.
+
+    Inputs:
+      purpose:       required; e.g. "confer", "debate", "audit", "worker"
+      n:             optional, default 2 (panel size)
+      exclude:       optional, provider names to skip
+      since_days:    optional, default 30 (history window)
+      available_only: optional, default true (restrict to registered providers)
+    """
+    purpose = args.get("purpose")
+    if not purpose:
+        return {"tool": "recommend_panel",
+                **_error("RECOMMEND_PANEL_MISSING_PURPOSE",
+                         "must provide `purpose`",
+                         hint="Pass a purpose like 'confer', 'audit', 'worker', etc.")}
+    n              = max(1, int(args.get("n", 2)))
+    exclude        = args.get("exclude") or []
+    since_days     = int(args.get("since_days", 30))
+    available_only = bool(args.get("available_only", True))
+
+    recommended, meta = _router_recommend(
+        purpose, n=n, exclude=exclude,
+        since_seconds=since_days * 24 * 3600,
+        available_only=available_only,
+    )
+    return {
+        "tool":         "recommend_panel",
+        "recommended":  recommended,
+        "meta":         meta,
+    }
 
 
 def tool_pick(args: dict) -> dict:
@@ -5743,6 +5984,7 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "fetch":          tool_fetch,
     "pick":           tool_pick,
     "scoreboard":     tool_scoreboard,
+    "recommend_panel": tool_recommend_panel,
     "orchestrate":    tool_orchestrate,
     "audit":          tool_audit,
     "create":         tool_create,

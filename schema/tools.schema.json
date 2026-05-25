@@ -251,6 +251,10 @@
           "question":         { "type": "string", "description": "The question or prompt." },
           "context":          { "type": "string", "description": "Optional shared context." },
           "providers":        { "$ref": "#/$defs/ProviderArrayArg" },
+          "auto_panel":       { "type": "boolean", "default": false,
+                                "description": "When true (and `providers` not given), ask the smart router (`recommend_panel`) to pick the smallest effective panel for purpose='confer' from usage_log history. Ignored when `providers` is provided." },
+          "auto_panel_n":     { "type": "integer", "minimum": 1, "default": 2,
+                                "description": "Panel size when `auto_panel:true` (default 2 for confer)." },
           "session_id":       { "type": "string", "description": "Optional id to accumulate usage across calls." },
           "untrusted_input":  { "type": "boolean", "default": false,
                                 "description": "When true, treat `context` and `question` as untrusted: wrap in tags, neutralize obvious injection phrases, instruct panelists to treat as data only." }
@@ -292,6 +296,10 @@
           },
           "max_rounds": { "type": "integer", "minimum": 1 },
           "moderator":  { "type": "string", "description": "Provider name to run the synthesis round. Defaults to config.moderator." },
+          "auto_panel": { "type": "boolean", "default": false,
+                          "description": "When true (and `providers` not given), ask the smart router for the best debate panel from usage_log history." },
+          "auto_panel_n": { "type": "integer", "minimum": 2, "default": 3,
+                            "description": "Panel size when `auto_panel:true` (default 3 for debate; debate needs >= 2)." },
           "session_id": { "type": "string", "description": "Optional id to accumulate usage across calls." },
           "structured": { "type": "boolean", "default": false,
                           "description": "If true, the moderator must emit a JSON object matching StructuredSynthesis. Validated server-side; one retry on failure with the validation errors fed back." }
@@ -955,6 +963,56 @@
           "restart_instructions": { "type": "string" }
         },
         "required": ["tool", "status"]
+      }
+    },
+    "recommend_panel": {
+      "description": "Smart-router: recommend the smallest effective provider panel for a given purpose, scored from usage_log history (reliability + cost + engagement). Cold-start (<5 calls of history) falls back to provider_stats win-rate. Use this directly, or pass `auto_panel: true` to confer/debate to delegate panel selection automatically.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "purpose":        { "type": "string", "description": "Purpose to recommend a panel for; e.g. 'confer', 'debate', 'audit', 'worker'." },
+          "n":              { "type": "integer", "minimum": 1, "default": 2 },
+          "exclude":        { "type": "array", "items": { "type": "string" } },
+          "since_days":     { "type": "integer", "minimum": 1, "default": 30 },
+          "available_only": { "type": "boolean", "default": true, "description": "Restrict recommendations to providers currently registered with an API key in .env." }
+        },
+        "required": ["purpose"]
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "tool":        { "const": "recommend_panel" },
+          "recommended": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider":     { "type": "string" },
+                "model":        { "type": ["string", "null"] },
+                "score":        { "type": "number" },
+                "error_rate":   { "type": ["number", "null"] },
+                "calls":        { "type": "integer" },
+                "avg_cost_usd": { "type": ["number", "null"] },
+                "avg_wall_ms":  { "type": ["integer", "null"] },
+                "rationale":    { "type": "string" }
+              },
+              "required": ["provider", "score"]
+            }
+          },
+          "meta": {
+            "type": "object",
+            "properties": {
+              "purpose":        { "type": "string" },
+              "n_requested":    { "type": "integer" },
+              "n_available":    { "type": "integer" },
+              "history_calls":  { "type": "integer" },
+              "cold_start":     { "type": "boolean" },
+              "window_seconds": { "type": "integer" }
+            }
+          }
+        },
+        "required": ["tool", "recommended"]
       }
     },
     "scoreboard": {
