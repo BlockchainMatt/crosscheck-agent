@@ -255,6 +255,8 @@
                                 "description": "When true (and `providers` not given), ask the smart router (`recommend_panel`) to pick the smallest effective panel for purpose='confer' from usage_log history. Ignored when `providers` is provided." },
           "auto_panel_n":     { "type": "integer", "minimum": 1, "default": 2,
                                 "description": "Panel size when `auto_panel:true` (default 2 for confer)." },
+          "extract_claims":   { "type": "boolean", "default": false,
+                                "description": "When true, an extra cheap-tier extractor call distills atomic claims with per-provider support/dissent maps. Adds one call's worth of cost; off by default." },
           "session_id":       { "type": "string", "description": "Optional id to accumulate usage across calls." },
           "untrusted_input":  { "type": "boolean", "default": false,
                                 "description": "When true, treat `context` and `question` as untrusted: wrap in tags, neutralize obvious injection phrases, instruct panelists to treat as data only." }
@@ -269,6 +271,19 @@
               "tool":     { "const": "confer" },
               "question": { "type": "string" },
               "answers":  { "type": "array", "items": { "$ref": "#/$defs/ProviderAnswer" } },
+              "claims":   { "type": "array",
+                            "description": "Present only when `extract_claims:true`.",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id":         { "type": "string" },
+                                "text":       { "type": "string" },
+                                "supporters": { "type": "array", "items": { "type": "string" } },
+                                "dissenters": { "type": "array", "items": { "type": "string" } },
+                                "confidence": { "type": "number" }
+                              },
+                              "required": ["text"]
+                            } },
               "budget":   { "$ref": "#/$defs/BudgetSummary" },
               "session":  { "$ref": "#/$defs/SessionSummary" },
               "transcript_path":           { "type": "string" },
@@ -300,6 +315,8 @@
                           "description": "When true (and `providers` not given), ask the smart router for the best debate panel from usage_log history." },
           "auto_panel_n": { "type": "integer", "minimum": 2, "default": 3,
                             "description": "Panel size when `auto_panel:true` (default 3 for debate; debate needs >= 2)." },
+          "extract_claims": { "type": "boolean", "default": false,
+                              "description": "When true, an extra cheap-tier extractor call distills atomic claims from the FINAL round with per-provider support/dissent maps." },
           "session_id": { "type": "string", "description": "Optional id to accumulate usage across calls." },
           "structured": { "type": "boolean", "default": false,
                           "description": "If true, the moderator must emit a JSON object matching StructuredSynthesis. Validated server-side; one retry on failure with the validation errors fed back." }
