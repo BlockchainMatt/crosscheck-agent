@@ -632,7 +632,11 @@
           },
           "providers":   { "$ref": "#/$defs/ProviderArrayArg" },
           "session_id":  { "type": "string" },
-          "max_dissent_deltas": { "type": "integer", "minimum": 1, "default": 5 }
+          "max_dissent_deltas": { "type": "integer", "minimum": 1, "default": 5 },
+          "early_stop":  { "type": "boolean", "default": false,
+                            "description": "When true (and panel size >= 3), dispatch the first 2 panelists' scoring calls, peek at each's top-ranked option, and skip the remaining panel iff they agree on the same top option AND both rate it >= `early_stop_threshold` overall." },
+          "early_stop_threshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7,
+                            "description": "Minimum `overall` score (BOTH providers) required to short-circuit when `early_stop:true`." }
         },
         "required": ["decision", "options", "criteria"]
       },
@@ -1054,7 +1058,11 @@
           "include_text":    { "type": "boolean", "default": true,
                                 "description": "When false, omit the pre-rendered ASCII tree (`text` field) and only return the structured fields." },
           "max_transcripts": { "type": "integer", "minimum": 1, "default": 50,
-                                "description": "Cap on transcripts to walk (in case the session is very long)." }
+                                "description": "Cap on transcripts to walk (in case the session is very long)." },
+          "only_purpose":    { "type": "array", "items": { "type": "string" },
+                                "description": "Filter rows + by_purpose / by_provider rollups to these purpose tags (e.g. ['audit','synth'])." },
+          "only_provider":   { "type": "array", "items": { "type": "string" },
+                                "description": "Filter rows + by_purpose / by_provider rollups to these provider names." }
         },
         "required": ["session_id"]
       },

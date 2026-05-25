@@ -1565,6 +1565,19 @@ def _supports_temperature(provider_name: str, model: str) -> bool:
     return bool(flag)
 
 
+def _is_reasoning_model(provider_name: str, model: str) -> bool:
+    """True when the model belongs to a reasoning-class family (o-series,
+    GPT-5, Claude opus 4-7+). Used by `_budget_for_purpose` to give these
+    models more completion headroom — they burn 500-2000 tokens of internal
+    thinking before emitting visible output."""
+    caps = PROVIDER_CAPS.get(provider_name, {})
+    prefixes = caps.get("reasoning_prefixes") or ()
+    if not prefixes or not isinstance(model, str):
+        return False
+    m = model.lower()
+    return any(m.startswith(p) for p in prefixes)
+
+
 def openai_compatible(name: str, url: str, key_env: str, model_env: str, default_model: str) -> Provider | None:
     key = ENV.get(key_env)
     if not key:
@@ -1938,13 +1951,44 @@ _DEFAULT_TOKEN_BUDGETS: dict[str, int] = {
     "solve":       2048,
 }
 
+# Smaller per-purpose ceilings for non-reasoning models, which don't need
+# headroom for hidden thinking tokens. PR #7 originally targeted these
+# numbers; PR #13 had to raise the floor uniformly because the active panel
+# was entirely reasoning-class. This table restores the lower ceilings for
+# models that don't burn 500-2000 tokens just thinking.
+_NON_REASONING_TOKEN_BUDGETS: dict[str, int] = {
+    "audit":       768,
+    "synth":       1024,
+    "moderator":   1024,
+    "worker":      2048,
+    "orchestrate": 2048,
+    "confer":      1500,
+    "debate":      1500,
+    "plan":        2048,
+    "review":      1500,
+    "coordinate":  1500,
+    "solve":       2048,
+}
 
-def _budget_for_purpose(purpose: str) -> int | None:
-    """Return the configured ceiling for `purpose`, or None if no override
-    applies. Caller uses min(default_from_token_cap, this_ceiling)."""
+
+def _budget_for_purpose(purpose: str, provider: str | None = None,
+                        model: str | None = None) -> int | None:
+    """Return the configured ceiling for `purpose`. When provider+model are
+    supplied AND that model is NOT reasoning-class, prefers the (smaller)
+    non-reasoning ceiling — restoring the PR #7 cost savings for models
+    that don't need the bigger headroom.
+
+    Caller uses min(default_from_token_cap, this_ceiling)."""
     custom = (CFG.get("token_budgets") or {}).get(purpose)
     if isinstance(custom, int) and custom > 0:
         return int(custom)
+    # Tier-aware: non-reasoning models get the smaller ceiling. When we
+    # don't know the model (helper called without arguments) fall through
+    # to the reasoning-safe default so we never starve a reasoning auditor.
+    if provider and model and not _is_reasoning_model(provider, model):
+        nonr = _NON_REASONING_TOKEN_BUDGETS.get(purpose)
+        if nonr is not None:
+            return int(nonr)
     default = _DEFAULT_TOKEN_BUDGETS.get(purpose)
     if default is not None:
         return int(default)
@@ -1971,7 +2015,7 @@ def _ask_one(p: Provider, messages: list[dict], deadline: float, max_tokens: int
     # waste the worker-sized cap. The purpose ceiling is the MINIMUM of what
     # the caller passed and the per-purpose default — never expands what the
     # caller requested.
-    purpose_ceiling = _budget_for_purpose(purpose)
+    purpose_ceiling = _budget_for_purpose(purpose, p.name, p.model)
     if purpose_ceiling is not None and purpose_ceiling < max_tokens:
         max_tokens = purpose_ceiling
     if _time_left(deadline) <= 0:
@@ -3160,9 +3204,12 @@ def tool_coordinate(args: dict) -> dict:
         base_system_lines.append(_UNTRUSTED_SYSTEM_NOTE)
     sys_msg = "\n".join(base_system_lines)
 
+    # Canary leak detection: mint a per-call nonce when untrusted_input is on,
+    # embed it inside the wrapper, scan every role's response after dispatch.
+    canary = _mint_canary() if untrusted else None
     topic_block = f"TOPIC: {topic}"
     if context:
-        ctx_block = _wrap_untrusted(context) if untrusted else context
+        ctx_block = _wrap_untrusted(context, canary=canary) if untrusted else context
         topic_block += f"\n\nCONTEXT:\n{ctx_block}"
 
     # ---- Step 1: Proposer ----------------------------------------------------
@@ -3241,6 +3288,34 @@ def tool_coordinate(args: dict) -> dict:
     )
 
     all_answers = [proposal_ans] + critique_answers + ([synthesis_ans] if synthesis_ans else [])
+
+    # Scan every role's output for canary leaks. Any echo of the per-call
+    # nonce means the model honored an instruction embedded in the
+    # untrusted_input wrapper — redact in place + surface in canary_leaks.
+    canary_leaks: list[dict] = []
+    if canary:
+        # Scan + redact across proposal / critiques / synthesis answers
+        # together so each canary echo is captured exactly once.
+        scanned, canary_leaks = _scan_canary_leaks(canary, all_answers)
+        # `scanned` is the same shape as all_answers but with redacted
+        # `response` fields where leaks were found. Re-split it back into
+        # the role-specific buckets so downstream code sees redacted text.
+        proposal_ans     = scanned[0] if scanned else proposal_ans
+        critique_answers = scanned[1:1 + len(critique_answers)]
+        if synthesis_ans is not None and len(scanned) > 1 + len(critique_answers):
+            synthesis_ans = scanned[1 + len(critique_answers)]
+        all_answers = list(scanned)
+        if canary_leaks:
+            _emit_event("canary_leak", canary=canary[:16],
+                        providers=[l["provider"] for l in canary_leaks],
+                        tool="coordinate",
+                        session_id=session.get("session_id") if session else None)
+            _emit_progress(
+                f"coordinate: canary LEAKED from {[l['provider'] for l in canary_leaks]} "
+                "(indirect-injection signal)",
+                tool="coordinate", canary_leaks=canary_leaks,
+            )
+
     _session_record(session, all_answers, call_started, cpu_started)
     _session_save(session)
     log_usage(session.get("session_id") if session else args.get("session_id"),
@@ -3287,6 +3362,8 @@ def tool_coordinate(args: dict) -> dict:
         "synthesis_structured": synthesis_obj,
         "budget": _budget_summary(call_started, deadline, all_answers, cpu_started),
     }
+    if canary_leaks:
+        result["canary_leaks"] = canary_leaks
     _attach_usage_block(result, all_answers,
                         session_id=session.get("session_id") if session else None,
                         tool_name="coordinate")
@@ -4025,7 +4102,65 @@ def tool_pick(args: dict) -> dict:
         )
         return p, obj, ans, errs
 
-    if len(selected) == 1:
+    def _pick_top_option(obj: dict | None) -> tuple[str | None, float]:
+        """Return (top_option_name, top_overall_score) from a provider's
+        scores object, or (None, 0.0) on malformed input."""
+        if not isinstance(obj, dict):
+            return None, 0.0
+        scores = obj.get("scores") or []
+        ranked = []
+        for s in scores:
+            if not isinstance(s, dict) or s.get("option") is None:
+                continue
+            try:
+                ranked.append((float(s.get("overall", 0) or 0), str(s["option"])))
+            except (TypeError, ValueError):
+                continue
+        if not ranked:
+            return None, 0.0
+        ranked.sort(reverse=True)
+        return ranked[0][1], ranked[0][0]
+
+    early_stop          = bool(args.get("early_stop", False))
+    early_stop_threshold = float(args.get("early_stop_threshold", 0.7))
+    early_stopped       = False
+    skipped_providers: list[str] = []
+    pick_agreement: dict | None = None
+
+    if early_stop and len(selected) >= 3:
+        # Phase 1: first 2 providers score in parallel; check if they agree
+        # on the top-ranked option AND both rate it above threshold.
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            phase1 = list(ex.map(_score_one, selected[:2]))
+        p1_top = [_pick_top_option(obj) for (_, obj, _, _) in phase1]
+        if (p1_top[0][0] is not None
+                and p1_top[0][0] == p1_top[1][0]
+                and p1_top[0][1] >= early_stop_threshold
+                and p1_top[1][1] >= early_stop_threshold):
+            # Project forward to honor session breakers before any judge call.
+            phase1_answers = [ans for (_, _, ans, _) in phase1]
+            if _maybe_breaker_response(session, "pick",
+                                       extra_answers=phase1_answers) is None:
+                early_stopped = True
+                skipped_providers = [p.name for p in selected[2:]]
+                results = phase1
+                pick_agreement = {
+                    "agreed_option":     p1_top[0][0],
+                    "providers":         [p.name for p in selected[:2]],
+                    "min_overall":       min(p1_top[0][1], p1_top[1][1]),
+                }
+                _emit_progress(
+                    f"pick: EARLY-STOP at 2 of {len(selected)} on "
+                    f"'{p1_top[0][0]}' (min overall={pick_agreement['min_overall']:.2f}); "
+                    f"skipping {skipped_providers}",
+                    tool="pick", step="early_stop",
+                    skipped=skipped_providers, agreed_option=p1_top[0][0],
+                )
+        if not early_stopped:
+            with ThreadPoolExecutor(max_workers=len(selected) - 2) as ex2:
+                phase2 = list(ex2.map(_score_one, selected[2:]))
+            results = phase1 + phase2
+    elif len(selected) == 1:
         results = [_score_one(selected[0])]
     else:
         with ThreadPoolExecutor(max_workers=len(selected)) as ex:
@@ -4139,6 +4274,11 @@ def tool_pick(args: dict) -> dict:
         "providers_used": [p.name for p in selected],
         "budget": _budget_summary(call_started, deadline, answers_collected, cpu_started),
     }
+    if early_stop:
+        result["early_stopped"]    = early_stopped
+        result["skipped_providers"] = skipped_providers
+        if pick_agreement is not None:
+            result["agreement_check"] = pick_agreement
     _attach_usage_block(result, answers_collected,
                         session_id=session.get("session_id") if session else None,
                         tool_name="pick")
@@ -6044,24 +6184,54 @@ def _select_audit_judges(exclude_providers: list[str], coalesce: bool,
                           to multi-judge using the producing panel itself, with
                           this flag so callers know.
 
+    Judge ORDER is supplied by the smart router (`_router_recommend`) using
+    historical purpose='audit' reliability + cost; that's the panel we want
+    when we get to pick from > max_judges options. Cold-start (no audit
+    history) falls back to ALL_PROVIDERS' registration order.
+
     When coalesce=False, we still return a list, but with exactly one judge.
     The caller decides which code path to take based on `mode`."""
     exclude_set = {x.lower() for x in (exclude_providers or [])}
     available = list(ALL_PROVIDERS.keys())
-    outside = [n for n in available if n not in exclude_set]
+    outside_set = {n for n in available if n not in exclude_set}
+
+    # Use the smart router to rank candidates. Pass a generous `n` so we
+    # get the full ordered list, then filter to the pool we actually care
+    # about and slice to max_judges.
+    def _ranked(pool: set[str]) -> list[str]:
+        if not pool:
+            return []
+        try:
+            recommended, _meta = _router_recommend(
+                "audit", n=max(len(pool), max_judges),
+                # Router excludes by name — we'll filter afterward so the
+                # router's order is preserved.
+            )
+            ordered_from_router = [r["provider"] for r in recommended
+                                   if r.get("provider") in pool]
+        except Exception:
+            ordered_from_router = []
+        # Fall back to ALL_PROVIDERS' registration order for any pool member
+        # the router didn't surface (e.g. cold-start with no audit history
+        # for that provider).
+        for n in available:
+            if n in pool and n not in ordered_from_router:
+                ordered_from_router.append(n)
+        return ordered_from_router
 
     if not coalesce:
-        # Legacy single-auditor path is handled by `_select_auditor`; this
-        # function only fires when the caller already opted into coalesce.
-        if not outside:
-            return [], "coalesced_self"  # caller decides whether to proceed
-        return [ALL_PROVIDERS[outside[0]]], "single"
+        # Single-judge path (caller's `coalesce=False`). Pick router's top
+        # outside-the-panel provider.
+        ordered = _ranked(outside_set)
+        if not ordered:
+            return [], "coalesced_self"
+        return [ALL_PROVIDERS[ordered[0]]], "single"
 
-    if outside:
-        chosen = outside[:max_judges]
+    if outside_set:
+        chosen = _ranked(outside_set)[:max_judges]
         return [ALL_PROVIDERS[n] for n in chosen], "coalesced"
     # No provider outside the panel: self-audit with cross-checking.
-    chosen = available[:max_judges]
+    chosen = _ranked(set(available))[:max_judges]
     return [ALL_PROVIDERS[n] for n in chosen], "coalesced_self"
 
 
@@ -7136,6 +7306,10 @@ def tool_explain(args: dict) -> dict:
       session_id:      required
       include_text:    optional, default true — include the pre-rendered ASCII tree
       max_transcripts: optional, default 50 — cap number of transcripts to walk
+      only_purpose:    optional list[str] — when given, filter rows + by_purpose
+                       rollup to these purpose tags (e.g. ["audit","synth"])
+      only_provider:   optional list[str] — when given, filter rows + by_provider
+                       rollup to these provider names
     """
     session_id = args.get("session_id")
     if not session_id:
@@ -7145,6 +7319,8 @@ def tool_explain(args: dict) -> dict:
                          hint="Pass the session_id of a previous tool run.")}
     include_text = bool(args.get("include_text", True))
     max_transcripts = max(1, int(args.get("max_transcripts", 50)))
+    purpose_filter  = set((args.get("only_purpose")  or []))
+    provider_filter = set((args.get("only_provider") or []))
 
     sid = _safe_session_id(session_id)
     session = _session_load(sid)
@@ -7172,6 +7348,13 @@ def tool_explain(args: dict) -> dict:
             rows.append({k: r[k] for k in r.keys()})
     except Exception:
         rows = []
+
+    # Apply optional filters before the per-purpose / per-provider rollups
+    # so totals + ASCII tree match what the caller asked to see.
+    if purpose_filter:
+        rows = [r for r in rows if r.get("purpose") in purpose_filter]
+    if provider_filter:
+        rows = [r for r in rows if r.get("provider") in provider_filter]
 
     # 2) Transcripts (capped).
     transcripts = _explain_load_transcripts_for_session(sid)[:max_transcripts]
@@ -7309,6 +7492,11 @@ def tool_explain(args: dict) -> dict:
         "rows":        rows,
         "transcripts": transcripts_summary,
     }
+    if purpose_filter or provider_filter:
+        result["applied_filters"] = {
+            "only_purpose":  sorted(purpose_filter)  if purpose_filter  else None,
+            "only_provider": sorted(provider_filter) if provider_filter else None,
+        }
     if include_text:
         result["text"] = "\n".join(text_lines)
     return result
@@ -7407,7 +7595,8 @@ def tool_critique(args: dict) -> dict:
     if untrusted:
         sys_msg += "\n" + _UNTRUSTED_SYSTEM_NOTE
 
-    proposal_block = _wrap_untrusted(proposal) if untrusted else proposal
+    canary = _mint_canary() if untrusted else None
+    proposal_block = _wrap_untrusted(proposal, canary=canary) if untrusted else proposal
     user_msg = (
         (f"ORIGINAL QUESTION/DECISION:\n{question}\n\n" if question else "")
         + f"PROPOSAL TO CRITIQUE:\n{proposal_block}"
@@ -7453,6 +7642,25 @@ def tool_critique(args: dict) -> dict:
     else:
         with ThreadPoolExecutor(max_workers=len(selected)) as ex:
             results = list(ex.map(_critique_one, selected))
+
+    # Scan each panelist's raw response for the canary nonce. If a model
+    # echoed it, that's an indirect-injection signal — record the leak and
+    # redact the canary in the raw answer text before it lands in
+    # answers_collected / session usage.
+    canary_leaks: list[dict] = []
+    if canary:
+        raw_answers = [ra for (_, _, ra) in results if ra]
+        sanitized, canary_leaks = _scan_canary_leaks(canary, raw_answers)
+        # Splice sanitized answers back so downstream usage rolls up the
+        # redacted response. Order is preserved by _scan_canary_leaks.
+        san_iter = iter(sanitized)
+        results = [(p, obj, next(san_iter) if ra else None)
+                   for (p, obj, ra) in results]
+        if canary_leaks:
+            _emit_event("canary_leak", canary=canary[:16],
+                        providers=[l["provider"] for l in canary_leaks],
+                        tool="critique",
+                        session_id=session.get("session_id") if session else None)
 
     per_provider: list[dict] = []
     merged: list[dict] = []
@@ -7506,6 +7714,8 @@ def tool_critique(args: dict) -> dict:
         "high_severity_count": sum(1 for w in merged if w["severity"] == "high"),
         "budget":            _budget_summary(call_started, deadline, answers_collected, cpu_started),
     }
+    if canary_leaks:
+        result["canary_leaks"] = canary_leaks
     _attach_usage_block(result, answers_collected,
                         session_id=session.get("session_id") if session else args.get("session_id"),
                         tool_name="critique")
@@ -7723,7 +7933,7 @@ def tool_verify(args: dict) -> dict:
     _emit_event("tool_end", tool="verify",
                 checks_run=len(results), passed=passed_n,
                 all_passed=all_passed)
-    return {
+    out = {
         "tool":         "verify",
         "checks_run":   len(results),
         "results":      results,
@@ -7731,6 +7941,17 @@ def tool_verify(args: dict) -> dict:
         "summary":      summary,
         "timing":       {"wall_ms": elapsed_ms, "cpu_ms": cpu_ms},
     }
+    # Run-summary parity with every other multi-LLM tool. verify makes no
+    # LLM calls of its own, so the rollup is session-scoped (when a
+    # session_id is supplied) or empty (when stateless). Either way the
+    # operator gets the unified shape.
+    try:
+        out["run_summary"] = _render_run_summary(
+            args.get("session_id"), "verify", answers=[],
+        )
+    except Exception:
+        pass
+    return out
 
 
 def _latest_transcript_for_session(session_id: str) -> str | None:

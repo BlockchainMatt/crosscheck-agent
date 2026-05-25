@@ -89,15 +89,18 @@ def main() -> int:
 
     # Call _ask_one with a large max_tokens but purpose=audit. The actual
     # `max_tokens` (OpenAI) or `max_tokens` (Anthropic) sent on the wire must
-    # be capped at the audit budget (2048).
+    # be capped at the audit budget. gpt-test-low is NOT a reasoning model,
+    # so the polish-batch tier-aware budget kicks in (audit=768 for
+    # non-reasoning) instead of the uniform 2048.
     captured_bodies.clear()
     srv._ask_one(srv.ALL_PROVIDERS["openai"],
                  [{"role": "user", "content": "hi"}],
                  deadline=__import__("time").monotonic() + 10,
                  max_tokens=8000, purpose="audit")
     assert captured_bodies, "fake post should have been called"
-    assert captured_bodies[-1]["body"].get("max_tokens") == 2048, captured_bodies[-1]
+    assert captured_bodies[-1]["body"].get("max_tokens") == 768, captured_bodies[-1]
 
+    # Workers always need room; non-reasoning worker budget stays at 2048.
     captured_bodies.clear()
     srv._ask_one(srv.ALL_PROVIDERS["anthropic"],
                  [{"role": "user", "content": "hi"}],
