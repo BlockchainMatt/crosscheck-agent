@@ -1203,6 +1203,54 @@
         "required": ["tool", "checks_run", "results", "all_passed"]
       }
     },
+    "recall": {
+      "description": "Full-text search across persisted transcripts via SQLite FTS5. Surfaces matching session_id / tool / snippet / score so a caller can pull prior context into a new session without re-running expensive panel calls. The index is populated on every `write_transcript` call; results are ranked by bm25 (lower = better) and a windowed snippet shows the match.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query":      { "type": "string",
+                           "description": "FTS5 MATCH expression. Free text works; phrase-quote with double quotes; combine with AND / OR / NOT." },
+          "k":          { "type": "integer", "minimum": 1, "maximum": 50, "default": 5,
+                           "description": "Cap on rows returned." },
+          "session_id": { "type": "string",
+                           "description": "Restrict matches to a single session." },
+          "tool":       { "type": "string",
+                           "description": "Restrict matches to a single tool name (e.g. 'confer', 'coordinate')." },
+          "since_days": { "type": "number", "minimum": 0,
+                           "description": "Only match transcripts written in the last N days." }
+        },
+        "required": ["query"]
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "tool":  { "const": "recall" },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "session_id": { "type": "string" },
+                "tool":       { "type": "string" },
+                "ts":         { "type": "integer", "minimum": 0,
+                                 "description": "Unix-ms when the transcript was written." },
+                "path":       { "type": "string",
+                                 "description": "Repo-relative transcript path." },
+                "snippet":    { "type": "string",
+                                 "description": "Windowed text around the match, with [[ ]] hit markers." },
+                "score":      { "type": "number",
+                                 "description": "bm25 rank; lower is a better match." }
+              },
+              "required": ["session_id", "tool", "ts", "path", "snippet", "score"]
+            }
+          },
+          "count":           { "type": "integer", "minimum": 0 },
+          "applied_filters": { "type": "object" }
+        },
+        "required": ["tool"]
+      }
+    },
     "scoreboard": {
       "description": "Read-only snapshot of accumulated provider performance and recent activity. Surfaces the per-repo win-rate that triangulate uses for weights, plus delegation counters and totals so a UI can render a 'who's winning here' panel.",
       "input": {

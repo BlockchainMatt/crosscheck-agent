@@ -811,7 +811,46 @@ def _db_init() -> None:
                 """
             )
             _add_session_usage_columns(conn)
+            _create_transcripts_fts(conn)
         _DB_INIT_DONE = True
+
+
+_FTS5_AVAILABLE: bool | None = None
+
+
+def _has_fts5(conn: sqlite3.Connection | None = None) -> bool:
+    """Detect whether the SQLite build includes FTS5. Caches the result for
+    the process lifetime. SQLite 3.9+ ships FTS5 but some packagers strip it."""
+    global _FTS5_AVAILABLE
+    if _FTS5_AVAILABLE is not None:
+        return _FTS5_AVAILABLE
+    close_after = conn is None
+    c = conn or _db_conn()
+    try:
+        c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS _fts5_probe USING fts5(x)")
+        c.execute("DROP TABLE IF EXISTS _fts5_probe")
+        _FTS5_AVAILABLE = True
+    except sqlite3.OperationalError:
+        _FTS5_AVAILABLE = False
+    finally:
+        if close_after:
+            c.close()
+    return _FTS5_AVAILABLE
+
+
+def _create_transcripts_fts(conn: sqlite3.Connection) -> None:
+    """FTS5 virtual table backing tool_recall. Created only when the SQLite
+    build supports FTS5; absence is non-fatal (recall returns a clear error)."""
+    if not _has_fts5(conn):
+        return
+    conn.executescript(
+        """
+        CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts USING fts5(
+          session_id, tool, ts UNINDEXED, path UNINDEXED, content,
+          tokenize='unicode61 remove_diacritics 2'
+        );
+        """
+    )
 
 
 def _add_session_usage_columns(conn: sqlite3.Connection) -> None:
@@ -1914,14 +1953,81 @@ def write_transcript(kind: str, payload: dict) -> str | None:
     if not CFG.get("log_transcripts", True):
         return None
     TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = str(int(time.time() * 1000))
+    stamp_ms = int(time.time() * 1000)
+    stamp = str(stamp_ms)
     path = TRANSCRIPT_DIR / f"{stamp}-{kind}.json"
     # Redact PII/secrets before persisting the transcript.
-    path.write_text(json.dumps(_redact_obj(payload), indent=2))
+    redacted = _redact_obj(payload)
+    path.write_text(json.dumps(redacted, indent=2))
     try:
-        return str(path.relative_to(ROOT))
+        rel = str(path.relative_to(ROOT))
     except ValueError:
-        return str(path)
+        rel = str(path)
+    # Index into FTS5 (best-effort; never block transcript write on indexing).
+    try:
+        _fts_index_transcript(kind, redacted, rel, stamp_ms)
+    except Exception:
+        pass
+    return rel
+
+
+def _fts_walk_strings(obj: Any, out: list[str], depth: int = 0) -> None:
+    """Collect string leaves up to a recursion bound. Avoids deep, pathological
+    nesting from accidentally exploding the FTS payload."""
+    if depth > 8:
+        return
+    if isinstance(obj, str):
+        s = obj.strip()
+        if s:
+            out.append(s)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _fts_walk_strings(v, out, depth + 1)
+    elif isinstance(obj, list):
+        for v in obj:
+            _fts_walk_strings(v, out, depth + 1)
+
+
+_FTS_INDEX_MAX_CHARS = 64 * 1024  # ~16k tokens worst case; FTS5 can handle more but capping keeps indexing cheap.
+
+
+def _fts_session_id(payload: dict) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    sid = payload.get("session_id")
+    if isinstance(sid, str) and sid:
+        return sid
+    sess = payload.get("session")
+    if isinstance(sess, dict):
+        sid = sess.get("session_id")
+        if isinstance(sid, str) and sid:
+            return sid
+    return ""
+
+
+def _fts_index_transcript(kind: str, payload: dict, path: str, ts_ms: int) -> None:
+    """Push the searchable text of a freshly-written transcript into FTS5.
+    No-op if FTS5 isn't available or the table doesn't exist yet."""
+    _db_init()
+    if not _has_fts5():
+        return
+    parts: list[str] = []
+    _fts_walk_strings(payload, parts)
+    text = "\n".join(parts)
+    if not text:
+        return
+    # Drop canary nonces so a leaked canary in an old transcript can't get
+    # surfaced by a future recall query and re-leaked to a new caller.
+    text = re.sub(r"CC_CANARY_[A-F0-9]+", "[canary]", text)
+    if len(text) > _FTS_INDEX_MAX_CHARS:
+        text = text[:_FTS_INDEX_MAX_CHARS]
+    session_id = _fts_session_id(payload)
+    with _db_conn() as conn:
+        conn.execute(
+            "INSERT INTO transcripts_fts(session_id, tool, ts, path, content) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (session_id, kind, str(ts_ms), path, text),
+        )
 
 
 # ------------------------------------------------------------
@@ -7954,6 +8060,112 @@ def tool_verify(args: dict) -> dict:
     return out
 
 
+def tool_recall(args: dict) -> dict:
+    """Full-text search across persisted transcripts via SQLite FTS5.
+
+    Returns rows ordered by bm25 (lower = better match) with a windowed
+    snippet around the match. Filters by `session_id`, `tool`, and
+    `since_days` are AND-composed with the FTS5 MATCH query.
+
+    Input:
+      query:       required FTS5 MATCH expression (free text or phrase).
+      k:           1..50, default 5.
+      session_id:  restrict to one session.
+      tool:        restrict to one tool name ('confer', 'coordinate', ...).
+      since_days:  positive number; only match transcripts written in the
+                   last N days.
+    """
+    query = (args.get("query") or "").strip()
+    if not query:
+        return {"tool": "recall",
+                **_error("RECALL_MISSING_QUERY",
+                         "must provide a non-empty `query` string",
+                         hint="Free text works; phrase-quote with double quotes, "
+                              "combine with AND / OR / NOT (FTS5 syntax).")}
+
+    k = int(args.get("k", 5))
+    if k < 1:
+        k = 1
+    if k > 50:
+        k = 50
+
+    _db_init()
+    if not _has_fts5():
+        return {"tool": "recall",
+                **_error("RECALL_FTS5_UNAVAILABLE",
+                         "SQLite build does not include FTS5",
+                         hint="Rebuild Python's sqlite3 with FTS5 enabled, "
+                              "or run on a Python with FTS5 (Python 3.11+ on "
+                              "most platforms ships with FTS5).",
+                         transient=False),
+                "rows":            [],
+                "count":           0,
+                "applied_filters": {"query": query, "k": k}}
+
+    where = ["transcripts_fts MATCH ?"]
+    params: list[Any] = [query]
+    session_id  = args.get("session_id")
+    tool_filter = args.get("tool")
+    since_days  = args.get("since_days")
+
+    if isinstance(session_id, str) and session_id:
+        where.append("session_id = ?")
+        params.append(session_id)
+    if isinstance(tool_filter, str) and tool_filter:
+        where.append("tool = ?")
+        params.append(tool_filter)
+    if isinstance(since_days, (int, float)) and since_days > 0:
+        threshold_ms = int((time.time() - float(since_days) * 86400.0) * 1000)
+        # ts is UNINDEXED TEXT in FTS5; CAST to integer for the comparison.
+        where.append("CAST(ts AS INTEGER) >= ?")
+        params.append(threshold_ms)
+
+    sql = (
+        "SELECT session_id, tool, ts, path, "
+        "  snippet(transcripts_fts, -1, '[[', ']]', '...', 16) AS snip, "
+        "  bm25(transcripts_fts) AS rank "
+        "FROM transcripts_fts WHERE " + " AND ".join(where) +
+        " ORDER BY rank LIMIT ?"
+    )
+    params.append(k)
+
+    rows: list[dict] = []
+    try:
+        with _db_conn() as conn:
+            for r in conn.execute(sql, params).fetchall():
+                rows.append({
+                    "session_id": r["session_id"] or "",
+                    "tool":       r["tool"] or "",
+                    "ts":         int(r["ts"] or 0),
+                    "path":       r["path"] or "",
+                    "snippet":    r["snip"] or "",
+                    "score":      float(r["rank"] or 0.0),
+                })
+    except sqlite3.OperationalError as e:
+        return {"tool": "recall",
+                **_error("RECALL_QUERY_INVALID",
+                         f"FTS5 query rejected: {e}",
+                         hint="Check FTS5 MATCH syntax: phrase-quote with "
+                              "double quotes; use AND / OR / NOT; escape "
+                              "special characters."),
+                "rows":            [],
+                "count":           0,
+                "applied_filters": {"query": query, "k": k}}
+
+    applied: dict = {"query": query, "k": k}
+    if isinstance(session_id, str) and session_id:
+        applied["session_id"] = session_id
+    if isinstance(tool_filter, str) and tool_filter:
+        applied["tool"] = tool_filter
+    if isinstance(since_days, (int, float)) and since_days > 0:
+        applied["since_days"] = since_days
+
+    return {"tool":            "recall",
+            "rows":            rows,
+            "count":           len(rows),
+            "applied_filters": applied}
+
+
 def _latest_transcript_for_session(session_id: str) -> str | None:
     """Find the most recent transcript JSON whose `session.session_id` matches.
     Best-effort, returns None on failure."""
@@ -7998,6 +8210,7 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "explain":         tool_explain,
     "critique":        tool_critique,
     "verify":          tool_verify,
+    "recall":          tool_recall,
     "orchestrate":    tool_orchestrate,
     "audit":          tool_audit,
     "create":         tool_create,
