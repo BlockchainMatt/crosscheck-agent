@@ -3,13 +3,20 @@
 Confer with multiple LLMs from inside Claude Code. `crosscheck-agent` is a
 compact MCP server that lets Claude ask peers from other model families
 (GPT, Grok, Gemini, Mistral, Groq, DeepSeek) to reason, debate, plan,
-peer-review, **orchestrate sub-agent DAGs**, and **audit each other's
-output** — then hands the synthesised answer back to Claude.
+peer-review, **orchestrate sub-agent DAGs**, **audit each other's output**,
+**critique** proposals pre-mortem-style, **verify** outputs with
+deterministic checks, **explain** session cost in a navigable tree, and
+**recall** prior transcripts via SQLite FTS5 — then hands the synthesised
+answer back to Claude.
 
 Every multi-LLM call now reports real per-provider token usage and an
 estimated USD cost, with live CPU and wall-time progress streamed to the
 client. Routing can be opted into "cheap mode" so easy subtasks land on
-small models and only the hard nodes pay for full power.
+small models and only the hard nodes pay for full power. A smart router
+picks panels by historical purpose-specific reliability + cost; session
+circuit breakers cap cost / tokens / wall / DAG breadth; cross-provider
+canary detection flags indirect prompt injection; early-stop on
+confer / debate / pick skips the remainder when phase-1 already agrees.
 
 The server is **Python, stdlib-only** — no external dependencies, no build
 step. (Earlier versions shipped TypeScript/Rust/Perl mirrors; those have
@@ -44,10 +51,15 @@ Claude │ Claude Code  │     MCP      ┌────────────
 | `bench`          | Run repo-scoped goldens (`*.json` in `.crosscheck/goldens/`) against a panel; rule-based verifiers (contains / regex_match / contains_any / contains_all / not_contains / min_length) score each provider, and the win-rate feeds `triangulate`'s weights. |
 | `solve`          | Iterative **propose → verify → retry**. Provider drafts a literal solution; a `shell` (sandboxed subprocess: timeout, RLIMIT_AS, RLIMIT_CPU, isolated tmpdir) or `regex_response` verifier accepts or rejects; failures feed back to the next attempt. Pass `target_path` to also get a unified-diff `patch` preview (file is never modified). |
 | `fetch`          | Retrieve a URL with **deny-by-default allowlist** (`fetch.url_allowlist` prefix list) and persist a sha256-keyed snapshot under `.crosscheck/evidence/`. Cached on repeat unless `force_refresh: true`. Use to ground claims with reproducible evidence. |
-| `pick`           | **Multi-criteria decision-making.** Each provider scores every option on every criterion (0..1); the tool aggregates with criterion weights, returns a ranked list, and surfaces the top-K cross-provider disagreements as `dissent_deltas`. |
+| `pick`           | **Multi-criteria decision-making.** Each provider scores every option on every criterion (0..1); the tool aggregates with criterion weights, returns a ranked list, and surfaces the top-K cross-provider disagreements as `dissent_deltas`. Supports `early_stop: true` — phase-1 runs the first two providers and skips the rest when they agree on the top option above `early_stop_threshold` (default 0.7). |
+| `critique`       | Have each panelist list the top weaknesses of a proposed answer / plan / code with severity tags (`low | med | high`). Front-loads dissent the way a pre-mortem does — useful **before** `audit`. Returns per-provider weakness lists plus a merged list ordered by severity, with `high_severity_count` for quick triage. |
+| `verify`         | Run a list of **deterministic property checks** against caller-supplied data — no LLM calls. Supports text-pattern kinds (`contains`, `not_contains`, `regex_match`, `contains_any`, `contains_all`, `min_length`), `shell` (sandboxed subprocess, opt-in via `allow_shell: true`), and `url_head` (gated by `fetch.url_allowlist`). Pairs with `audit` (rubric scoring) and `critique` (weakness lists). |
+| `explain`        | Replay a session as a navigable tree with cost / latency / token annotations per tool call and per provider call. Reads `usage_log` and persisted transcripts. Returns both a structured envelope and a pre-rendered ASCII tree. Filter rollups with `only_purpose: [...]` and `only_provider: [...]`. |
+| `recall`         | **Full-text search across persisted transcripts** via SQLite FTS5. Pull prior context out of past sessions without re-running expensive panel calls. Ranks by bm25, returns windowed snippets with `[[ ]]` hit markers. Filters: `session_id`, `tool`, `since_days`. Canary nonces are scrubbed at index time so old leaks can't be re-surfaced. |
+| `recommend_panel`| **Smart router as a tool.** Returns a recommended provider lineup for a given `purpose` based on accumulated `usage_log` reliability + cost + engagement, with optional `prefer_provider` / `avoid_provider` hints. The same composite score is what `auto_panel: true` uses inside `confer` / `debate` / etc. |
 | `scoreboard`     | Read-only snapshot: per-provider weight + wins/losses/abstains + delegations, plus `totals` for sessions/claims/links/delegations and (optional) the last N redacted event lines. The data the UI panel reads. |
-| `orchestrate`    | **Plan-then-execute** across sub-agents. The moderator decomposes a `goal` into a DAG of subtasks (or you pass a pre-authored `dag`), workers run in parallel where deps allow, and a final synth pass recombines node outputs into a coherent deliverable. Each node declares `difficulty: low\|med\|high` — with `cheap_mode: true` the router picks the cheapest registered model in that tier (scoreboard win-rate breaks ties within-tier only). Default failure semantics: partial-recombine with `[MISSING: node_id]` markers; set `fail_fast: true` for strict workflows. |
-| `audit`          | **Post-run rubric scoring**. Audits an output (from `output_to_audit`, or pulled from the latest transcript for `session_id`) against a rubric. The auditor is selected to **exclude** the `producing_panelists` so a model cannot grade its own work (override with `allow_self_audit: true`). Default rubric covers factual grounding, constraint adherence, PII leak, internal consistency, open-question coverage, and actionability — override with `rubric: [...]`. Audit cost rolls up under the same `session_id` tagged `purpose: "audit"`. |
+| `orchestrate`    | **Plan-then-execute** across sub-agents. The moderator decomposes a `goal` into a DAG of subtasks (or you pass a pre-authored `dag`), workers run in parallel where deps allow, and a final synth pass recombines node outputs into a coherent deliverable. Each node declares `difficulty: low\|med\|high` — with `cheap_mode: true` the router picks the cheapest registered model in that tier. Failure semantics: partial-recombine by default; set `fail_fast: true` for strict workflows. Workers can expand the DAG mid-flight by emitting `<signals>{add_nodes: [...]}</signals>` in their output (reactive orchestration). |
+| `audit`          | **Post-run rubric scoring**. Audits an output (from `output_to_audit`, or pulled from the latest transcript for `session_id`) against a rubric. The auditor is selected to **exclude** the `producing_panelists` so a model cannot grade its own work (override with `allow_self_audit: true`). Default rubric covers factual grounding, constraint adherence, PII leak, internal consistency, open-question coverage, and actionability — override with `rubric: [...]`. Coalesce mode (`coalesce: true` or fallback when no outside auditor exists) runs multiple judges in parallel and reports median score, majority pass-vote, disagreements, and `obvious_failures`. Audit cost rolls up under the same `session_id` tagged `purpose: "audit"`. |
 | `create` / `create_cheap` | **End-to-end macro tool**. Takes one high-level `instruction` and drives the full lifecycle: ingest documents → confer for scope → orchestrate the build → review → audit, all under a single `session_id`. On audit failure, `create` injects the audit feedback as constraints and runs orchestrate one more time, then re-audits; `create_cheap` defaults `cheap_mode: true` and suppresses the retry to honor cost. Supports `target_path` (write deliverable to disk), `dry_run`, `skip_audit`/`skip_review`, and `documents` (file paths or URLs — URLs go through the `fetch` allowlist). Status is one of `success | audit_failed | audit_failed_after_retry | error`. |
 | `update_crosscheck` | Compares your local git HEAD against `main` at https://github.com/fxspeiser/crosscheck-agent. With `apply: true`, runs `git pull --ff-only` in the install directory; the server can't reload itself, so the response asks you to restart Claude Code. The first crosscheck call per server process runs the same check (cached 6h) and attaches an `update_notice` to the result so Claude can offer the upgrade proactively. |
 
@@ -279,6 +291,84 @@ By default `audit` picks **one** judge outside the producing panel. When the pro
 
 **Convention:** before invoking `audit` from a script or agent, you should typically ask the user whether they want strict mode — it's a substantively stricter bar.
 
+### Smart router + `recommend_panel`
+
+Every provider call lands in `usage_log` tagged with `purpose` and an outcome. The smart router rolls that history up into a per-`(provider, purpose)` composite of **reliability** (1 − error rate), **cost factor** (cheaper = better, normalized against the active set), and **engagement** (recent call recency), then ranks providers for that purpose. Two ways to use it:
+
+- **Explicit** — call `recommend_panel(purpose, n, prefer_provider?, avoid_provider?)` to get back a recommended lineup with rationale.
+- **Implicit** — pass `auto_panel: true` to `confer` / `debate` / `plan` / `review` (and others) and the same ranking picks the panel automatically. Falls back to the configured `providers` when there's not enough history yet.
+
+The router also orders `audit`'s coalesce judges by purpose-specific reliability, so the most-trusted judges run first when `max_judges` is bounded.
+
+### Session circuit breakers
+
+A long-running session — or a runaway DAG — can blow through budget silently. The server tracks four per-session ceilings and short-circuits the next tool call when any are breached:
+
+- `max_session_cost_usd` — cumulative dollar cap.
+- `max_session_tokens`   — cumulative token cap.
+- `max_session_wall_seconds` — wall-clock cap.
+- `max_dag_nodes` / `max_dag_depth` — protect `orchestrate` from a planner that emits an unboundedly wide or deep DAG.
+
+A tripped breaker returns a structured `breaker_tripped` envelope with `reason`, `limit`, `observed`, and an `operator_hint` so the caller knows exactly which knob to turn. The check projects in-flight phase-1 cost forward so an early-stop judge call can't sneak past the cap.
+
+Set the ceilings under `session_breakers.*` in `crosscheck.config.json` (all are optional; absence = no limit).
+
+### Early-stop
+
+`confer`, `debate`, and `pick` accept `early_stop: true`. Phase-1 dispatches the first 2 panelists; a lightweight agreement check runs only if both came back clean and the breaker check (with phase-1 cost projected forward) still allows it. When the panelists agree above `early_stop_threshold` (default 0.7), the remaining providers are skipped. The response carries `early_stopped`, `skipped_providers`, and an `agreement_check` block so the cost saving is auditable.
+
+### Reactive orchestrate signals
+
+Workers inside `orchestrate` can extend the DAG mid-flight by emitting a `<signals>{...}</signals>` block in their output. Recognized signals:
+
+```
+<signals>{"add_nodes": [
+  {"id": "extra_check", "task": "Verify X against the new evidence",
+   "depends_on": ["initial_research"], "difficulty": "low"}
+]}</signals>
+```
+
+New nodes are validated (must reference already-completed-ok upstreams, must respect the DAG-depth and DAG-breadth breakers, must not reintroduce a cycle) and appended to the active plan. Cycle attempts fail closed. The signal is stripped before the worker output is surfaced in `final`.
+
+### Safety bundle (canary, egress, redaction)
+
+Three layers protect against indirect prompt injection, evidence-fetch abuse, and accidental log leakage:
+
+- **Cross-provider canary leak detection.** When a tool is called with `untrusted_input: true`, the server mints a per-call high-entropy nonce, embeds it inside the `<untrusted_input>` wrapper, and post-dispatch scans every provider's response. Any provider that echoes the nonce honored an injected instruction — the leak is redacted in place and surfaced as `canary_leaks: [{provider, model, count}, ...]`. Wired into `confer`, `coordinate`, and `critique`.
+- **Per-session fetch egress budget.** `fetch.max_session_bytes` caps how much external content one session can pull. Each fetch ledgers bytes against the session; over-budget calls return a structured error before any HTTP is made.
+- **HMAC-redacted secrets.** PII and secret patterns (emails, IPv4, AWS keys, GitHub PATs, Slack tokens, OpenAI keys, bearer tokens, 16-digit cards, custom regexes) are scrubbed at write time from both ndjson events and JSON transcripts. The replacement carries a stable HMAC suffix keyed on a process-rotating secret + `session_id`, so the same secret consistently maps to the same opaque token across a session (lets operators correlate without seeing the value), but the mapping is unreproducible across processes and never serialized.
+
+### Error taxonomy
+
+Errors from every tool follow the same shape:
+
+```jsonc
+{
+  "error":          "human-readable message",
+  "error_code":     "STABLE_UPPERCASE_CODE",    // e.g. RECALL_FTS5_UNAVAILABLE
+  "error_kind":     "auth | rate_limit | server | client | timeout | network | parse | other",
+  "operator_hint":  "short, actionable next step",
+  "transient":      true | false                 // false = don't retry mechanically
+}
+```
+
+The legacy `error` field is preserved alongside the new fields so old callers don't break. `error_kind` drives the retry policy inside `_http_post_resilient` (rate-limit honors `Retry-After`; server/network/timeout get jittered backoff; auth/client/parse fail closed).
+
+### Structured `claims[]` extraction
+
+Pass `extract_claims: true` to `confer` and the server runs one cheap extra call after the panel returns: each panelist's response is distilled into atomic claims with per-provider support maps and a confidence value. Claims are also persisted to the SQLite `claims` table when a `session_id` is supplied, with `supports` / `attacks` edges populated from `coordinate`'s synthesis dissent — so `scoreboard` and `explain` can show which claims survived cross-examination.
+
+### Cross-session retrieval (`recall`)
+
+Every persisted transcript is also pushed (best-effort) into a `transcripts_fts` FTS5 virtual table. `recall(query, k?, session_id?, tool?, since_days?)` ranks matches by bm25 and returns a windowed snippet with `[[ ]]` hit markers, so a caller can pull prior context out of past sessions without re-running expensive panel calls.
+
+```jsonc
+recall({ "query": "rate limit token bucket", "k": 5, "since_days": 30 })
+// -> { rows: [{ session_id, tool, ts, path, snippet, score }, ...], count, applied_filters }
+```
+
+FTS5 availability is probed once at DB init (`_has_fts5()`); absence is non-fatal and returns a clear `RECALL_FTS5_UNAVAILABLE` error. Canary nonces are scrubbed before indexing so a leaked canary in an old transcript can't be re-surfaced through a future `recall` query.
+
 ### Run summary on every multi-LLM response
 
 Every `confer` / `debate` / `plan` / `review` / `coordinate` / `triangulate` / `pick` / `solve` / `bench` / `orchestrate` / `audit` / `create` / `create_cheap` response now carries a `run_summary` block — pre-rendered ASCII tree plus structured rows for programmatic consumption. When a `session_id` is passed, the rollup is **session-scoped** (covers every call ever made under that id from `usage_log`); otherwise it's just this call.
@@ -481,6 +571,26 @@ does, based on what you say. A few prompts that work well inside Claude Code:
 
 > "What did session auth-1 cost so far? Show per-provider tokens and dollars."  *(Claude pulls the totals from the session row.)*
 
+**Recall a prior transcript**
+
+> "Search past transcripts for anything about rate limits in the last 30 days; show top 5."  *(Claude calls `recall(query="rate limits", k=5, since_days=30)`.)*
+
+**Pre-mortem before audit**
+
+> "Critique this rollout plan first — top weaknesses with severity. Then audit it."  *(Two calls: `critique` for the weakness list, `audit` for the rubric pass.)*
+
+**Deterministic checks (no LLM)**
+
+> "Verify the generated SQL contains a `LIMIT` clause and doesn't reference `users.password`."  *(Claude calls `verify` with `contains` + `not_contains` checks.)*
+
+**Recommend a panel for a specific purpose**
+
+> "Pick a panel for an audit: most reliable judges, three providers, avoid xai."  *(Claude calls `recommend_panel(purpose="audit", n=3, avoid_provider=["xai"])`.)*
+
+**Explain a session with filtered rollups**
+
+> "Explain session auth-1 but only show audit and synth purposes."  *(Claude calls `explain(session_id="auth-1", only_purpose=["audit","synth"])`.)*
+
 **Self-update**
 
 > "Check whether crosscheck-agent has an update."  *(if Claude already saw an `update_notice` on a previous tool call, it will surface it without prompting.)*
@@ -632,10 +742,11 @@ crosscheck-agent/
 
 Issues and PRs welcome. Keep the tool surface (`list_providers`, `confer`,
 `debate`, `plan`, `review`, `coordinate`, `triangulate`, `delegate`, `bench`,
-`solve`, `fetch`, `pick`, `scoreboard`, `orchestrate`, `audit`,
-`update_crosscheck`) backwards-compatible and dependency-light — Python
-stdlib only. New fields on existing responses are fine if additive; renames
-and removals are not.
+`solve`, `fetch`, `pick`, `critique`, `verify`, `explain`, `recall`,
+`recommend_panel`, `scoreboard`, `orchestrate`, `audit`, `create`,
+`create_cheap`, `update_crosscheck`) backwards-compatible and
+dependency-light — Python stdlib only. New fields on existing responses are
+fine if additive; renames and removals are not.
 
 ## Credits
 
