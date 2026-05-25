@@ -6557,6 +6557,436 @@ def tool_create_cheap(args: dict) -> dict:
     return _run_create_pipeline(args, cheap_default=True, tool_name="create_cheap")
 
 
+# ------------------------------------------------------------
+# explain: navigable replay of a session
+#
+# Reads usage_log (per-call rows tagged by purpose, with cost + tokens
+# + wall_ms + cpu_ms) and the session's transcripts to produce a tree
+# the operator can navigate: tool calls -> provider calls, with claims
+# and audit scores inlined when present. Returns both a structured
+# `tree` (programmatic) and a pre-rendered ASCII `text` (human).
+# ------------------------------------------------------------
+def _explain_load_transcripts_for_session(session_id: str) -> list[dict]:
+    """Return all transcripts whose `session.session_id` matches, sorted by mtime."""
+    out: list[dict] = []
+    try:
+        if not TRANSCRIPT_DIR.exists():
+            return []
+        sid = _safe_session_id(session_id)
+        for p in sorted(TRANSCRIPT_DIR.glob("*.json"), key=lambda q: q.stat().st_mtime):
+            try:
+                doc = json.loads(p.read_text())
+            except Exception:
+                continue
+            if (doc.get("session") or {}).get("session_id") == sid:
+                out.append({"path": str(p), "doc": doc,
+                            "mtime_ms": int(p.stat().st_mtime * 1000)})
+    except Exception:
+        return []
+    return out
+
+
+def tool_explain(args: dict) -> dict:
+    """Replay a session as a navigable tree with cost/latency annotations.
+
+    Input:
+      session_id:      required
+      include_text:    optional, default true — include the pre-rendered ASCII tree
+      max_transcripts: optional, default 50 — cap number of transcripts to walk
+    """
+    session_id = args.get("session_id")
+    if not session_id:
+        return {"tool": "explain",
+                **_error("EXPLAIN_MISSING_SESSION_ID",
+                         "must provide `session_id`",
+                         hint="Pass the session_id of a previous tool run.")}
+    include_text = bool(args.get("include_text", True))
+    max_transcripts = max(1, int(args.get("max_transcripts", 50)))
+
+    sid = _safe_session_id(session_id)
+    session = _session_load(sid)
+    if not session or not session.get("calls"):
+        return {"tool": "explain",
+                **_error("EXPLAIN_NO_SESSION",
+                         f"no session found for session_id={sid!r}",
+                         hint="Either the session never ran a multi-LLM tool, "
+                              "or the session_id is wrong.",
+                         session_id=sid)}
+
+    # 1) Per-call rows from usage_log.
+    rows: list[dict] = []
+    try:
+        _db_init()
+        with _db_conn() as conn:
+            rs = conn.execute(
+                "SELECT id, ts, tool, purpose, provider, model, prompt_tokens, "
+                "       completion_tokens, total_tokens, cost_usd, estimated, "
+                "       wall_ms, cpu_ms "
+                "FROM usage_log WHERE session_id = ? ORDER BY ts, id",
+                (sid,),
+            ).fetchall()
+        for r in rs:
+            rows.append({k: r[k] for k in r.keys()})
+    except Exception:
+        rows = []
+
+    # 2) Transcripts (capped).
+    transcripts = _explain_load_transcripts_for_session(sid)[:max_transcripts]
+    transcripts_summary = []
+    for t in transcripts:
+        doc = t["doc"]
+        tool_name = doc.get("tool")
+        summary: dict[str, Any] = {
+            "path":           t["path"],
+            "mtime_ms":       t["mtime_ms"],
+            "tool":           tool_name,
+        }
+        # Pull the most operator-useful surface bits per tool.
+        if tool_name in ("confer", "review"):
+            summary["question"] = (doc.get("question") or "")[:240]
+            answers = doc.get("answers") or []
+            summary["providers"] = [a.get("provider") for a in answers
+                                    if isinstance(a, dict)]
+            if doc.get("claims"):
+                summary["claims_count"] = len(doc["claims"])
+        elif tool_name == "debate":
+            summary["topic"]            = (doc.get("topic") or "")[:240]
+            summary["rounds_completed"] = doc.get("rounds_completed")
+            if doc.get("claims"):
+                summary["claims_count"] = len(doc["claims"])
+        elif tool_name == "audit":
+            summary["mode"]          = doc.get("mode")
+            summary["overall_score"] = doc.get("overall_score")
+            summary["passed"]        = doc.get("passed")
+            if doc.get("obvious_failures"):
+                summary["obvious_failures"] = doc["obvious_failures"]
+            if doc.get("disagreements"):
+                summary["disagreements"] = doc["disagreements"]
+        elif tool_name == "orchestrate":
+            nodes = doc.get("nodes") or []
+            summary["nodes_run"]      = len(nodes)
+            summary["nodes_ok"]       = sum(1 for n in nodes if n.get("status") == "ok")
+            summary["nodes_failed"]   = sum(1 for n in nodes if n.get("status") == "failed")
+            summary["partial"]        = doc.get("partial")
+            summary["cheap_mode"]     = doc.get("cheap_mode")
+        elif tool_name in ("create", "create_cheap"):
+            summary["instruction"]    = (doc.get("instruction") or "")[:240]
+            summary["status"]         = doc.get("status")
+            summary["attempts"]       = doc.get("attempts")
+        budget = doc.get("budget") or {}
+        if budget:
+            summary["call_cost_usd"]  = budget.get("total_cost_usd")
+            summary["call_wall_ms"]   = budget.get("wall_used_ms")
+            summary["call_cpu_ms"]    = budget.get("cpu_used_ms")
+        transcripts_summary.append(summary)
+
+    # 3) Aggregate session totals from usage_log groupings.
+    by_purpose: dict[str, dict] = {}
+    by_provider: dict[str, dict] = {}
+    for r in rows:
+        purpose  = r["purpose"] or "worker"
+        provider = r["provider"] or "?"
+        bp = by_purpose.setdefault(purpose, {"calls": 0, "tokens": 0, "cost_usd": 0.0,
+                                              "wall_ms": 0, "cpu_ms": 0})
+        bp["calls"]    += 1
+        bp["tokens"]   += int(r["total_tokens"] or 0)
+        bp["cost_usd"]  = round(bp["cost_usd"] + float(r["cost_usd"] or 0.0), 8)
+        bp["wall_ms"]  += int(r["wall_ms"] or 0)
+        bp["cpu_ms"]   += int(r["cpu_ms"] or 0)
+        pp = by_provider.setdefault(provider, {"calls": 0, "tokens": 0, "cost_usd": 0.0,
+                                                "wall_ms": 0, "cpu_ms": 0})
+        pp["calls"]    += 1
+        pp["tokens"]   += int(r["total_tokens"] or 0)
+        pp["cost_usd"]  = round(pp["cost_usd"] + float(r["cost_usd"] or 0.0), 8)
+        pp["wall_ms"]  += int(r["wall_ms"] or 0)
+        pp["cpu_ms"]   += int(r["cpu_ms"] or 0)
+
+    totals = {
+        "calls":            int(session.get("calls", 0) or 0),
+        "wall_ms":          int(session.get("wall_ms", 0) or 0),
+        "cpu_ms":           int(session.get("total_cpu_ms", 0) or 0),
+        "total_tokens":     int(session.get("total_tokens", 0) or 0),
+        "total_cost_usd":   round(float(session.get("total_cost_usd", 0.0) or 0.0), 8),
+        "cache_hits":       int(session.get("cache_hits", 0) or 0),
+    }
+
+    # 4) Pre-render an ASCII tree. Format:
+    #     session: <sid>  (totals)
+    #       |- <transcript: tool>      $cost   wall    cpu   [tool-specific summary]
+    #       |    |- <provider:model purpose>   tokens cost wall cpu
+    #       ...
+    text_lines: list[str] = []
+    if include_text:
+        text_lines.append(
+            f"session: {sid}   ({totals['calls']} calls, "
+            f"{totals['total_tokens']:,} tokens, "
+            f"${totals['total_cost_usd']:.4f}, "
+            f"{totals['wall_ms'] / 1000:.1f}s wall, "
+            f"{totals['cpu_ms'] / 1000:.3f}s cpu)"
+        )
+        # Group usage_log rows by `tool` (column), in insertion order.
+        rows_by_tool: dict[str | None, list[dict]] = {}
+        order: list[str | None] = []
+        for r in rows:
+            t = r.get("tool")
+            if t not in rows_by_tool:
+                rows_by_tool[t] = []
+                order.append(t)
+            rows_by_tool[t].append(r)
+        for i, t in enumerate(order):
+            tool_rows = rows_by_tool[t]
+            branch = "`-" if i == len(order) - 1 else "|-"
+            tool_label = t or "(uncategorized)"
+            tool_cost = round(sum(float(r["cost_usd"] or 0) for r in tool_rows), 6)
+            tool_tok  = sum(int(r["total_tokens"] or 0) for r in tool_rows)
+            tool_wall = sum(int(r["wall_ms"] or 0) for r in tool_rows)
+            tool_cpu  = sum(int(r["cpu_ms"] or 0) for r in tool_rows)
+            text_lines.append(
+                f"  {branch} {tool_label:<14} {len(tool_rows):>3} calls   "
+                f"{tool_tok:>7,} tok   ${tool_cost:>8.4f}   "
+                f"{tool_wall / 1000:>6.1f}s wall   {tool_cpu / 1000:>6.3f}s cpu"
+            )
+            for j, r in enumerate(tool_rows):
+                sub = "`-" if j == len(tool_rows) - 1 else "|-"
+                text_lines.append(
+                    f"       {sub} {r['provider'] or '?'}:{r['model'] or '?'}  "
+                    f"purpose={r['purpose']}  "
+                    f"{int(r['total_tokens'] or 0):>5,} tok   "
+                    f"${float(r['cost_usd'] or 0):>8.5f}   "
+                    f"{int(r['wall_ms'] or 0)/1000:.2f}s wall   "
+                    f"{int(r['cpu_ms'] or 0)/1000:.3f}s cpu"
+                )
+
+    result: dict[str, Any] = {
+        "tool":        "explain",
+        "session_id":  sid,
+        "totals":      totals,
+        "by_purpose":  by_purpose,
+        "by_provider": by_provider,
+        "rows":        rows,
+        "transcripts": transcripts_summary,
+    }
+    if include_text:
+        result["text"] = "\n".join(text_lines)
+    return result
+
+
+# ------------------------------------------------------------
+# critique: panel of pre-mortem-style weakness listings
+#
+# Each panelist returns a structured list of top-N weaknesses of the
+# proposed answer/approach, with severity tags. Front-loads dissent
+# the way pre-mortems do — particularly useful before audit, or as
+# a standalone "what could go wrong" probe on any design.
+# ------------------------------------------------------------
+_CRITIQUE_MAX_WEAKNESSES = 5
+
+
+def _critique_response_schema() -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "weaknesses": {
+                "type":  "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id":          {"type": "string"},
+                        "weakness":    {"type": "string"},
+                        "why_matters": {"type": "string"},
+                        "severity":    {"type": "string", "enum": ["low", "med", "high"]},
+                    },
+                    "required": ["weakness", "severity"],
+                },
+            }
+        },
+        "required": ["weaknesses"],
+    }
+
+
+def tool_critique(args: dict) -> dict:
+    """Have each panelist list the top weaknesses of a proposed answer or
+    approach. Returns structured per-provider weakness lists + a merged
+    list ordered by severity.
+
+    Input:
+      proposal:    required — the text being critiqued
+      question:    optional — the original question/decision the proposal answers
+      providers:   optional — ad-hoc panel
+      max_per_provider: optional, default 3
+      session_id:  optional
+      untrusted_input: optional, default false
+    """
+    proposal = args.get("proposal")
+    if not isinstance(proposal, str) or not proposal.strip():
+        return {"tool": "critique",
+                **_error("CRITIQUE_MISSING_PROPOSAL",
+                         "must provide `proposal` (the text to critique)",
+                         hint="Pass the answer/plan/code you want the panel to "
+                              "find weaknesses in.")}
+    question = args.get("question") or ""
+    untrusted = bool(args.get("untrusted_input", False))
+    max_per = max(1, min(_CRITIQUE_MAX_WEAKNESSES,
+                          int(args.get("max_per_provider", 3))))
+
+    selected, unknown = _resolve_providers(args.get("providers"))
+    selected, blocked = _filter_by_allowlist(selected)
+    if unknown and not selected:
+        return _unknown_provider_error(unknown)
+    if not selected:
+        if blocked:
+            return {"tool": "critique",
+                    **_error("ALL_PROVIDERS_BLOCKED",
+                             "all requested providers are blocked by provider_allowlist",
+                             kind="config",
+                             hint=f"Either remove names from `provider_allowlist` "
+                                  f"or pick from {sorted(ALL_PROVIDERS.keys())}.")}
+        return {"tool": "critique",
+                **_error("NO_PROVIDERS_AVAILABLE",
+                         "no active providers have API keys in .env",
+                         kind="config",
+                         hint="Set at least one provider API key in .env.")}
+
+    session = _session_load(args.get("session_id"))
+    breaker_env = _maybe_breaker_response(session, "critique")
+    if breaker_env:
+        return breaker_env
+
+    sys_msg = (
+        "You are a pre-mortem critic on a panel. Read the PROPOSAL and list "
+        f"its top {max_per} most consequential weaknesses. Output ONLY a JSON "
+        "object matching the schema. Each weakness has `weakness` (one "
+        "sentence), `why_matters` (one sentence on the impact if missed), and "
+        "`severity` in {low, med, high}. Be concrete and adversarial; don't "
+        "sugar-coat. If the proposal is solid, return fewer than the cap or "
+        "an empty list — quality over quota."
+    )
+    if untrusted:
+        sys_msg += "\n" + _UNTRUSTED_SYSTEM_NOTE
+
+    proposal_block = _wrap_untrusted(proposal) if untrusted else proposal
+    user_msg = (
+        (f"ORIGINAL QUESTION/DECISION:\n{question}\n\n" if question else "")
+        + f"PROPOSAL TO CRITIQUE:\n{proposal_block}"
+    )
+    msgs = [{"role": "system", "content": sys_msg},
+            {"role": "user",   "content": user_msg}]
+
+    call_started = time.monotonic()
+    cpu_started  = time.process_time()
+    deadline = _deadline()
+    per_call = _budget_for_purpose("synth") or 512
+
+    _emit_event("tool_start", tool="critique",
+                providers=[p.name for p in selected],
+                session_id=session.get("session_id") if session else None)
+    _emit_progress(
+        f"critique: {len(selected)} panelist(s) listing weaknesses",
+        tool="critique", providers=[p.name for p in selected],
+    )
+
+    # Carry the progress token across worker threads (same pattern as
+    # _ask_many_parallel / audit coalesce).
+    parent_token = _progress_token()
+    parent_wall  = getattr(_PROGRESS_CTX, "wall_start", None)
+    parent_cpu   = getattr(_PROGRESS_CTX, "cpu_start", None)
+
+    def _critique_one(p: Provider) -> tuple[Provider, dict | None, dict]:
+        if parent_token is not None:
+            _progress_set(parent_token, parent_wall, parent_cpu)
+        try:
+            obj, raw_ans, _errs = _request_structured(
+                p, msgs, _critique_response_schema(),
+                max_tokens=per_call, deadline=deadline, max_retries=1,
+                purpose="synth",
+            )
+            return p, obj, raw_ans
+        finally:
+            if parent_token is not None:
+                _progress_clear()
+
+    if len(selected) == 1:
+        results = [_critique_one(selected[0])]
+    else:
+        with ThreadPoolExecutor(max_workers=len(selected)) as ex:
+            results = list(ex.map(_critique_one, selected))
+
+    per_provider: list[dict] = []
+    merged: list[dict] = []
+    answers_collected: list[dict] = []
+    for (p, obj, raw_ans) in results:
+        if raw_ans:
+            answers_collected.append(raw_ans)
+        if not isinstance(obj, dict) or not isinstance(obj.get("weaknesses"), list):
+            per_provider.append({
+                "provider": p.name, "model": p.model,
+                "status":   "parse_error",
+                "weaknesses": [],
+            })
+            continue
+        provider_weaknesses: list[dict] = []
+        for i, w in enumerate(obj["weaknesses"][:max_per], start=1):
+            if not isinstance(w, dict) or not w.get("weakness"):
+                continue
+            severity = str(w.get("severity", "med")).lower()
+            severity = _SEVERITY_ALIASES.get(severity, "med")
+            entry = {
+                "id":          w.get("id") or f"{p.name}.w{i}",
+                "weakness":    str(w["weakness"]),
+                "why_matters": str(w.get("why_matters", "")),
+                "severity":    severity,
+                "provider":    p.name,
+            }
+            provider_weaknesses.append(entry)
+            merged.append(entry)
+        per_provider.append({
+            "provider":   p.name, "model": p.model,
+            "status":     "ok",
+            "weaknesses": provider_weaknesses,
+        })
+
+    # Merged list ordered by severity (high first), then by provider.
+    _SEV_ORDER = {"high": 0, "med": 1, "low": 2}
+    merged.sort(key=lambda w: (_SEV_ORDER.get(w["severity"], 1), w["provider"]))
+
+    _session_record(session, answers_collected, call_started, cpu_started)
+    _session_save(session)
+    log_usage(session.get("session_id") if session else args.get("session_id"),
+              "critique", answers_collected)
+
+    result = {
+        "tool":              "critique",
+        "question":          question,
+        "providers":         [p.name for p in selected],
+        "per_provider":      per_provider,
+        "weaknesses":        merged,
+        "high_severity_count": sum(1 for w in merged if w["severity"] == "high"),
+        "budget":            _budget_summary(call_started, deadline, answers_collected, cpu_started),
+    }
+    _attach_usage_block(result, answers_collected,
+                        session_id=session.get("session_id") if session else args.get("session_id"),
+                        tool_name="critique")
+    if session:
+        result["session"] = session
+    if unknown:
+        result["skipped_unknown_providers"] = unknown
+    if blocked:
+        result["blocked_by_allowlist"] = blocked
+    _emit_progress(
+        f"critique: done ({len(merged)} weakness(es); "
+        f"{result['high_severity_count']} high; "
+        f"${result['budget']['total_cost_usd']:.4f})",
+        tool="critique", weaknesses_total=len(merged),
+        high_severity=result["high_severity_count"],
+        cost_usd=result["budget"]["total_cost_usd"],
+    )
+    _emit_event("tool_end", tool="critique",
+                weaknesses=len(merged),
+                high_severity=result["high_severity_count"],
+                cost_usd=result["budget"]["total_cost_usd"])
+    return result
+
+
 def _latest_transcript_for_session(session_id: str) -> str | None:
     """Find the most recent transcript JSON whose `session.session_id` matches.
     Best-effort, returns None on failure."""
@@ -6598,6 +7028,8 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "pick":           tool_pick,
     "scoreboard":     tool_scoreboard,
     "recommend_panel": tool_recommend_panel,
+    "explain":         tool_explain,
+    "critique":        tool_critique,
     "orchestrate":    tool_orchestrate,
     "audit":          tool_audit,
     "create":         tool_create,

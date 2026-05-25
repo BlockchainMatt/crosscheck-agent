@@ -1036,6 +1036,90 @@
         "required": ["tool", "recommended"]
       }
     },
+    "explain": {
+      "description": "Replay a session as a navigable tree with cost / latency / token annotations per tool call and per provider call. Reads usage_log (the per-call ledger) and any persisted transcripts for the session. Returns both a structured `tree`-like envelope (programmatic) and a pre-rendered ASCII `text` (human). Pairs with `scoreboard` and `recommend_panel` to let an operator see what happened in a session at a glance.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id":      { "type": "string" },
+          "include_text":    { "type": "boolean", "default": true,
+                                "description": "When false, omit the pre-rendered ASCII tree (`text` field) and only return the structured fields." },
+          "max_transcripts": { "type": "integer", "minimum": 1, "default": 50,
+                                "description": "Cap on transcripts to walk (in case the session is very long)." }
+        },
+        "required": ["session_id"]
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "tool":        { "const": "explain" },
+          "session_id":  { "type": "string" },
+          "totals":      { "type": "object" },
+          "by_purpose":  { "type": "object" },
+          "by_provider": { "type": "object" },
+          "rows":        { "type": "array", "items": { "type": "object" } },
+          "transcripts": { "type": "array", "items": { "type": "object" } },
+          "text":        { "type": "string" }
+        },
+        "required": ["tool", "session_id", "totals"]
+      }
+    },
+    "critique": {
+      "description": "Have each panelist list the top weaknesses of a proposed answer / plan / code, with severity tags (low | med | high). Front-loads dissent the way a pre-mortem does — particularly useful BEFORE running `audit` on a final deliverable. Returns per-provider weakness lists plus a merged list ordered by severity, and surfaces a `high_severity_count` for quick triage.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "proposal":         { "type": "string", "description": "The text being critiqued (the answer / plan / code / draft)." },
+          "question":         { "type": "string", "description": "Optional: the original question or decision the proposal answers; gives the panelists context." },
+          "providers":        { "$ref": "#/$defs/ProviderArrayArg" },
+          "max_per_provider": { "type": "integer", "minimum": 1, "maximum": 5, "default": 3 },
+          "session_id":       { "type": "string" },
+          "untrusted_input":  { "type": "boolean", "default": false }
+        },
+        "required": ["proposal"]
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "tool":               { "const": "critique" },
+          "question":           { "type": "string" },
+          "providers":          { "type": "array", "items": { "type": "string" } },
+          "per_provider": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider":   { "type": "string" },
+                "model":      { "type": "string" },
+                "status":     { "type": "string", "enum": ["ok", "parse_error"] },
+                "weaknesses": { "type": "array", "items": { "type": "object" } }
+              },
+              "required": ["provider", "status"]
+            }
+          },
+          "weaknesses": {
+            "type": "array",
+            "description": "Flat list of all weaknesses, sorted by severity (high first), then provider.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id":          { "type": "string" },
+                "weakness":    { "type": "string" },
+                "why_matters": { "type": "string" },
+                "severity":    { "type": "string", "enum": ["low", "med", "high"] },
+                "provider":    { "type": "string" }
+              },
+              "required": ["weakness", "severity"]
+            }
+          },
+          "high_severity_count": { "type": "integer", "minimum": 0 },
+          "budget":              { "$ref": "#/$defs/BudgetSummary" }
+        },
+        "required": ["tool", "per_provider", "weaknesses"]
+      }
+    },
     "scoreboard": {
       "description": "Read-only snapshot of accumulated provider performance and recent activity. Surfaces the per-repo win-rate that triangulate uses for weights, plus delegation counters and totals so a UI can render a 'who's winning here' panel.",
       "input": {
