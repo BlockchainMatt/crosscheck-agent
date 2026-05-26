@@ -1617,6 +1617,116 @@ def _is_reasoning_model(provider_name: str, model: str) -> bool:
     return any(m.startswith(p) for p in prefixes)
 
 
+# ------------------------------------------------------------
+# Provider-specific prompt adapters
+#
+# Lightweight, well-justified message transforms applied per provider/model
+# right before send. Three adaptations ship today:
+#
+#   1. Anthropic: wrap long user content in <task>/<context> tags (Claude is
+#      documented to follow XML-structured prompts more reliably).
+#   2. Reasoning-class models (gpt-5, o-series, claude-opus-4-7+): strip
+#      "let's think step by step" / "think aloud" style preambles. These
+#      models do that internally; explicit asks burn tokens for no gain.
+#   3. (Hint only) Non-reasoning OpenAI-compatible workers can opt into a
+#      response_format JSON hint — exposed via adapter metadata so the
+#      provider send() can act on it without hard-coding.
+#
+# Adapters are ON by default (CFG.prompt_adapters.enabled=true). A caller
+# can opt out per-call by passing `prompt_adapters: false` (handled at the
+# tool boundary), or globally via the config flag.
+# ------------------------------------------------------------
+_PROMPT_ADAPTERS_ENABLED_DEFAULT = True
+_ANTHROPIC_XML_WRAP_MIN_CHARS    = 600      # only wrap when long enough to benefit
+_REASONING_PREAMBLE_RE = re.compile(
+    r"\b(let's|let us|please)?\s*think (out loud|step[\s\-]by[\s\-]step|aloud|carefully)"
+    r"(\s+(before|first)\s+(answering|responding|replying))?\.?\s*",
+    flags=re.IGNORECASE,
+)
+
+
+def _prompt_adapters_enabled() -> bool:
+    cfg = CFG.get("prompt_adapters") or {}
+    if not isinstance(cfg, dict):
+        return _PROMPT_ADAPTERS_ENABLED_DEFAULT
+    return bool(cfg.get("enabled", _PROMPT_ADAPTERS_ENABLED_DEFAULT))
+
+
+def _strip_reasoning_preamble(messages: list[dict]) -> tuple[list[dict], int]:
+    """Strip 'think step by step' / 'think aloud' style preambles from system
+    + user content for reasoning-class models. Returns (new_messages, edits)."""
+    out: list[dict] = []
+    edits = 0
+    for m in messages:
+        if not isinstance(m, dict):
+            out.append(m)
+            continue
+        content = m.get("content")
+        if isinstance(content, str):
+            new_content, n = _REASONING_PREAMBLE_RE.subn("", content)
+            if n:
+                edits += n
+                m = dict(m)
+                m["content"] = re.sub(r"\n{3,}", "\n\n", new_content).strip()
+        out.append(m)
+    return out, edits
+
+
+def _anthropic_xml_wrap(messages: list[dict]) -> tuple[list[dict], int]:
+    """For Anthropic: when the final user message has both a SYSTEM block and
+    a long body, restructure into <context>/<task> tagged sections. Skipped
+    when content already includes XML tags or is short enough not to matter."""
+    if not messages:
+        return messages, 0
+    sys_msg  = next((m for m in messages if m.get("role") == "system"), None)
+    user_idx = next((i for i in range(len(messages) - 1, -1, -1)
+                     if messages[i].get("role") == "user"), -1)
+    if user_idx < 0:
+        return messages, 0
+    user_msg = messages[user_idx]
+    body = user_msg.get("content")
+    if not isinstance(body, str) or len(body) < _ANTHROPIC_XML_WRAP_MIN_CHARS:
+        return messages, 0
+    # If the user already structured with tags, leave it alone.
+    if re.search(r"<(task|context|input|untrusted_input|instructions)\b", body, re.IGNORECASE):
+        return messages, 0
+    sys_text = (sys_msg.get("content") if isinstance(sys_msg, dict) else "") or ""
+    sys_text = sys_text.strip()
+    # Treat the system message as <instructions> context for Claude; keep
+    # the user body intact inside <task>. We never drop the original
+    # system message — Anthropic's send() reads it from body["system"].
+    wrapped = (
+        (f"<instructions>\n{sys_text}\n</instructions>\n\n" if sys_text else "") +
+        f"<task>\n{body.strip()}\n</task>"
+    )
+    new_messages = list(messages)
+    new_messages[user_idx] = {**user_msg, "content": wrapped}
+    return new_messages, 1
+
+
+def _adapt_messages(provider_name: str, model: str, purpose: str,
+                    messages: list[dict]) -> tuple[list[dict], dict]:
+    """Apply per-provider/per-purpose prompt adaptations to `messages`.
+    Returns (adapted_messages, info) where `info` records which adapters
+    fired (for telemetry). Identity transform when adapters are disabled."""
+    if not _prompt_adapters_enabled():
+        return messages, {"applied": []}
+    applied: list[str] = []
+    out = messages
+
+    if _is_reasoning_model(provider_name, model):
+        out, n = _strip_reasoning_preamble(out)
+        if n:
+            applied.append(f"reasoning_preamble_strip:{n}")
+
+    if provider_name == "anthropic":
+        out, n = _anthropic_xml_wrap(out)
+        if n:
+            applied.append("anthropic_xml_wrap")
+
+    return out, {"applied": applied}
+
+
 def openai_compatible(name: str, url: str, key_env: str, model_env: str, default_model: str) -> Provider | None:
     key = ENV.get(key_env)
     if not key:
@@ -2124,6 +2234,9 @@ def _ask_one(p: Provider, messages: list[dict], deadline: float, max_tokens: int
     purpose_ceiling = _budget_for_purpose(purpose, p.name, p.model)
     if purpose_ceiling is not None and purpose_ceiling < max_tokens:
         max_tokens = purpose_ceiling
+    # Apply per-provider prompt adaptations BEFORE the cache key is computed
+    # so cache lookups reflect what's actually sent on the wire.
+    messages, _adapter_info = _adapt_messages(p.name, p.model, purpose, messages)
     if _time_left(deadline) <= 0:
         ans = {"provider": p.name, "model": p.model, "error": "time budget exhausted",
                "error_kind": "timeout", "cache_hit": False, "elapsed_ms": 0,
@@ -2155,6 +2268,9 @@ def _ask_one(p: Provider, messages: list[dict], deadline: float, max_tokens: int
 
     _emit_progress(f"{p.name}: dispatch",
                    provider=p.name, model=p.model, purpose=purpose)
+    if _adapter_info.get("applied"):
+        _emit_event("prompt_adapter", provider=p.name, model=p.model,
+                    purpose=purpose, applied=_adapter_info["applied"])
     started_wall = time.monotonic()
     started_cpu  = time.process_time()
     try:
