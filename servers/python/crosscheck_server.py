@@ -2818,19 +2818,40 @@ def _wrap_tool_result(name: str, content: str) -> str:
     )
 
 
-def _worker_tools_refusal(name: str, reason: str, hint: str = "") -> str:
+def _worker_tools_refusal(name: str, reason: str, hint: str = "",
+                          *, schema_error: str | None = None) -> str:
     """Structured refusal payload — re-prompted to the worker as a tool_result
-    so it can incorporate the failure into its next emission."""
-    payload = {"refused": True, "tool": name, "reason": reason}
+    so it can incorporate the failure into its next emission. When the
+    refusal stems from gateway-level schema validation, `schema_error`
+    carries the underlying validator message so the worker can correct
+    the args on the next hop."""
+    payload: dict = {"refused": True, "tool": name, "reason": reason}
     if hint:
         payload["operator_hint"] = hint
+    if schema_error:
+        payload["schema_error"] = schema_error
     return _wrap_tool_result(name or "<unknown>", json.dumps(payload))
+
+
+def _worker_tool_input_schema(name: str) -> dict:
+    """Look up the JSON-schema for the named inner tool's input. Returns an
+    empty dict (no validation) when TOOLS hasn't been loaded yet — defensive,
+    `TOOLS` is initialised at module-load before any tool call can happen."""
+    try:
+        return (TOOLS.get(name) or {}).get("inputSchema") or {}
+    except NameError:
+        return {}
 
 
 def _worker_tools_dispatch(call: dict, *, session_id: str | None) -> str:
     """Execute one inner tool call. Returns the wrapped <tool_result> string
     ready for re-prompt. Refusals are also wrapped so the worker sees a
-    coherent shape regardless of outcome."""
+    coherent shape regardless of outcome.
+
+    Validation order: allowlist check, then input-schema check, then
+    session_id injection, then inner-tool dispatch. The schema check at
+    the gateway gives the worker a clean structured refusal instead of
+    whatever ad-hoc error envelope the inner tool happens to produce."""
     name = str(call.get("name", "")).strip()
     args = call.get("args") if isinstance(call.get("args"), dict) else {}
     if name not in _WORKER_TOOL_ALLOWLIST:
@@ -2838,6 +2859,26 @@ def _worker_tools_dispatch(call: dict, *, session_id: str | None) -> str:
             name, f"tool {name!r} is not callable from inside a worker",
             hint=f"Allowed inner tools: {sorted(_WORKER_TOOL_ALLOWLIST)}",
         )
+
+    # Pre-validate args against the inner tool's input schema BEFORE we
+    # touch the tool itself. session_id is injected later (after this
+    # check) and is always optional on the inner tools, so a missing
+    # session_id never trips the validator here.
+    schema = _worker_tool_input_schema(name)
+    if schema:
+        validate_err = _validate_input(name, schema, args)
+        if validate_err:
+            _emit_event("worker_inner_validation_fail",
+                        tool=name, session_id=session_id,
+                        args_keys=sorted(args.keys()) if isinstance(args, dict) else [],
+                        schema_error=validate_err)
+            return _worker_tools_refusal(
+                name,
+                f"input args failed schema validation for tool {name!r}",
+                hint=("Inspect the tool's inputSchema and fix the args; "
+                      "required fields, types, and enums must match."),
+                schema_error=validate_err,
+            )
 
     # Ensure inner calls roll up under the same session_id (for cost,
     # egress budget, and breakers).
