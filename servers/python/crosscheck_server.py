@@ -2708,6 +2708,57 @@ _WORKER_TOOL_HOP_BUDGET = 2
 _TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>",
                             flags=re.DOTALL | re.IGNORECASE)
 _WORKER_TOOLS_MAX_RESULT_CHARS = 4000   # per-result truncation before re-prompt
+_WORKER_TOOL_COST_CAP_MODES = ("warn", "enforce", "off")
+
+
+def _worker_tool_cost_cap_defaults(caller_cap_usd: Any,
+                                   caller_mode: Any
+                                   ) -> tuple[float | None, str]:
+    """Resolve per-call kwargs against CFG defaults. Returns
+    (cap_usd_or_None, mode_in_{warn,enforce,off}).
+
+    cap_usd_or_None == None means the cap is disabled entirely — no
+    tracking, no warnings, no enforcement. Mode is only meaningful
+    when a cap is set."""
+    cfg = (CFG.get("worker_tools") or {}) if isinstance(CFG, dict) else {}
+    cap = caller_cap_usd if caller_cap_usd is not None else cfg.get("cost_cap_usd")
+    try:
+        cap = float(cap) if cap is not None else None
+    except (TypeError, ValueError):
+        cap = None
+    if cap is not None and cap <= 0:
+        cap = None
+    mode = caller_mode if isinstance(caller_mode, str) and caller_mode \
+           else cfg.get("cost_cap_mode") or "warn"
+    if mode not in _WORKER_TOOL_COST_CAP_MODES:
+        mode = "warn"
+    return cap, mode
+
+
+def _worker_tool_cost_observed(aggregated: dict) -> float:
+    """Pull the cumulative cost out of the merged answer's usage block."""
+    if not isinstance(aggregated, dict):
+        return 0.0
+    usage = aggregated.get("usage") or {}
+    try:
+        return float(usage.get("cost_usd", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _worker_tool_cost_cap_refusal(observed: float, cap: float) -> str:
+    """`enforce`-mode refusal payload wrapped as a tool_result so the
+    worker sees a consistent envelope shape."""
+    payload = {
+        "refused":        True,
+        "tool":           "<cost_cap>",
+        "reason":         (f"per-turn cost cap exceeded "
+                            f"(observed=${observed:.4f}, cap=${cap:.4f})"),
+        "operator_hint":  ("The worker has used up its inner-tool cost "
+                            "budget for this turn. Emit your final answer "
+                            "now using whatever information you already have."),
+    }
+    return _wrap_tool_result("<cost_cap>", json.dumps(payload))
 
 
 def _worker_tools_system_hint(worker_tools: list[str]) -> str:
@@ -2866,13 +2917,18 @@ def _merge_answer_usage(base: dict, extra: dict) -> dict:
 def _ask_one_with_tools(p: Provider, messages: list[dict], deadline: float,
                         max_tokens: int, purpose: str,
                         *, worker_tools: list[str],
-                        session_id: str | None) -> dict:
+                        session_id: str | None,
+                        cost_cap_usd: float | None = None,
+                        cost_cap_mode: str | None = None) -> dict:
     """`_ask_one` wrapped in a bounded tool-call loop. Returns the same
     answer shape, plus an `inner_tool_calls` field listing each inner
-    call's name + status."""
+    call's name + status. When a `cost_cap_usd` is set, attaches a
+    `cost_cap` block summarising the per-turn cost-cap state."""
     allowed = [t for t in (worker_tools or []) if t in _WORKER_TOOL_ALLOWLIST]
     if not allowed:
         return _ask_one(p, messages, deadline, max_tokens, purpose=purpose)
+
+    cap_usd, cap_mode = _worker_tool_cost_cap_defaults(cost_cap_usd, cost_cap_mode)
 
     # Inject the tool-use system hint into the FIRST system message (or
     # add one) so the worker knows the envelope syntax.
@@ -2888,6 +2944,33 @@ def _ask_one_with_tools(p: Provider, messages: list[dict], deadline: float,
     aggregated: dict = {}
     hops = 0
     last_answer: dict = {}
+    cost_cap_warning_emitted = False
+    cost_cap_blocked = False
+
+    def _check_cost_cap() -> bool:
+        """Returns True if the cap is set, mode is enforce, AND observed > cap.
+        Side-effect: emits the warn event at most once for warn-mode."""
+        nonlocal cost_cap_warning_emitted
+        if cap_usd is None or cap_mode == "off":
+            return False
+        observed = _worker_tool_cost_observed(aggregated)
+        if observed <= cap_usd:
+            return False
+        if not cost_cap_warning_emitted:
+            cost_cap_warning_emitted = True
+            _emit_event("worker_tool_cost_warning",
+                        provider=p.name, model=p.model, purpose=purpose,
+                        observed_usd=round(observed, 6),
+                        cap_usd=round(cap_usd, 6),
+                        mode=cap_mode,
+                        session_id=session_id)
+            _emit_progress(
+                f"{p.name}: worker_tool cost cap exceeded "
+                f"(observed=${observed:.4f}, cap=${cap_usd:.4f}, mode={cap_mode})",
+                provider=p.name, model=p.model, purpose=purpose,
+                observed_usd=observed, cap_usd=cap_usd, mode=cap_mode,
+            )
+        return cap_mode == "enforce"
 
     while True:
         ans = _ask_one(p, msgs, deadline, max_tokens, purpose=purpose)
@@ -2917,6 +3000,27 @@ def _ask_one_with_tools(p: Provider, messages: list[dict], deadline: float,
             ]
             hops += 1
             continue
+
+        # Cost-cap check BEFORE dispatching the call so an `enforce`-mode
+        # refusal happens BEFORE the next inner call (and before the worker
+        # spends more LLM tokens replying to it).
+        if _check_cost_cap():
+            cost_cap_blocked = True
+            inner_calls.append({"hop": hops + 1,
+                                 "name": call.get("name"),
+                                 "status": "cost_cap_exceeded"})
+            msgs = list(msgs) + [
+                {"role": "assistant", "content": ans["response"]},
+                {"role": "user",
+                 "content": _worker_tool_cost_cap_refusal(
+                     _worker_tool_cost_observed(aggregated), cap_usd)},
+            ]
+            # One final emission round so the worker sees the refusal and
+            # can produce an answer with what it already has.
+            ans2 = _ask_one(p, msgs, deadline, max_tokens, purpose=purpose)
+            aggregated = _merge_answer_usage(aggregated, ans2)
+            last_answer = ans2
+            break
 
         # Hop budget check BEFORE executing the call so a 3rd request gets
         # a refusal it can incorporate (not an executed call).
@@ -2958,9 +3062,23 @@ def _ask_one_with_tools(p: Provider, messages: list[dict], deadline: float,
             {"role": "user",      "content": result_block},
         ]
         hops += 1
+        # Re-check after the call settles so warn-mode still emits when
+        # the LLM re-prompt pushed us over the cap.
+        _check_cost_cap()
 
     if inner_calls:
         aggregated["inner_tool_calls"] = inner_calls
+    # Mode "off" suppresses the cost_cap block entirely — the operator
+    # asked to ignore the cap, so don't surface it in the response.
+    if cap_usd is not None and cap_mode != "off":
+        observed = _worker_tool_cost_observed(aggregated)
+        aggregated["cost_cap"] = {
+            "cap_usd":      round(cap_usd, 6),
+            "observed_usd": round(observed, 6),
+            "mode":         cap_mode,
+            "exceeded":     observed > cap_usd,
+            "blocked":      cost_cap_blocked,
+        }
     return aggregated
 
 
@@ -2991,14 +3109,18 @@ def _budget_summary(call_started: float, deadline: float, answers: list[dict],
 def _ask_many_parallel(providers: list[Provider], messages: list[dict], deadline: float,
                        max_tokens: int, purpose: str = "worker",
                        *, worker_tools: list[str] | None = None,
-                       session_id: str | None = None) -> list[dict]:
+                       session_id: str | None = None,
+                       cost_cap_usd: float | None = None,
+                       cost_cap_mode: str | None = None) -> list[dict]:
     # When worker_tools is provided + non-empty, each worker runs in the
     # bounded tool-call loop; otherwise the standard single-shot dispatch.
     def _dispatch_one(provider: Provider) -> dict:
         if worker_tools:
             return _ask_one_with_tools(provider, messages, deadline, max_tokens,
                                         purpose, worker_tools=worker_tools,
-                                        session_id=session_id)
+                                        session_id=session_id,
+                                        cost_cap_usd=cost_cap_usd,
+                                        cost_cap_mode=cost_cap_mode)
         return _ask_one(provider, messages, deadline, max_tokens, purpose)
 
     if len(providers) <= 1:
@@ -3404,6 +3526,8 @@ def tool_confer(args: dict) -> dict:
     rejected_worker_tools = [t for t in requested_worker_tools
                               if not (isinstance(t, str) and t in _WORKER_TOOL_ALLOWLIST)]
     inner_session_id = session.get("session_id") if session else args.get("session_id")
+    cost_cap_usd_arg  = args.get("worker_tool_cost_cap_usd")
+    cost_cap_mode_arg = args.get("worker_tool_cost_cap_mode")
 
     if early_stop and len(selected) >= 3:
         # Phase 1: dispatch the first 2 panelists; check agreement; skip the
@@ -3411,7 +3535,9 @@ def tool_confer(args: dict) -> dict:
         phase1 = _ask_many_parallel(selected[:2], messages, deadline, per_call,
                                     purpose="confer",
                                     worker_tools=accepted_worker_tools,
-                                    session_id=inner_session_id)
+                                    session_id=inner_session_id,
+                                    cost_cap_usd=cost_cap_usd_arg,
+                                    cost_cap_mode=cost_cap_mode_arg)
         phase1_clean = [a for a in phase1
                         if isinstance(a, dict) and not a.get("error")]
         # If a breaker would trip once phase-1's cost is rolled in, skip the
@@ -3447,13 +3573,17 @@ def tool_confer(args: dict) -> dict:
             phase2 = _ask_many_parallel(selected[2:], messages, deadline, per_call,
                                         purpose="confer",
                                         worker_tools=accepted_worker_tools,
-                                        session_id=inner_session_id)
+                                        session_id=inner_session_id,
+                                        cost_cap_usd=cost_cap_usd_arg,
+                                        cost_cap_mode=cost_cap_mode_arg)
             answers = phase1 + phase2
     else:
         answers = _ask_many_parallel(selected, messages, deadline, per_call,
                                      purpose="confer",
                                      worker_tools=accepted_worker_tools,
-                                     session_id=inner_session_id)
+                                     session_id=inner_session_id,
+                                     cost_cap_usd=cost_cap_usd_arg,
+                                     cost_cap_mode=cost_cap_mode_arg)
 
     # Scan for canary leaks BEFORE downstream derived structures consume
     # the answers. Any provider that echoed the nonce had indirect injection
@@ -3497,9 +3627,40 @@ def tool_confer(args: dict) -> dict:
     if canary_leaks:
         result["canary_leaks"] = canary_leaks
     if requested_worker_tools:
-        result["worker_tools"] = {"accepted": accepted_worker_tools,
-                                   "rejected": rejected_worker_tools,
-                                   "hop_budget": _WORKER_TOOL_HOP_BUDGET}
+        wt_meta: dict = {"accepted": accepted_worker_tools,
+                          "rejected": rejected_worker_tools,
+                          "hop_budget": _WORKER_TOOL_HOP_BUDGET}
+        # Aggregate per-worker cost-cap state — anyone exceeded triggers
+        # the agent-facing warning even if only some panelists ran over.
+        cost_caps = [a.get("cost_cap") for a in answers
+                      if isinstance(a, dict) and isinstance(a.get("cost_cap"), dict)]
+        if cost_caps:
+            any_exceeded = any(c.get("exceeded") for c in cost_caps)
+            any_blocked  = any(c.get("blocked")  for c in cost_caps)
+            wt_meta["cost_cap"] = {
+                "cap_usd":      cost_caps[0]["cap_usd"],
+                "mode":         cost_caps[0]["mode"],
+                "exceeded_any": bool(any_exceeded),
+                "blocked_any":  bool(any_blocked),
+                "per_provider": [
+                    {"provider": a.get("provider"),
+                     **(a.get("cost_cap") or {})}
+                    for a in answers
+                    if isinstance(a, dict) and isinstance(a.get("cost_cap"), dict)
+                ],
+            }
+            if any_exceeded and not any_blocked:
+                # Operator-facing prompt: this is the agent's signal to
+                # ask the user how to proceed (enforce next time, allow
+                # override, ignore).
+                wt_meta["cost_cap"]["operator_prompt"] = (
+                    "Worker tool-use cost exceeded the soft cap on at "
+                    "least one panelist. Decide before the next call: "
+                    "enforce (refuse further inner calls), warn-only "
+                    "(continue, override allowed), or ignore (disable "
+                    "the cap)."
+                )
+        result["worker_tools"] = wt_meta
     if early_stop:
         result["early_stopped"]      = early_stopped
         result["skipped_providers"]  = skipped_providers
@@ -4101,6 +4262,8 @@ def tool_coordinate(args: dict) -> dict:
     rejected_worker_tools = [t for t in requested_worker_tools
                               if not (isinstance(t, str) and t in _WORKER_TOOL_ALLOWLIST)]
     inner_session_id = session.get("session_id") if session else args.get("session_id")
+    cost_cap_usd_arg  = args.get("worker_tool_cost_cap_usd")
+    cost_cap_mode_arg = args.get("worker_tool_cost_cap_mode")
 
     # ---- Step 1: Proposer ----------------------------------------------------
     prop_system = (
@@ -4117,6 +4280,8 @@ def tool_coordinate(args: dict) -> dict:
         purpose="worker",
         worker_tools=accepted_worker_tools,
         session_id=inner_session_id,
+        cost_cap_usd=cost_cap_usd_arg,
+        cost_cap_mode=cost_cap_mode_arg,
     )
     proposal_render = _format_role_turn("proposer", proposal_obj,
                                         fallback_text=proposal_ans.get("response", "") if proposal_ans else "")
@@ -4137,6 +4302,8 @@ def tool_coordinate(args: dict) -> dict:
             purpose="worker",
             worker_tools=accepted_worker_tools,
             session_id=inner_session_id,
+            cost_cap_usd=cost_cap_usd_arg,
+            cost_cap_mode=cost_cap_mode_arg,
         )
         return p, obj, ans, errs
 
@@ -4295,12 +4462,39 @@ def tool_coordinate(args: dict) -> dict:
     if canary_leaks:
         result["canary_leaks"] = canary_leaks
     if requested_worker_tools:
-        result["worker_tools"] = {
+        wt_meta: dict = {
             "accepted":   accepted_worker_tools,
             "rejected":   rejected_worker_tools,
             "hop_budget": _WORKER_TOOL_HOP_BUDGET,
             "applies_to": ["proposer", "critic"],   # synth is excluded
         }
+        # Pull cost_cap state off the proposer + critic answers (synth is
+        # excluded from worker_tools so it has no cost_cap block).
+        role_caps = []
+        if isinstance(proposal_ans, dict) and isinstance(proposal_ans.get("cost_cap"), dict):
+            role_caps.append(("proposer", proposal_ans["cost_cap"]))
+        for ans in critique_answers:
+            if isinstance(ans, dict) and isinstance(ans.get("cost_cap"), dict):
+                role_caps.append(("critic", ans["cost_cap"]))
+        if role_caps:
+            any_exceeded = any(c.get("exceeded") for _, c in role_caps)
+            any_blocked  = any(c.get("blocked")  for _, c in role_caps)
+            wt_meta["cost_cap"] = {
+                "cap_usd":      role_caps[0][1]["cap_usd"],
+                "mode":         role_caps[0][1]["mode"],
+                "exceeded_any": bool(any_exceeded),
+                "blocked_any":  bool(any_blocked),
+                "per_role":     [{"role": role, **cap} for role, cap in role_caps],
+            }
+            if any_exceeded and not any_blocked:
+                wt_meta["cost_cap"]["operator_prompt"] = (
+                    "Worker tool-use cost exceeded the soft cap on at "
+                    "least one role. Decide before the next call: "
+                    "enforce (refuse further inner calls), warn-only "
+                    "(continue, override allowed), or ignore (disable "
+                    "the cap)."
+                )
+        result["worker_tools"] = wt_meta
     _attach_usage_block(result, all_answers,
                         session_id=session.get("session_id") if session else None,
                         tool_name="coordinate")
@@ -9444,6 +9638,8 @@ def _request_structured(p: "Provider", base_messages: list[dict], schema: dict,
                         *,
                         worker_tools: list[str] | None = None,
                         session_id: str | None = None,
+                        cost_cap_usd: float | None = None,
+                        cost_cap_mode: str | None = None,
                         ) -> tuple[Any | None, dict, list[str]]:
     """Ask provider for JSON matching `schema`. Validate; retry once on failure
     with the errors fed back in the prompt. Returns (parsed_or_None, raw_answer, errors).
@@ -9460,6 +9656,7 @@ def _request_structured(p: "Provider", base_messages: list[dict], schema: dict,
             p, base_messages, schema,
             max_tokens=max_tokens, deadline=deadline, max_retries=max_retries,
             purpose=purpose, worker_tools=allowed_tools, session_id=session_id,
+            cost_cap_usd=cost_cap_usd, cost_cap_mode=cost_cap_mode,
         )
     sys_idx = next((i for i, m in enumerate(base_messages) if m.get("role") == "system"), None)
     schema_text = json.dumps(schema, separators=(",", ":"))
@@ -9503,11 +9700,14 @@ def _request_structured_with_tools(p: "Provider", base_messages: list[dict],
                                    max_retries: int, purpose: str,
                                    worker_tools: list[str],
                                    session_id: str | None,
+                                   cost_cap_usd: float | None = None,
+                                   cost_cap_mode: str | None = None,
                                    ) -> tuple[Any | None, dict, list[str]]:
     """Tool-call-aware variant of `_request_structured`. Interleaves the
     `_ask_one_with_tools` hop loop with schema-validated emission: tool
     calls (counted against the hop budget) come first; the final emission
-    is parsed + validated; one retry on validation failure."""
+    is parsed + validated; one retry on validation failure. The per-turn
+    cost cap is honored identically to `_ask_one_with_tools`."""
     sys_idx = next((i for i, m in enumerate(base_messages) if m.get("role") == "system"), None)
     schema_text = json.dumps(schema, separators=(",", ":"))
     instr = (
@@ -9528,12 +9728,54 @@ def _request_structured_with_tools(p: "Provider", base_messages: list[dict],
     else:
         msgs.insert(0, {"role": "system", "content": (instr + hint).strip()})
 
+    cap_usd, cap_mode = _worker_tool_cost_cap_defaults(cost_cap_usd, cost_cap_mode)
+
     aggregated: dict = {}
     inner_calls: list[dict] = []
     hops = 0
     attempt = 0
     last_answer: dict = {}
     last_errs: list[str] = []
+    cost_cap_warning_emitted = False
+    cost_cap_blocked = False
+
+    def _check_cost_cap() -> bool:
+        nonlocal cost_cap_warning_emitted
+        if cap_usd is None or cap_mode == "off":
+            return False
+        observed = _worker_tool_cost_observed(aggregated)
+        if observed <= cap_usd:
+            return False
+        if not cost_cap_warning_emitted:
+            cost_cap_warning_emitted = True
+            _emit_event("worker_tool_cost_warning",
+                        provider=p.name, model=p.model, purpose=purpose,
+                        observed_usd=round(observed, 6),
+                        cap_usd=round(cap_usd, 6),
+                        mode=cap_mode,
+                        session_id=session_id)
+            _emit_progress(
+                f"{p.name}: worker_tool cost cap exceeded "
+                f"(observed=${observed:.4f}, cap=${cap_usd:.4f}, mode={cap_mode})",
+                provider=p.name, model=p.model, purpose=purpose,
+                observed_usd=observed, cap_usd=cap_usd, mode=cap_mode,
+            )
+        return cap_mode == "enforce"
+
+    def _finalize(obj: Any | None, errs: list[str]) -> tuple[Any | None, dict, list[str]]:
+        if inner_calls:
+            aggregated["inner_tool_calls"] = inner_calls
+        # Mode "off" suppresses the cost_cap block entirely.
+        if cap_usd is not None and cap_mode != "off":
+            observed = _worker_tool_cost_observed(aggregated)
+            aggregated["cost_cap"] = {
+                "cap_usd":      round(cap_usd, 6),
+                "observed_usd": round(observed, 6),
+                "mode":         cap_mode,
+                "exceeded":     observed > cap_usd,
+                "blocked":      cost_cap_blocked,
+            }
+        return obj, aggregated, errs
 
     while True:
         ans = _ask_one(p, msgs, deadline, max_tokens, purpose=purpose)
@@ -9541,11 +9783,9 @@ def _request_structured_with_tools(p: "Provider", base_messages: list[dict],
         aggregated = _merge_answer_usage(aggregated, ans) if aggregated else dict(ans)
 
         if "error" in ans or not isinstance(ans.get("response"), str):
-            if inner_calls:
-                aggregated["inner_tool_calls"] = inner_calls
-            return None, aggregated, [
+            return _finalize(None, [
                 f"provider error: {ans.get('error_kind', 'other')}: {ans.get('error', '')}"
-            ]
+            ])
 
         text = ans["response"]
         call, parse_err = _extract_tool_call(text)
@@ -9556,8 +9796,7 @@ def _request_structured_with_tools(p: "Provider", base_messages: list[dict],
                 inner_calls.append({"hop": hops + 1, "name": None,
                                      "status": "parse_error", "error": parse_err})
                 if hops >= _WORKER_TOOL_HOP_BUDGET:
-                    aggregated["inner_tool_calls"] = inner_calls
-                    return None, aggregated, [parse_err or "malformed tool_call"]
+                    return _finalize(None, [parse_err or "malformed tool_call"])
                 msgs = list(msgs) + [
                     {"role": "assistant", "content": text},
                     {"role": "user",
@@ -9568,6 +9807,28 @@ def _request_structured_with_tools(p: "Provider", base_messages: list[dict],
                 ]
                 hops += 1
                 continue
+
+            # Cost-cap check BEFORE hop budget check: an enforce-mode cap
+            # should refuse the call regardless of whether the hop budget
+            # still has room.
+            if _check_cost_cap():
+                cost_cap_blocked = True
+                inner_calls.append({"hop": hops + 1,
+                                     "name": call.get("name"),
+                                     "status": "cost_cap_exceeded"})
+                msgs = list(msgs) + [
+                    {"role": "assistant", "content": text},
+                    {"role": "user",
+                     "content": _worker_tool_cost_cap_refusal(
+                         _worker_tool_cost_observed(aggregated), cap_usd)},
+                ]
+                ans2 = _ask_one(p, msgs, deadline, max_tokens, purpose=purpose)
+                aggregated = _merge_answer_usage(aggregated, ans2)
+                last_answer = ans2
+                text = ans2.get("response", "") if isinstance(ans2, dict) else ""
+                obj = _extract_json(text) if text else None
+                errs = _validate(obj, schema) if obj else ["could not parse JSON from response"]
+                return _finalize(obj if not errs else None, errs)
 
             if hops >= _WORKER_TOOL_HOP_BUDGET:
                 inner_calls.append({"hop": hops + 1,
@@ -9584,14 +9845,10 @@ def _request_structured_with_tools(p: "Provider", base_messages: list[dict],
                 ans2 = _ask_one(p, msgs, deadline, max_tokens, purpose=purpose)
                 aggregated = _merge_answer_usage(aggregated, ans2)
                 last_answer = ans2
-                # Fall through to schema validation on the next iteration's
-                # response by setting `text` and continuing the parse path.
                 text = ans2.get("response", "") if isinstance(ans2, dict) else ""
-                # Don't retry on schema fail; we're already at the limit.
                 obj = _extract_json(text) if text else None
                 errs = _validate(obj, schema) if obj else ["could not parse JSON from response"]
-                aggregated["inner_tool_calls"] = inner_calls
-                return (obj if not errs else None), aggregated, errs
+                return _finalize(obj if not errs else None, errs)
 
             tool_name = call.get("name")
             result_block = _worker_tools_dispatch(call, session_id=session_id)
@@ -9612,6 +9869,9 @@ def _request_structured_with_tools(p: "Provider", base_messages: list[dict],
                 {"role": "user",      "content": result_block},
             ]
             hops += 1
+            # Post-call cap check so warn-mode notices when an LLM
+            # re-prompt itself pushed us over the cap.
+            _check_cost_cap()
             continue
 
         # No tool_call in the response: this is the worker's final emission.
@@ -9622,15 +9882,11 @@ def _request_structured_with_tools(p: "Provider", base_messages: list[dict],
         else:
             errs = _validate(obj, schema)
             if not errs:
-                if inner_calls:
-                    aggregated["inner_tool_calls"] = inner_calls
-                return obj, aggregated, []
+                return _finalize(obj, [])
             last_errs = errs
 
         if attempt >= max_retries:
-            if inner_calls:
-                aggregated["inner_tool_calls"] = inner_calls
-            return None, aggregated, last_errs
+            return _finalize(None, last_errs)
         # One re-prompt with validation feedback.
         msgs = list(msgs) + [
             {"role": "assistant", "content": text},

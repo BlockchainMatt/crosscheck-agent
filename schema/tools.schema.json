@@ -267,7 +267,11 @@
           "inject_session_memory": { "type": "boolean", "default": false,
                                 "description": "When true (and a session_id is set), prepend the session's non-stale `<session_memory>` block (decisions / facts / open_questions) to the user message. Stale entries from a prior failed audit are excluded." },
           "worker_tools": { "type": "array", "items": { "type": "string", "enum": ["fetch", "verify"] },
-                                "description": "Opt-in: enable bounded mid-turn tool use for each worker. Workers may emit `<tool_call>{\"name\":\"TOOL\",\"args\":{...}}</tool_call>` to request the listed tools; results are wrapped as untrusted-input and re-prompted. Hard hop budget = 2 per worker turn. Only `fetch` and `verify` (read-only / deterministic) are callable — recursive ReAct via LLM-spawning tools is explicitly disallowed." }
+                                "description": "Opt-in: enable bounded mid-turn tool use for each worker. Workers may emit `<tool_call>{\"name\":\"TOOL\",\"args\":{...}}</tool_call>` to request the listed tools; results are wrapped as untrusted-input and re-prompted. Hard hop budget = 2 per worker turn. Only `fetch` and `verify` (read-only / deterministic) are callable — recursive ReAct via LLM-spawning tools is explicitly disallowed." },
+          "worker_tool_cost_cap_usd":  { "type": "number", "minimum": 0,
+                                "description": "Optional soft USD cap on each worker's cumulative inner-call cost (LLM re-prompts + inner tool calls) for this turn. 0 / omitted = disabled. Defaults to `CFG.worker_tools.cost_cap_usd` when omitted." },
+          "worker_tool_cost_cap_mode": { "type": "string", "enum": ["warn", "enforce", "off"], "default": "warn",
+                                "description": "Behavior when the cap is crossed. `warn` (default): emit a warning event + a `worker_tools.cost_cap` block on the response and keep running; the calling agent should surface an AskUserQuestion prompt offering enforce / warn-only / ignore for the next call. `enforce`: refuse the next inner tool call when the cap is exceeded (worker gets one final emission round). `off`: no checks." }
         },
         "required": ["question"]
       },
@@ -400,7 +404,11 @@
           "inject_session_memory": { "type": "boolean", "default": false,
                               "description": "When true (and a session_id is set), prepend the session's non-stale `<session_memory>` block to the topic before dispatch. Stale entries (e.g. from a prior failed audit) are excluded." },
           "worker_tools": { "type": "array", "items": { "type": "string", "enum": ["fetch", "verify"] },
-                              "description": "Opt-in: enable bounded mid-turn tool use on the PROPOSER and CRITIC roles (the SYNTHESIZER is purely combinatorial and is intentionally excluded). Workers may emit `<tool_call>{\"name\":\"TOOL\",\"args\":{...}}</tool_call>` BEFORE the final structured emission; tool results are wrapped as untrusted-input and re-prompted. Hard hop budget = 2 per role. Only `fetch` and `verify` are callable — recursive ReAct via LLM-spawning tools is disallowed." }
+                              "description": "Opt-in: enable bounded mid-turn tool use on the PROPOSER and CRITIC roles (the SYNTHESIZER is purely combinatorial and is intentionally excluded). Workers may emit `<tool_call>{\"name\":\"TOOL\",\"args\":{...}}</tool_call>` BEFORE the final structured emission; tool results are wrapped as untrusted-input and re-prompted. Hard hop budget = 2 per role. Only `fetch` and `verify` are callable — recursive ReAct via LLM-spawning tools is disallowed." },
+          "worker_tool_cost_cap_usd":  { "type": "number", "minimum": 0,
+                              "description": "Optional soft USD cap on each proposer/critic role's cumulative inner-call cost for this turn. 0 / omitted = disabled. Defaults to `CFG.worker_tools.cost_cap_usd` when omitted." },
+          "worker_tool_cost_cap_mode": { "type": "string", "enum": ["warn", "enforce", "off"], "default": "warn",
+                              "description": "Behavior when the cap is crossed. `warn` (default): emit a warning event + a `worker_tools.cost_cap` block on the response and keep running; the calling agent should surface an AskUserQuestion prompt offering enforce / warn-only / ignore for the next call. `enforce`: refuse the next inner tool call when the cap is exceeded (worker gets one final emission round). `off`: no checks." }
         },
         "required": ["topic"]
       },
