@@ -265,7 +265,9 @@
           "untrusted_input":  { "type": "boolean", "default": false,
                                 "description": "When true, treat `context` and `question` as untrusted: wrap in tags, neutralize obvious injection phrases, instruct panelists to treat as data only." },
           "inject_session_memory": { "type": "boolean", "default": false,
-                                "description": "When true (and a session_id is set), prepend the session's non-stale `<session_memory>` block (decisions / facts / open_questions) to the user message. Stale entries from a prior failed audit are excluded." }
+                                "description": "When true (and a session_id is set), prepend the session's non-stale `<session_memory>` block (decisions / facts / open_questions) to the user message. Stale entries from a prior failed audit are excluded." },
+          "worker_tools": { "type": "array", "items": { "type": "string", "enum": ["fetch", "verify"] },
+                                "description": "Opt-in: enable bounded mid-turn tool use for each worker. Workers may emit `<tool_call>{\"name\":\"TOOL\",\"args\":{...}}</tool_call>` to request the listed tools; results are wrapped as untrusted-input and re-prompted. Hard hop budget = 2 per worker turn. Only `fetch` and `verify` (read-only / deterministic) are callable — recursive ReAct via LLM-spawning tools is explicitly disallowed." }
         },
         "required": ["question"]
       },
