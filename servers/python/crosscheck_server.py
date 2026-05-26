@@ -4090,6 +4090,18 @@ def tool_coordinate(args: dict) -> dict:
         if mem_block:
             topic_block = f"{mem_block}\n\n{topic_block}"
 
+    # Worker tool-use opt-in: filter to the hard allowlist. Tools are
+    # enabled on the PROPOSER and CRITIC roles only (these benefit from
+    # evidence gathering); the SYNTHESIZER is purely combinatorial and
+    # should not be making external calls of its own.
+    requested_worker_tools = (args.get("worker_tools")
+                              if isinstance(args.get("worker_tools"), list) else [])
+    accepted_worker_tools = [t for t in requested_worker_tools
+                              if isinstance(t, str) and t in _WORKER_TOOL_ALLOWLIST]
+    rejected_worker_tools = [t for t in requested_worker_tools
+                              if not (isinstance(t, str) and t in _WORKER_TOOL_ALLOWLIST)]
+    inner_session_id = session.get("session_id") if session else args.get("session_id")
+
     # ---- Step 1: Proposer ----------------------------------------------------
     prop_system = (
         sys_msg + "\n\nYou are the PROPOSER. Draft an initial position with claims and "
@@ -4103,6 +4115,8 @@ def tool_coordinate(args: dict) -> dict:
         proposer, prop_messages, _role_turn_schema(),
         max_tokens=per_call, deadline=deadline, max_retries=1,
         purpose="worker",
+        worker_tools=accepted_worker_tools,
+        session_id=inner_session_id,
     )
     proposal_render = _format_role_turn("proposer", proposal_obj,
                                         fallback_text=proposal_ans.get("response", "") if proposal_ans else "")
@@ -4121,6 +4135,8 @@ def tool_coordinate(args: dict) -> dict:
             p, msgs, _role_turn_schema(), max_tokens=per_call,
             deadline=deadline, max_retries=1,
             purpose="worker",
+            worker_tools=accepted_worker_tools,
+            session_id=inner_session_id,
         )
         return p, obj, ans, errs
 
@@ -4278,6 +4294,13 @@ def tool_coordinate(args: dict) -> dict:
     }
     if canary_leaks:
         result["canary_leaks"] = canary_leaks
+    if requested_worker_tools:
+        result["worker_tools"] = {
+            "accepted":   accepted_worker_tools,
+            "rejected":   rejected_worker_tools,
+            "hop_budget": _WORKER_TOOL_HOP_BUDGET,
+            "applies_to": ["proposer", "critic"],   # synth is excluded
+        }
     _attach_usage_block(result, all_answers,
                         session_id=session.get("session_id") if session else None,
                         tool_name="coordinate")
@@ -9417,10 +9440,27 @@ def _extract_json(text: str) -> Any | None:
 
 def _request_structured(p: "Provider", base_messages: list[dict], schema: dict,
                         max_tokens: int, deadline: float, max_retries: int = 1,
-                        purpose: str = "worker"
+                        purpose: str = "worker",
+                        *,
+                        worker_tools: list[str] | None = None,
+                        session_id: str | None = None,
                         ) -> tuple[Any | None, dict, list[str]]:
     """Ask provider for JSON matching `schema`. Validate; retry once on failure
-    with the errors fed back in the prompt. Returns (parsed_or_None, raw_answer, errors)."""
+    with the errors fed back in the prompt. Returns (parsed_or_None, raw_answer, errors).
+
+    When `worker_tools` is non-empty, the worker may emit `<tool_call>{...}
+    </tool_call>` envelopes before its final structured emission. Tool
+    calls are interleaved with the structured-output loop: each tool call
+    counts against the per-turn hop budget; once the worker stops emitting
+    tool_call tags, the response is parsed against `schema` (with the
+    standard retry-once-on-validation-failure semantics)."""
+    allowed_tools = [t for t in (worker_tools or []) if t in _WORKER_TOOL_ALLOWLIST]
+    if allowed_tools:
+        return _request_structured_with_tools(
+            p, base_messages, schema,
+            max_tokens=max_tokens, deadline=deadline, max_retries=max_retries,
+            purpose=purpose, worker_tools=allowed_tools, session_id=session_id,
+        )
     sys_idx = next((i for i, m in enumerate(base_messages) if m.get("role") == "system"), None)
     schema_text = json.dumps(schema, separators=(",", ":"))
     instr = (
@@ -9455,6 +9495,152 @@ def _request_structured(p: "Provider", base_messages: list[dict], schema: dict,
             return obj, ans, []
         last_errs = errs
     return None, last_answer, last_errs
+
+
+def _request_structured_with_tools(p: "Provider", base_messages: list[dict],
+                                   schema: dict, *,
+                                   max_tokens: int, deadline: float,
+                                   max_retries: int, purpose: str,
+                                   worker_tools: list[str],
+                                   session_id: str | None,
+                                   ) -> tuple[Any | None, dict, list[str]]:
+    """Tool-call-aware variant of `_request_structured`. Interleaves the
+    `_ask_one_with_tools` hop loop with schema-validated emission: tool
+    calls (counted against the hop budget) come first; the final emission
+    is parsed + validated; one retry on validation failure."""
+    sys_idx = next((i for i, m in enumerate(base_messages) if m.get("role") == "system"), None)
+    schema_text = json.dumps(schema, separators=(",", ":"))
+    instr = (
+        "\n\nReturn ONLY a single JSON object matching this schema. "
+        "No commentary, no markdown fences, no prose around it.\n"
+        f"SCHEMA:\n{schema_text}\n\n"
+        "If you need supporting evidence, you may emit ONE "
+        "`<tool_call>...</tool_call>` envelope BEFORE the schema emission; "
+        "the tool result will be returned to you and you may then either "
+        "emit a follow-up tool_call OR your final JSON object. Tool calls "
+        "must NEVER appear in the final response — only the JSON object."
+    )
+    hint = _worker_tools_system_hint(worker_tools)
+
+    msgs = [dict(m) for m in base_messages]
+    if sys_idx is not None:
+        msgs[sys_idx]["content"] = (msgs[sys_idx].get("content") or "") + instr + hint
+    else:
+        msgs.insert(0, {"role": "system", "content": (instr + hint).strip()})
+
+    aggregated: dict = {}
+    inner_calls: list[dict] = []
+    hops = 0
+    attempt = 0
+    last_answer: dict = {}
+    last_errs: list[str] = []
+
+    while True:
+        ans = _ask_one(p, msgs, deadline, max_tokens, purpose=purpose)
+        last_answer = ans
+        aggregated = _merge_answer_usage(aggregated, ans) if aggregated else dict(ans)
+
+        if "error" in ans or not isinstance(ans.get("response"), str):
+            if inner_calls:
+                aggregated["inner_tool_calls"] = inner_calls
+            return None, aggregated, [
+                f"provider error: {ans.get('error_kind', 'other')}: {ans.get('error', '')}"
+            ]
+
+        text = ans["response"]
+        call, parse_err = _extract_tool_call(text)
+
+        if call is not None or parse_err is not None:
+            # Worker requested a tool. Enforce hop budget before executing.
+            if call is None:                               # malformed body
+                inner_calls.append({"hop": hops + 1, "name": None,
+                                     "status": "parse_error", "error": parse_err})
+                if hops >= _WORKER_TOOL_HOP_BUDGET:
+                    aggregated["inner_tool_calls"] = inner_calls
+                    return None, aggregated, [parse_err or "malformed tool_call"]
+                msgs = list(msgs) + [
+                    {"role": "assistant", "content": text},
+                    {"role": "user",
+                     "content": _worker_tools_refusal(
+                         "<malformed>", parse_err or "bad tool_call",
+                         hint="Emit valid JSON inside <tool_call>...</tool_call>, "
+                              "or your final schema-conforming JSON object.")},
+                ]
+                hops += 1
+                continue
+
+            if hops >= _WORKER_TOOL_HOP_BUDGET:
+                inner_calls.append({"hop": hops + 1,
+                                     "name": call.get("name"),
+                                     "status": "hop_budget_exhausted"})
+                msgs = list(msgs) + [
+                    {"role": "assistant", "content": text},
+                    {"role": "user",
+                     "content": _worker_tools_refusal(
+                         str(call.get("name") or "<unknown>"),
+                         f"tool-hop budget exceeded ({_WORKER_TOOL_HOP_BUDGET})",
+                         hint="Emit your final JSON object NOW; no further tool calls.")},
+                ]
+                ans2 = _ask_one(p, msgs, deadline, max_tokens, purpose=purpose)
+                aggregated = _merge_answer_usage(aggregated, ans2)
+                last_answer = ans2
+                # Fall through to schema validation on the next iteration's
+                # response by setting `text` and continuing the parse path.
+                text = ans2.get("response", "") if isinstance(ans2, dict) else ""
+                # Don't retry on schema fail; we're already at the limit.
+                obj = _extract_json(text) if text else None
+                errs = _validate(obj, schema) if obj else ["could not parse JSON from response"]
+                aggregated["inner_tool_calls"] = inner_calls
+                return (obj if not errs else None), aggregated, errs
+
+            tool_name = call.get("name")
+            result_block = _worker_tools_dispatch(call, session_id=session_id)
+            refused = '"refused": true' in result_block
+            inner_calls.append({"hop": hops + 1,
+                                 "name": tool_name,
+                                 "status": "refused" if refused else "ok"})
+            _emit_progress(
+                f"{p.name}: worker_tool '{tool_name}' (structured) "
+                f"hop={hops+1}/{_WORKER_TOOL_HOP_BUDGET} "
+                f"({'refused' if refused else 'ok'})",
+                provider=p.name, model=p.model, purpose=purpose,
+                worker_tool=tool_name, hop=hops + 1,
+                status="refused" if refused else "ok",
+            )
+            msgs = list(msgs) + [
+                {"role": "assistant", "content": text},
+                {"role": "user",      "content": result_block},
+            ]
+            hops += 1
+            continue
+
+        # No tool_call in the response: this is the worker's final emission.
+        # Parse + validate against the schema; retry once on failure.
+        obj = _extract_json(text)
+        if obj is None:
+            last_errs = ["could not parse JSON from response"]
+        else:
+            errs = _validate(obj, schema)
+            if not errs:
+                if inner_calls:
+                    aggregated["inner_tool_calls"] = inner_calls
+                return obj, aggregated, []
+            last_errs = errs
+
+        if attempt >= max_retries:
+            if inner_calls:
+                aggregated["inner_tool_calls"] = inner_calls
+            return None, aggregated, last_errs
+        # One re-prompt with validation feedback.
+        msgs = list(msgs) + [
+            {"role": "assistant", "content": text},
+            {"role": "user",
+             "content": "Your previous response failed validation:\n- "
+                        + "\n- ".join(last_errs[:5])
+                        + "\nFix the issues and re-emit valid JSON only — "
+                          "no more tool_call envelopes."},
+        ]
+        attempt += 1
 
 
 def _validate_input(name: str, schema: dict, args: dict) -> str | None:

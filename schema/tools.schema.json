@@ -398,7 +398,9 @@
           "session_id":  { "type": "string", "description": "Optional id; structured claims are persisted under this session." },
           "untrusted_input": { "type": "boolean", "default": false },
           "inject_session_memory": { "type": "boolean", "default": false,
-                              "description": "When true (and a session_id is set), prepend the session's non-stale `<session_memory>` block to the topic before dispatch. Stale entries (e.g. from a prior failed audit) are excluded." }
+                              "description": "When true (and a session_id is set), prepend the session's non-stale `<session_memory>` block to the topic before dispatch. Stale entries (e.g. from a prior failed audit) are excluded." },
+          "worker_tools": { "type": "array", "items": { "type": "string", "enum": ["fetch", "verify"] },
+                              "description": "Opt-in: enable bounded mid-turn tool use on the PROPOSER and CRITIC roles (the SYNTHESIZER is purely combinatorial and is intentionally excluded). Workers may emit `<tool_call>{\"name\":\"TOOL\",\"args\":{...}}</tool_call>` BEFORE the final structured emission; tool results are wrapped as untrusted-input and re-prompted. Hard hop budget = 2 per role. Only `fetch` and `verify` are callable — recursive ReAct via LLM-spawning tools is disallowed." }
         },
         "required": ["topic"]
       },
