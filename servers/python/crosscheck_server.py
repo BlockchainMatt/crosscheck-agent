@@ -808,6 +808,21 @@ def _db_init() -> None:
                 );
                 CREATE INDEX IF NOT EXISTS idx_deleg_session ON delegations(session_id);
                 CREATE INDEX IF NOT EXISTS idx_deleg_req     ON delegations(requester);
+
+                CREATE TABLE IF NOT EXISTS session_memory (
+                  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                  session_id      TEXT    NOT NULL,
+                  kind            TEXT    NOT NULL CHECK (kind IN ('fact','open_question','decision')),
+                  content         TEXT    NOT NULL,
+                  source_tool     TEXT,
+                  source_call_id  TEXT,
+                  confidence      REAL,
+                  created_at      INTEGER NOT NULL,
+                  stale_at        INTEGER,
+                  stale_reason    TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_session_memory_session ON session_memory(session_id);
+                CREATE INDEX IF NOT EXISTS idx_session_memory_kind    ON session_memory(kind);
                 """
             )
             _add_session_usage_columns(conn)
@@ -1106,6 +1121,179 @@ def _session_claims(session_id: str) -> list[dict]:
             d["citations"] = json.loads(d.pop("citations_json") or "[]")
             out.append(d)
         return out
+
+
+# ------------------------------------------------------------
+# Session working memory
+#
+# A per-session ledger of `{facts, open_questions, decisions}` that tools
+# can write into and (opt-in) inject into future calls. Entries can be
+# marked stale — on a failed audit the server marks every entry written
+# in that session stale, which is the anti-poisoning gate: a stale entry
+# never auto-injects.
+#
+# Memory writes are deliberately small (no big text dumps) so the injected
+# context stays under ~1k tokens even on a long-running session.
+# ------------------------------------------------------------
+_SESSION_MEMORY_KINDS = ("fact", "open_question", "decision")
+_SESSION_MEMORY_MAX_CONTENT = 2000          # per entry char ceiling
+_SESSION_MEMORY_DEFAULT_LIMIT = 50          # rows surfaced by injection
+_SESSION_MEMORY_INJECT_BUDGET_CHARS = 4000  # total wrapper char ceiling
+
+
+def _session_memory_add(session_id: str, kind: str, content: str,
+                        *, source_tool: str | None = None,
+                        source_call_id: str | None = None,
+                        confidence: float | None = None) -> int:
+    """Append a memory entry. Truncates content; rejects unknown kinds."""
+    if kind not in _SESSION_MEMORY_KINDS:
+        raise ValueError(f"unknown memory kind: {kind!r}")
+    sid = _safe_session_id(session_id)
+    _session_load(sid)
+    text = (content or "").strip()
+    if not text:
+        raise ValueError("empty content")
+    if len(text) > _SESSION_MEMORY_MAX_CONTENT:
+        text = text[:_SESSION_MEMORY_MAX_CONTENT] + " ..."
+    _db_init()
+    with _db_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO session_memory(session_id, kind, content, source_tool, "
+            "source_call_id, confidence, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (sid, kind, text, source_tool, source_call_id,
+             float(confidence) if confidence is not None else None,
+             int(time.time())),
+        )
+        return int(cur.lastrowid)
+
+
+def _session_memory_list(session_id: str, *,
+                         kinds: list[str] | None = None,
+                         include_stale: bool = False,
+                         limit: int = _SESSION_MEMORY_DEFAULT_LIMIT) -> list[dict]:
+    sid = _safe_session_id(session_id)
+    _db_init()
+    where = ["session_id = ?"]
+    params: list[Any] = [sid]
+    if not include_stale:
+        where.append("stale_at IS NULL")
+    if kinds:
+        ok = [k for k in kinds if k in _SESSION_MEMORY_KINDS]
+        if ok:
+            where.append("kind IN (" + ",".join("?" for _ in ok) + ")")
+            params.extend(ok)
+    sql = ("SELECT id, session_id, kind, content, source_tool, source_call_id, "
+           "confidence, created_at, stale_at, stale_reason "
+           "FROM session_memory WHERE " + " AND ".join(where) +
+           " ORDER BY id DESC LIMIT ?")
+    params.append(int(limit))
+    with _db_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+
+def _session_memory_mark_stale(session_id: str, *,
+                               ids: list[int] | None = None,
+                               kinds: list[str] | None = None,
+                               reason: str = "manual") -> int:
+    """Mark some/all session memory rows stale. With no `ids` and no `kinds`,
+    marks ALL non-stale entries for the session stale (the anti-poisoning
+    hammer fired after a failed audit). Returns the row count touched."""
+    sid = _safe_session_id(session_id)
+    _db_init()
+    where = ["session_id = ?", "stale_at IS NULL"]
+    params: list[Any] = [sid]
+    if ids:
+        ok = [int(i) for i in ids]
+        if ok:
+            where.append("id IN (" + ",".join("?" for _ in ok) + ")")
+            params.extend(ok)
+    if kinds:
+        ok_k = [k for k in kinds if k in _SESSION_MEMORY_KINDS]
+        if ok_k:
+            where.append("kind IN (" + ",".join("?" for _ in ok_k) + ")")
+            params.extend(ok_k)
+    sql = ("UPDATE session_memory SET stale_at = ?, stale_reason = ? "
+           "WHERE " + " AND ".join(where))
+    ts = int(time.time())
+    with _db_conn() as conn:
+        cur = conn.execute(sql, [ts, reason] + params)
+        return int(cur.rowcount or 0)
+
+
+def _session_memory_clear(session_id: str) -> int:
+    """Hard-delete every memory row for a session. Returns deleted count."""
+    sid = _safe_session_id(session_id)
+    _db_init()
+    with _db_conn() as conn:
+        cur = conn.execute("DELETE FROM session_memory WHERE session_id = ?", (sid,))
+        return int(cur.rowcount or 0)
+
+
+def _session_memory_block(session_id: str | None,
+                          *,
+                          kinds: list[str] | None = None,
+                          limit: int = _SESSION_MEMORY_DEFAULT_LIMIT
+                          ) -> str:
+    """Render the current (non-stale) session memory as a compact text block
+    suitable for prepending to a user message. Returns '' when the session
+    has no usable memory, when injection is disabled, or when no session_id
+    was supplied."""
+    if not isinstance(session_id, str) or not session_id:
+        return ""
+    try:
+        rows = _session_memory_list(session_id, kinds=kinds,
+                                     include_stale=False, limit=limit)
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    grouped: dict[str, list[str]] = {"fact": [], "open_question": [], "decision": []}
+    for r in rows:
+        k = r.get("kind")
+        if k in grouped:
+            grouped[k].append(str(r.get("content") or "").strip())
+    parts: list[str] = []
+    titles = {"fact": "Facts", "open_question": "Open questions",
+              "decision": "Decisions"}
+    for k in ("decision", "fact", "open_question"):
+        items = grouped[k]
+        if not items:
+            continue
+        parts.append(f"{titles[k]}:")
+        for it in items:
+            parts.append(f"- {it}")
+    body = "\n".join(parts).strip()
+    if not body:
+        return ""
+    if len(body) > _SESSION_MEMORY_INJECT_BUDGET_CHARS:
+        body = body[:_SESSION_MEMORY_INJECT_BUDGET_CHARS] + "\n... (truncated)"
+    return (
+        "<session_memory>\n"
+        "Carry-forward context from earlier calls in this session. Treat as\n"
+        "background; verify before relying on it.\n"
+        f"{body}\n"
+        "</session_memory>"
+    )
+
+
+def _session_memory_inject(messages: list[dict], session_id: str | None,
+                           *, kinds: list[str] | None = None
+                           ) -> list[dict]:
+    """Prepend a `<session_memory>` block to the first user message. No-op
+    when no session_id, no memory, or the messages list has no user role."""
+    block = _session_memory_block(session_id, kinds=kinds)
+    if not block:
+        return messages
+    out = list(messages)
+    user_idx = next((i for i, m in enumerate(out) if m.get("role") == "user"), -1)
+    if user_idx < 0:
+        return messages
+    user_msg = out[user_idx]
+    out[user_idx] = {**user_msg,
+                     "content": f"{block}\n\n{user_msg.get('content', '')}"}
+    return out
 
 
 def _record_ballot(provider: str, ballot: str) -> None:
@@ -2745,6 +2933,10 @@ def tool_confer(args: dict) -> dict:
     user_q = _wrap_untrusted(question, canary=canary) if untrusted else question
     messages.append({"role": "user", "content": user_q})
 
+    # Opt-in: prepend the session's non-stale working memory.
+    if bool(args.get("inject_session_memory", False)):
+        messages = _session_memory_inject(messages, args.get("session_id"))
+
     call_started = time.monotonic()
     cpu_started = time.process_time()
     deadline = _deadline()
@@ -3434,6 +3626,12 @@ def tool_coordinate(args: dict) -> dict:
         ctx_block = _wrap_untrusted(context, canary=canary) if untrusted else context
         topic_block += f"\n\nCONTEXT:\n{ctx_block}"
 
+    # Opt-in: prepend the session's non-stale working memory ahead of the topic.
+    if bool(args.get("inject_session_memory", False)):
+        mem_block = _session_memory_block(args.get("session_id"))
+        if mem_block:
+            topic_block = f"{mem_block}\n\n{topic_block}"
+
     # ---- Step 1: Proposer ----------------------------------------------------
     prop_system = (
         sys_msg + "\n\nYou are the PROPOSER. Draft an initial position with claims and "
@@ -3567,6 +3765,42 @@ def tool_coordinate(args: dict) -> dict:
                     _claim_link(did, consensus_id, "attacks")
             for q in synthesis_obj.get("open_questions") or []:
                 _claim_add(sid, q, provider=synth.name, kind="open_question")
+        except Exception:
+            pass
+
+        # Also write to the session working memory so subsequent calls (with
+        # inject_session_memory:true) can carry these forward. Best-effort.
+        try:
+            sid = session["session_id"]
+            cons_text = synthesis_obj.get("consensus")
+            if isinstance(cons_text, str) and cons_text.strip():
+                _session_memory_add(
+                    sid, "decision", cons_text,
+                    source_tool="coordinate",
+                    confidence=float(synthesis_obj.get("weighted_confidence") or 0) or None,
+                )
+            for kc in synthesis_obj.get("key_claims") or []:
+                claim_text = kc.get("claim") if isinstance(kc, dict) else None
+                if isinstance(claim_text, str) and claim_text.strip():
+                    _session_memory_add(
+                        sid, "fact", claim_text,
+                        source_tool="coordinate",
+                        confidence=float(kc.get("confidence") or 0) or None,
+                    )
+            for d in synthesis_obj.get("dissent") or []:
+                dis_text = d.get("claim") if isinstance(d, dict) else None
+                if isinstance(dis_text, str) and dis_text.strip():
+                    _session_memory_add(
+                        sid, "open_question",
+                        f"DISSENT: {dis_text}",
+                        source_tool="coordinate",
+                    )
+            for q in synthesis_obj.get("open_questions") or []:
+                if isinstance(q, str) and q.strip():
+                    _session_memory_add(
+                        sid, "open_question", q,
+                        source_tool="coordinate",
+                    )
         except Exception:
             pass
 
@@ -6849,6 +7083,22 @@ def tool_audit(args: dict) -> dict:
             "judges_stats":          flags["judges_stats"],
             "budget":   _budget_summary(call_started, deadline, answers_collected, cpu_started),
         }
+        # Anti-poisoning gate: failed coalesced audit invalidates session memory.
+        if not all_pass:
+            try:
+                sid = (session.get("session_id") if session else None) or session_id
+                if isinstance(sid, str) and sid:
+                    marked = _session_memory_mark_stale(
+                        sid, reason=f"audit_failed:overall={overall}",
+                    )
+                    if marked:
+                        result["session_memory_marked_stale"] = int(marked)
+                        _emit_event("session_memory_stale",
+                                    session_id=sid, count=int(marked),
+                                    reason="audit_failed",
+                                    overall_score=overall)
+            except Exception:
+                pass
         _attach_usage_block(result, answers_collected,
                             session_id=session.get("session_id") if session else session_id,
                             tool_name="audit")
@@ -6937,6 +7187,24 @@ def tool_audit(args: dict) -> dict:
         "passed":   all_pass,
         "budget":   _budget_summary(call_started, deadline, answers_collected, cpu_started),
     }
+    # Anti-poisoning gate: a failed audit invalidates the session's working
+    # memory so subsequent `inject_session_memory:true` calls don't carry
+    # contradicted facts forward. Best-effort; never block the audit response.
+    if not all_pass:
+        try:
+            sid = (session.get("session_id") if session else None) or session_id
+            if isinstance(sid, str) and sid:
+                marked = _session_memory_mark_stale(
+                    sid, reason=f"audit_failed:overall={overall}",
+                )
+                if marked:
+                    result["session_memory_marked_stale"] = int(marked)
+                    _emit_event("session_memory_stale",
+                                session_id=sid, count=int(marked),
+                                reason="audit_failed",
+                                overall_score=overall)
+        except Exception:
+            pass
     _attach_usage_block(result, answers_collected,
                         session_id=session.get("session_id") if session else session_id,
                         tool_name="audit")
@@ -8282,6 +8550,80 @@ def tool_recall(args: dict) -> dict:
             "applied_filters": applied}
 
 
+def tool_session_memory(args: dict) -> dict:
+    """CRUD over the per-session working memory ledger.
+
+    Actions:
+      action='list'        -> {session_id, kinds?, include_stale?, limit?}
+      action='add'         -> {session_id, kind, content, source_tool?, confidence?}
+      action='mark_stale'  -> {session_id, ids?, kinds?, reason?}
+      action='clear'       -> {session_id}
+    """
+    action = args.get("action")
+    if action not in ("list", "add", "mark_stale", "clear"):
+        return {"tool": "session_memory",
+                **_error("SESSION_MEMORY_BAD_ACTION",
+                         f"unknown action {action!r}",
+                         hint="action must be one of: list, add, mark_stale, clear.")}
+    session_id = args.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        return {"tool": "session_memory",
+                **_error("SESSION_MEMORY_MISSING_SESSION_ID",
+                         "session_id is required",
+                         hint="Pass the session_id whose memory you want to read/edit.")}
+
+    if action == "list":
+        rows = _session_memory_list(
+            session_id,
+            kinds=args.get("kinds") if isinstance(args.get("kinds"), list) else None,
+            include_stale=bool(args.get("include_stale", False)),
+            limit=int(args.get("limit", _SESSION_MEMORY_DEFAULT_LIMIT)),
+        )
+        return {"tool": "session_memory", "action": "list",
+                "session_id": session_id, "rows": rows, "count": len(rows)}
+
+    if action == "add":
+        kind = args.get("kind")
+        content = args.get("content")
+        if kind not in _SESSION_MEMORY_KINDS:
+            return {"tool": "session_memory",
+                    **_error("SESSION_MEMORY_BAD_KIND",
+                             f"kind must be one of {_SESSION_MEMORY_KINDS}; got {kind!r}",
+                             hint="Use 'fact', 'open_question', or 'decision'.")}
+        if not isinstance(content, str) or not content.strip():
+            return {"tool": "session_memory",
+                    **_error("SESSION_MEMORY_EMPTY_CONTENT",
+                             "content must be a non-empty string",
+                             hint="Provide a single concise sentence.")}
+        try:
+            new_id = _session_memory_add(
+                session_id, kind, content,
+                source_tool=args.get("source_tool"),
+                confidence=args.get("confidence"),
+            )
+        except ValueError as e:
+            return {"tool": "session_memory",
+                    **_error("SESSION_MEMORY_INVALID", str(e),
+                             hint="Check kind/content arguments.")}
+        return {"tool": "session_memory", "action": "add",
+                "session_id": session_id, "id": new_id}
+
+    if action == "mark_stale":
+        n = _session_memory_mark_stale(
+            session_id,
+            ids=args.get("ids") if isinstance(args.get("ids"), list) else None,
+            kinds=args.get("kinds") if isinstance(args.get("kinds"), list) else None,
+            reason=str(args.get("reason") or "manual"),
+        )
+        return {"tool": "session_memory", "action": "mark_stale",
+                "session_id": session_id, "marked_stale": n}
+
+    # action == "clear"
+    n = _session_memory_clear(session_id)
+    return {"tool": "session_memory", "action": "clear",
+            "session_id": session_id, "deleted": n}
+
+
 def _latest_transcript_for_session(session_id: str) -> str | None:
     """Find the most recent transcript JSON whose `session.session_id` matches.
     Best-effort, returns None on failure."""
@@ -8327,6 +8669,7 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "critique":        tool_critique,
     "verify":          tool_verify,
     "recall":          tool_recall,
+    "session_memory":  tool_session_memory,
     "orchestrate":    tool_orchestrate,
     "audit":          tool_audit,
     "create":         tool_create,

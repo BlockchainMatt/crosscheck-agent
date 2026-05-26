@@ -263,7 +263,9 @@
                                 "description": "Minimum agreement confidence required to short-circuit when `early_stop:true`." },
           "session_id":       { "type": "string", "description": "Optional id to accumulate usage across calls." },
           "untrusted_input":  { "type": "boolean", "default": false,
-                                "description": "When true, treat `context` and `question` as untrusted: wrap in tags, neutralize obvious injection phrases, instruct panelists to treat as data only." }
+                                "description": "When true, treat `context` and `question` as untrusted: wrap in tags, neutralize obvious injection phrases, instruct panelists to treat as data only." },
+          "inject_session_memory": { "type": "boolean", "default": false,
+                                "description": "When true (and a session_id is set), prepend the session's non-stale `<session_memory>` block (decisions / facts / open_questions) to the user message. Stale entries from a prior failed audit are excluded." }
         },
         "required": ["question"]
       },
@@ -392,7 +394,9 @@
                            "description": "Providers that critique the proposal in parallel. Defaults to all selected providers minus proposer/synthesizer." },
           "synthesizer": { "type": "string", "description": "Provider that produces the final structured synthesis. Defaults to the configured moderator." },
           "session_id":  { "type": "string", "description": "Optional id; structured claims are persisted under this session." },
-          "untrusted_input": { "type": "boolean", "default": false }
+          "untrusted_input": { "type": "boolean", "default": false },
+          "inject_session_memory": { "type": "boolean", "default": false,
+                              "description": "When true (and a session_id is set), prepend the session's non-stale `<session_memory>` block to the topic before dispatch. Stale entries (e.g. from a prior failed audit) are excluded." }
         },
         "required": ["topic"]
       },
@@ -1201,6 +1205,45 @@
           "timing":     { "type": "object" }
         },
         "required": ["tool", "checks_run", "results", "all_passed"]
+      }
+    },
+    "session_memory": {
+      "description": "CRUD over the per-session working memory ledger of {facts, open_questions, decisions}. Tools (confer/coordinate) auto-write entries; `audit` with `passed:false` automatically marks every entry in the session stale (the anti-poisoning gate). Stale entries are excluded from `inject_session_memory:true` auto-injection.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "action":        { "type": "string", "enum": ["list", "add", "mark_stale", "clear"] },
+          "session_id":    { "type": "string" },
+          "kind":          { "type": "string", "enum": ["fact", "open_question", "decision"],
+                              "description": "Required for action=add." },
+          "content":       { "type": "string", "description": "Required for action=add. Truncated to 2000 chars." },
+          "source_tool":   { "type": "string", "description": "Optional provenance label for action=add." },
+          "confidence":    { "type": "number", "minimum": 0, "maximum": 1, "description": "Optional confidence for action=add." },
+          "kinds":         { "type": "array", "items": { "type": "string", "enum": ["fact", "open_question", "decision"] },
+                              "description": "Filter for list/mark_stale." },
+          "ids":           { "type": "array", "items": { "type": "integer" },
+                              "description": "Specific row ids for mark_stale; omit to mark all matching entries stale." },
+          "reason":        { "type": "string", "description": "Reason recorded on mark_stale rows; default 'manual'." },
+          "include_stale": { "type": "boolean", "default": false, "description": "For action=list: include stale rows." },
+          "limit":         { "type": "integer", "minimum": 1, "maximum": 500, "default": 50,
+                              "description": "Row cap for action=list." }
+        },
+        "required": ["action", "session_id"]
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "tool":         { "const": "session_memory" },
+          "action":       { "type": "string" },
+          "session_id":   { "type": "string" },
+          "rows":         { "type": "array", "items": { "type": "object" } },
+          "count":        { "type": "integer", "minimum": 0 },
+          "id":           { "type": "integer" },
+          "marked_stale": { "type": "integer", "minimum": 0 },
+          "deleted":      { "type": "integer", "minimum": 0 }
+        },
+        "required": ["tool"]
       }
     },
     "recall": {
