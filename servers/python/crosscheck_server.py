@@ -72,6 +72,149 @@ TRANSCRIPT_DIR = _resolve_transcript_dir(CFG)
 
 
 # ------------------------------------------------------------
+# Config pinning
+#
+# Hash-pin the canonical config files (crosscheck.config.json + the
+# pricing table) on first observation; refuse to serve tool calls if
+# the hashes drift away from the pinned values UNLESS the operator
+# explicitly accepts the drift via the `config_pin` tool or via the
+# CROSSCHECK_REJECT_CONFIG_DRIFT bypass.
+#
+# Threat model is operator-set: this protects against accidental edits
+# of cost tables or panel configs (e.g. someone setting a model's cost
+# to 0 to hide spend, or adding an unintended provider to the active
+# set). Premature for current adversarial threat models — defaults to
+# DETECT-AND-WARN, never blocks unless explicitly enabled.
+# ------------------------------------------------------------
+def _config_pin_path() -> Path:
+    raw = (CFG.get("config_pinning") or {}).get("pin_file") \
+          or ".crosscheck/config_pins.json"
+    p = Path(str(raw))
+    return p if p.is_absolute() else (ROOT / p)
+
+
+def _config_pin_targets() -> list[Path]:
+    """Files included in the pin set. Operator can extend via
+    CFG.config_pinning.paths (list of repo-relative or absolute paths);
+    missing files are silently dropped (a non-existent panel.json isn't
+    a drift signal)."""
+    raw = (CFG.get("config_pinning") or {}).get("paths")
+    if isinstance(raw, list) and raw:
+        candidates = [Path(str(p)) for p in raw]
+    else:
+        candidates = [Path("crosscheck.config.json"), Path("config/pricing.json")]
+    out: list[Path] = []
+    for p in candidates:
+        absp = p if p.is_absolute() else (ROOT / p)
+        if absp.exists() and absp.is_file():
+            out.append(absp)
+    return out
+
+
+def _config_pin_hash_file(path: Path) -> str:
+    """SHA256 over file contents, normalized to LF line endings so a
+    cross-platform checkout doesn't trip the drift detector."""
+    try:
+        data = path.read_bytes().replace(b"\r\n", b"\n")
+    except OSError:
+        return ""
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def _config_pin_rel(path: Path) -> str:
+    """Stable identifier inside the pin file — repo-relative when possible."""
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _config_pin_load() -> dict:
+    p = _config_pin_path()
+    if not p.exists():
+        return {}
+    try:
+        doc = json.loads(p.read_text())
+        if isinstance(doc, dict):
+            return doc
+    except Exception:
+        pass
+    return {}
+
+
+def _config_pin_save(doc: dict) -> Path:
+    p = _config_pin_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(p, doc)
+    return p
+
+
+def _config_pin_current() -> dict[str, str]:
+    """Map of repo-relative path -> current sha256."""
+    return {_config_pin_rel(p): _config_pin_hash_file(p)
+            for p in _config_pin_targets()}
+
+
+def _config_pin_drift() -> dict:
+    """Compute (pinned, current, drift, missing_from_pin, missing_files).
+    Returns the structured envelope that both `config_pin` and the
+    startup gate consume."""
+    doc = _config_pin_load()
+    pinned: dict[str, str] = (doc.get("pins") or {}) if isinstance(doc, dict) else {}
+    current = _config_pin_current()
+    drift = [path for path, h in pinned.items()
+             if current.get(path) and current[path] != h]
+    missing_from_pin = [p for p in current.keys() if p not in pinned]
+    missing_files = [p for p in pinned.keys() if p not in current]
+    return {"pinned":         pinned,
+            "current":        current,
+            "drift":          sorted(drift),
+            "missing_from_pin": sorted(missing_from_pin),
+            "missing_files":  sorted(missing_files),
+            "pin_file":       _config_pin_rel(_config_pin_path()),
+            "pinned_at":      int(doc.get("pinned_at") or 0)
+                              if isinstance(doc, dict) else 0,
+            "has_pin_file":   _config_pin_path().exists()}
+
+
+def _config_pin_should_block() -> bool:
+    """Reject mode: returns True when (a) a pin file exists, (b) drift
+    is present, AND (c) reject_drift is enabled via CFG or env."""
+    if os.environ.get("CROSSCHECK_REJECT_CONFIG_DRIFT") == "1":
+        reject = True
+    else:
+        reject = bool((CFG.get("config_pinning") or {}).get("reject_drift", False))
+    if not reject:
+        return False
+    drift = _config_pin_drift()
+    if not drift["has_pin_file"]:
+        return False
+    return bool(drift["drift"])
+
+
+_CONFIG_PIN_STARTUP_DONE = False
+
+
+def _config_pin_startup_check() -> None:
+    """Lazy one-shot emission of the pin status. Runs on first tool call.
+    Never blocks — `_config_pin_should_block` is the gate that callers
+    consult separately."""
+    global _CONFIG_PIN_STARTUP_DONE
+    if _CONFIG_PIN_STARTUP_DONE:
+        return
+    _CONFIG_PIN_STARTUP_DONE = True
+    try:
+        drift = _config_pin_drift()
+        _emit_event("config_pin_check",
+                    has_pin_file=drift["has_pin_file"],
+                    drift=drift["drift"],
+                    missing_from_pin=drift["missing_from_pin"],
+                    missing_files=drift["missing_files"])
+    except Exception:
+        pass
+
+
+# ------------------------------------------------------------
 # Redaction (PII / secrets — applied to traces and transcripts)
 # ------------------------------------------------------------
 _BUILTIN_REDACTION_RULES: list[tuple[str, str, str | None]] = [
@@ -8939,6 +9082,110 @@ def tool_session_memory(args: dict) -> dict:
             "session_id": session_id, "deleted": n}
 
 
+def tool_config_pin(args: dict) -> dict:
+    """CRUD over the config-pinning ledger.
+
+    Actions:
+      show           — compute current vs. pinned hashes; surface any drift
+      set            — record current hashes as the canonical pin (first
+                       time setup, OR overwrite the previous pin)
+      accept_drift   — same as `set` but only succeeds when drift is
+                       currently present (semantic guardrail to avoid
+                       accidentally re-pinning a clean tree)
+      clear          — remove the pin file entirely (next call sees
+                       has_pin_file=false)
+    """
+    action = args.get("action")
+    if action not in ("show", "set", "accept_drift", "clear"):
+        return {"tool": "config_pin",
+                **_error("CONFIG_PIN_BAD_ACTION",
+                         f"unknown action {action!r}",
+                         hint="action must be one of: show, set, accept_drift, clear.")}
+
+    drift = _config_pin_drift()
+
+    if action == "show":
+        return {"tool": "config_pin", "action": "show", **drift,
+                "reject_drift_enabled": (
+                    os.environ.get("CROSSCHECK_REJECT_CONFIG_DRIFT") == "1"
+                    or bool((CFG.get("config_pinning") or {}).get("reject_drift", False))
+                ),
+                "would_block": _config_pin_should_block()}
+
+    if action == "set":
+        doc = {"version": 1,
+                "pinned_at": int(time.time()),
+                "pins": _config_pin_current()}
+        path = _config_pin_save(doc)
+        _emit_event("config_pin_set", pin_file=_config_pin_rel(path),
+                    count=len(doc["pins"]))
+        return {"tool": "config_pin", "action": "set",
+                "pin_file": _config_pin_rel(path),
+                "pins": doc["pins"], "pinned_at": doc["pinned_at"]}
+
+    if action == "accept_drift":
+        if not drift["has_pin_file"]:
+            return {"tool": "config_pin",
+                    **_error("CONFIG_PIN_NO_PIN_FILE",
+                             "no pin file exists yet — nothing to accept",
+                             hint="Use action='set' to record the current "
+                                  "hashes as the canonical pin.")}
+        if not drift["drift"]:
+            return {"tool": "config_pin",
+                    **_error("CONFIG_PIN_NO_DRIFT",
+                             "current files match the existing pin; "
+                             "nothing to accept",
+                             hint="If you intended to refresh the pin anyway, "
+                                  "use action='set'.")}
+        doc = {"version": 1,
+                "pinned_at": int(time.time()),
+                "pins": _config_pin_current(),
+                "previous_pinned_at": drift["pinned_at"],
+                "accepted_drift": drift["drift"]}
+        path = _config_pin_save(doc)
+        _emit_event("config_pin_accept_drift",
+                    pin_file=_config_pin_rel(path),
+                    accepted_paths=drift["drift"])
+        return {"tool": "config_pin", "action": "accept_drift",
+                "pin_file": _config_pin_rel(path),
+                "accepted_drift": drift["drift"],
+                "pins": doc["pins"], "pinned_at": doc["pinned_at"]}
+
+    # action == "clear"
+    path = _config_pin_path()
+    existed = path.exists()
+    if existed:
+        try:
+            path.unlink()
+        except OSError as e:
+            return {"tool": "config_pin",
+                    **_error("CONFIG_PIN_CLEAR_FAILED", str(e),
+                             hint="Check filesystem permissions on the pin file.")}
+    _emit_event("config_pin_clear", pin_file=_config_pin_rel(path),
+                existed=existed)
+    return {"tool": "config_pin", "action": "clear",
+            "pin_file": _config_pin_rel(path), "existed": existed}
+
+
+def _config_pin_block_response(tool_name: str) -> dict:
+    """Structured envelope returned in place of the tool's normal output
+    when a config-drift block is active."""
+    drift = _config_pin_drift()
+    return {"tool": tool_name,
+            **_error("CONFIG_PIN_DRIFT_BLOCKED",
+                     f"config drift detected; refusing tool call. "
+                     f"drift in: {drift['drift']}",
+                     hint="Inspect with `config_pin(action='show')`. "
+                          "After confirming the change is intentional, "
+                          "run `config_pin(action='accept_drift')` to "
+                          "re-pin, OR clear CROSSCHECK_REJECT_CONFIG_DRIFT "
+                          "and config_pinning.reject_drift to disable "
+                          "the gate.",
+                     transient=False),
+            "drift": drift["drift"],
+            "pin_file": drift["pin_file"]}
+
+
 def _latest_transcript_for_session(session_id: str) -> str | None:
     """Find the most recent transcript JSON whose `session.session_id` matches.
     Best-effort, returns None on failure."""
@@ -8985,6 +9232,7 @@ _HANDLERS: dict[str, Callable[[dict], dict]] = {
     "verify":          tool_verify,
     "recall":          tool_recall,
     "session_memory":  tool_session_memory,
+    "config_pin":      tool_config_pin,
     "orchestrate":    tool_orchestrate,
     "audit":          tool_audit,
     "create":         tool_create,
@@ -9281,6 +9529,15 @@ def handle(req: dict) -> dict | None:
         err = _validate_input(name, tool["inputSchema"], args)
         if err:
             return rpc_error(id_, -32602, err)
+        # Lazy one-shot config-pin emission (visibility — never blocks here).
+        _config_pin_startup_check()
+        # Drift gate: when reject-drift is enabled and drift is present,
+        # refuse every tool call EXCEPT `config_pin` itself — operators
+        # need a way to inspect and accept the drift.
+        if name != "config_pin" and _config_pin_should_block():
+            blocked = _config_pin_block_response(name)
+            return rpc_result(id_, {"content": [{"type": "text",
+                                                  "text": json.dumps(blocked, indent=2)}]})
         # MCP clients may pass a progressToken under _meta to opt in to
         # `notifications/progress` updates. Bind it to the current thread so
         # _emit_progress() can stream live timing/cost as the tool runs.

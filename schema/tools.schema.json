@@ -1248,6 +1248,44 @@
         "required": ["tool"]
       }
     },
+    "config_pin": {
+      "description": "Hash-pin the canonical config files (crosscheck.config.json + config/pricing.json by default) and detect drift. Threat model: protect against accidental edits of cost tables or panel configs. Default behavior is DETECT-AND-WARN — never blocks tool calls unless `config_pinning.reject_drift` is true OR CROSSCHECK_REJECT_CONFIG_DRIFT=1. When reject mode is on and drift is present, every tool except `config_pin` itself returns a CONFIG_PIN_DRIFT_BLOCKED error until drift is accepted.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "action": { "type": "string", "enum": ["show", "set", "accept_drift", "clear"],
+                      "description": "show: compute drift; set: record current as canonical; accept_drift: refresh the pin only when drift is present (semantic guardrail); clear: remove the pin file." }
+        },
+        "required": ["action"]
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "tool":           { "const": "config_pin" },
+          "action":         { "type": "string" },
+          "pin_file":       { "type": "string" },
+          "pinned":         { "type": "object", "additionalProperties": { "type": "string" } },
+          "current":        { "type": "object", "additionalProperties": { "type": "string" } },
+          "drift":          { "type": "array", "items": { "type": "string" } },
+          "missing_from_pin": { "type": "array", "items": { "type": "string" },
+                                "description": "Paths present on disk but absent from the pin file." },
+          "missing_files":  { "type": "array", "items": { "type": "string" },
+                              "description": "Paths in the pin file that no longer exist on disk." },
+          "has_pin_file":   { "type": "boolean" },
+          "pinned_at":      { "type": "integer", "minimum": 0,
+                              "description": "Unix-seconds when the pin file was last written." },
+          "reject_drift_enabled": { "type": "boolean",
+                                     "description": "True when reject mode is active via CFG.config_pinning.reject_drift or CROSSCHECK_REJECT_CONFIG_DRIFT=1." },
+          "would_block":    { "type": "boolean",
+                              "description": "True when the current state would cause non-config_pin tool calls to be refused." },
+          "pins":           { "type": "object", "additionalProperties": { "type": "string" } },
+          "accepted_drift": { "type": "array", "items": { "type": "string" } },
+          "existed":        { "type": "boolean", "description": "For action=clear: whether the pin file existed." }
+        },
+        "required": ["tool"]
+      }
+    },
     "recall": {
       "description": "Full-text search across persisted transcripts via SQLite FTS5. Surfaces matching session_id / tool / snippet / score so a caller can pull prior context into a new session without re-running expensive panel calls. The index is populated on every `write_transcript` call; results are ranked by bm25 (lower = better) and a windowed snippet shows the match.",
       "input": {
