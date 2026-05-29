@@ -2517,18 +2517,56 @@ _NON_REASONING_TOKEN_BUDGETS: dict[str, int] = {
     "solve":       2048,
 }
 
+# Provider-specific overrides — applied AFTER the explicit CFG override but
+# BEFORE the reasoning / non-reasoning fall-back. Use this when a particular
+# provider's reasoning budget eats `max_completion_tokens` so aggressively
+# that the standard 2048 leaves no room for the visible answer.
+#
+# OpenAI: gpt-5 charges reasoning tokens against `max_completion_tokens` and
+# can spend 1500-3000 of them on internal thinking before the visible reply.
+# At 2048 the visible reply gets MAX_TOKENS-truncated mid-sentence on multi-
+# round work like confer / debate. 6144 = ~3k reasoning + ~3k visible answer
+# is empirically the bottom of the "always lands cleanly" zone.
+_PROVIDER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
+    "openai": {
+        "confer": 6144,
+        "debate": 6144,
+    },
+}
+
 
 def _budget_for_purpose(purpose: str, provider: str | None = None,
                         model: str | None = None) -> int | None:
-    """Return the configured ceiling for `purpose`. When provider+model are
-    supplied AND that model is NOT reasoning-class, prefers the (smaller)
-    non-reasoning ceiling — restoring the PR #7 cost savings for models
-    that don't need the bigger headroom.
+    """Return the configured ceiling for `purpose`. Precedence (highest to
+    lowest):
+
+      1. `CFG.token_budgets[purpose]`                — global caller override
+      2. `CFG.token_budgets_by_provider[provider][purpose]` — per-provider
+         operator override (no code changes needed)
+      3. `_PROVIDER_TOKEN_BUDGETS[provider][purpose]` — shipped per-provider
+         overrides (e.g. openai confer/debate; see comment above the table)
+      4. `_NON_REASONING_TOKEN_BUDGETS[purpose]`      — non-reasoning model
+      5. `_DEFAULT_TOKEN_BUDGETS[purpose]`            — reasoning-safe default
 
     Caller uses min(default_from_token_cap, this_ceiling)."""
     custom = (CFG.get("token_budgets") or {}).get(purpose)
     if isinstance(custom, int) and custom > 0:
         return int(custom)
+
+    if isinstance(provider, str) and provider:
+        # Operator-supplied per-provider override (no code changes).
+        cfg_by_provider = (CFG.get("token_budgets_by_provider") or {})
+        op_table = cfg_by_provider.get(provider) if isinstance(cfg_by_provider, dict) else None
+        if isinstance(op_table, dict):
+            op_val = op_table.get(purpose)
+            if isinstance(op_val, int) and op_val > 0:
+                return int(op_val)
+        # Shipped per-provider override.
+        shipped = _PROVIDER_TOKEN_BUDGETS.get(provider) or {}
+        shipped_val = shipped.get(purpose)
+        if isinstance(shipped_val, int) and shipped_val > 0:
+            return int(shipped_val)
+
     # Tier-aware: non-reasoning models get the smaller ceiling. When we
     # don't know the model (helper called without arguments) fall through
     # to the reasoning-safe default so we never starve a reasoning auditor.
