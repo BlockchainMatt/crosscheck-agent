@@ -2529,8 +2529,18 @@ _NON_REASONING_TOKEN_BUDGETS: dict[str, int] = {
 # is empirically the bottom of the "always lands cleanly" zone.
 _PROVIDER_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
     "openai": {
-        "confer": 6144,
-        "debate": 6144,
+        "confer":      6144,
+        "debate":      6144,
+        # triangulate runs N parallel perspectives + a synthesis step; it
+        # shares confer's structured-emission shape, so it hits the same
+        # MAX_TOKENS wall when gpt-5's reasoning eats the budget.
+        "triangulate": 6144,
+    },
+    # gemini-2.5-pro is reasoning-class too — same MAX_TOKENS truncation on
+    # multi-perspective flows (confer / triangulate) at the 2048 default.
+    "gemini": {
+        "confer":      6144,
+        "triangulate": 6144,
     },
 }
 

@@ -60,14 +60,26 @@ def main() -> int:
     srv._CONFIG_PIN_STARTUP_DONE = True
 
     # ------------------------------------------------------------------
-    # 1) Shipped openai confer/debate override = 6144 (the actual ship)
+    # 1) Shipped provider overrides = 6144 on the multi-perspective flows
+    #    (gpt-5 and gemini-2.5-pro both burn reasoning tokens against the
+    #    completion budget; bumping confer/debate/triangulate prevents
+    #    mid-answer MAX_TOKENS truncation)
     # ------------------------------------------------------------------
-    assert srv._budget_for_purpose("confer", "openai", "gpt-5")    == 6144
-    assert srv._budget_for_purpose("debate", "openai", "gpt-5")    == 6144
+    # OpenAI
+    assert srv._budget_for_purpose("confer",      "openai", "gpt-5")    == 6144
+    assert srv._budget_for_purpose("debate",      "openai", "gpt-5")    == 6144
+    assert srv._budget_for_purpose("triangulate", "openai", "gpt-5")    == 6144
     # Non-reasoning OpenAI model: the override still applies — it's keyed
     # on provider, not model class. (The whole point is that the provider
     # has a quirky reasoning-token accounting model.)
     assert srv._budget_for_purpose("confer", "openai", "gpt-test") == 6144
+    # Gemini — only confer + triangulate were bumped this round; debate
+    # falls through to the non-reasoning ceiling because gemini-2.5-pro
+    # isn't currently tagged in PROVIDER_CAPS.reasoning_prefixes (a
+    # separate fix; flagged as a follow-up).
+    assert srv._budget_for_purpose("confer",      "gemini", "gemini-2.5-pro") == 6144
+    assert srv._budget_for_purpose("triangulate", "gemini", "gemini-2.5-pro") == 6144
+    assert srv._budget_for_purpose("debate",      "gemini", "gemini-2.5-pro") == 1500
 
     # Non-overridden purposes for OpenAI fall through to the tier table.
     # audit / synth on a NON-reasoning model -> non-reasoning ceiling.
