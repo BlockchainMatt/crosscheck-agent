@@ -73,13 +73,21 @@ def main() -> int:
     # on provider, not model class. (The whole point is that the provider
     # has a quirky reasoning-token accounting model.)
     assert srv._budget_for_purpose("confer", "openai", "gpt-test") == 6144
-    # Gemini — only confer + triangulate were bumped this round; debate
-    # falls through to the non-reasoning ceiling because gemini-2.5-pro
-    # isn't currently tagged in PROVIDER_CAPS.reasoning_prefixes (a
-    # separate fix; flagged as a follow-up).
+    # Gemini — confer + triangulate use the shipped override (6144).
+    # Other purposes use the reasoning-safe default (2048) because
+    # gemini-2.5-pro is tagged in PROVIDER_CAPS.reasoning_prefixes —
+    # no more falling through to the smaller non-reasoning ceilings.
     assert srv._budget_for_purpose("confer",      "gemini", "gemini-2.5-pro") == 6144
     assert srv._budget_for_purpose("triangulate", "gemini", "gemini-2.5-pro") == 6144
-    assert srv._budget_for_purpose("debate",      "gemini", "gemini-2.5-pro") == 1500
+    assert srv._budget_for_purpose("debate",      "gemini", "gemini-2.5-pro") == 2048
+    assert srv._budget_for_purpose("synth",       "gemini", "gemini-2.5-pro") == 2048
+    assert srv._budget_for_purpose("audit",       "gemini", "gemini-2.5-pro") == 2048
+    # _is_reasoning_model returns True now
+    assert srv._is_reasoning_model("gemini", "gemini-2.5-pro") is True
+    # A hypothetical non-reasoning gemini (e.g. a future flash variant)
+    # still falls through to the non-reasoning ceilings
+    assert srv._is_reasoning_model("gemini", "gemini-1.5-flash") is False
+    assert srv._budget_for_purpose("audit", "gemini", "gemini-1.5-flash") == 768
 
     # Non-overridden purposes for OpenAI fall through to the tier table.
     # audit / synth on a NON-reasoning model -> non-reasoning ceiling.

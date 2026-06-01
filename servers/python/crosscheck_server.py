@@ -1921,7 +1921,8 @@ PROVIDER_CAPS: dict[str, dict[str, Any]] = {
     "mistral":   {"family": "openai_chat", "system_role": "inline",   "supports_temperature": True},
     "groq":      {"family": "openai_chat", "system_role": "inline",   "supports_temperature": True},
     "deepseek":  {"family": "openai_chat", "system_role": "inline",   "supports_temperature": True},
-    "gemini":    {"family": "gemini",      "system_role": "separate", "supports_temperature": True},
+    "gemini":    {"family": "gemini",      "system_role": "separate", "supports_temperature": True,
+                   "reasoning_prefixes": ("gemini-2.5-pro",)},
 }
 
 
