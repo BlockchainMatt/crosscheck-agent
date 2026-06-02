@@ -755,4 +755,22 @@ assistance from Claude (Anthropic). Mistakes are Frank's; good ideas are shared.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+**Source-available, non-commercial.** This project is released under the
+[PolyForm Noncommercial License 1.0.0](LICENSE) — you can read, modify,
+and use it for any **non-commercial** purpose (personal projects,
+research, hobby use, internal evaluation, and use by qualifying
+non-profit / educational / governmental organizations).
+
+**Commercial use requires a separate license.** Selling the software,
+embedding it in a commercial product, or running it as a paid hosted
+service is not permitted under the PolyForm NC license. Email
+**frank@metafide.io** to discuss commercial licensing — these are
+routinely available.
+
+Pre-existing commercial license grants are listed in
+[COMMERCIAL-LICENSES.md](COMMERCIAL-LICENSES.md).
+
+**Prior MIT history.** Earlier commits (through `7b54d80`, 2026-05-29)
+were released under the MIT License; those historical snapshots remain
+MIT-licensed for anyone who obtained them at that time. All subsequent
+commits and releases are governed by the PolyForm Noncommercial License.
