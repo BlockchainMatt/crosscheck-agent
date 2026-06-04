@@ -19,8 +19,16 @@ canary detection flags indirect prompt injection; early-stop on
 confer / debate / pick skips the remainder when phase-1 already agrees.
 
 The server is **Python, stdlib-only** — no external dependencies, no build
-step. (Earlier versions shipped TypeScript/Rust/Perl mirrors; those have
-been dropped to remove the 4× maintenance tax. Python is canonical.)
+step. **Python is canonical and the source of truth.**
+
+A **TypeScript port** is in progress at [servers/typescript/](servers/typescript/)
+to support browser-extension and Electron embedding (the Python server
+can't run inside a browser's MV3 service worker). The port is bootstrap-phase
+only today — do not use it in production yet. Migration phases land PR-by-PR
+with byte-equal parity gates against the Python oracle for every tool;
+the Python server keeps shipping new features in parallel until full parity
+is proven. See [servers/typescript/README.md](servers/typescript/README.md)
+for current phase status.
 
 ```
        ┌──────────────┐

@@ -1,0 +1,44 @@
+{
+  "name": "@crosscheck/server",
+  "version": "0.1.0-alpha.0",
+  "description": "crosscheck-agent MCP server — TypeScript port (phase 0: bootstrap)",
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "type": "module",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "main": "./dist/node-stdio.cjs",
+  "module": "./dist/node-stdio.js",
+  "types": "./dist/node-stdio.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/node-stdio.js",
+      "require": "./dist/node-stdio.cjs",
+      "types": "./dist/node-stdio.d.ts"
+    }
+  },
+  "bin": {
+    "crosscheck-mcp": "./dist/node-stdio.js"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist/**"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  }
+}

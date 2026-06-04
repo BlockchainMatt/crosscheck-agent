@@ -30,6 +30,12 @@ __pycache__/
 venv/
 .pytest_cache/
 
+# TypeScript port (servers/typescript)
+node_modules/
+dist/
+*.tsbuildinfo
+.vitest-cache/
+
 # Logs
 *.log
 logs/
