@@ -13,9 +13,14 @@
 // bridge.close() before exiting. Without this, a host crash leaks an
 // orphan Python process per session.
 
+import { existsSync } from "node:fs";
+import path from "node:path";
+
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { spawnPythonBridge, type BridgeHandle } from "../bridge/index.js";
+import { loadPricing } from "../core/pricing.js";
+import { buildProviders } from "../providers/registry.js";
 import { connectAndServe } from "../server.js";
 
 /** Soft deadline for cleanup before we hard-exit. Hosts typically give
@@ -41,8 +46,25 @@ async function main(): Promise<void> {
 
   installShutdownHandlers(bridge);
 
+  // Build the native provider registry from env. Pricing comes from
+  // config/pricing.json (sibling at repo root). Both are optional: a
+  // server with no API keys + no pricing file still serves the
+  // deterministic tools (verify) and the bridge proxies (everything
+  // else) — only the LLM-native paths (pick / audit / confer) require
+  // providers.
+  const pricingPath = process.env["CROSSCHECK_PRICING_PATH"]
+    ?? resolveRepoFile("config/pricing.json");
+  const pricing = pricingPath && existsSync(pricingPath) ? loadPricing(pricingPath) : {};
+  const providers = buildProviders({ env: process.env, pricing });
+  if (Object.keys(providers).length > 0) {
+    process.stderr.write(
+      `crosscheck-agent: native providers loaded: ${Object.keys(providers).sort().join(", ")}\n`,
+    );
+  }
+
   const transport = new StdioServerTransport();
-  const serverOpts = bridge ? { bridge } : {};
+  const serverOpts: Parameters<typeof connectAndServe>[1] = { providers };
+  if (bridge) serverOpts.bridge = bridge;
   await connectAndServe(transport, serverOpts);
   // The server holds the process alive via the stdio streams. We don't
   // exit until the parent closes stdin (handled below).
@@ -79,6 +101,20 @@ function installShutdownHandlers(bridge: BridgeHandle | undefined): void {
   // by itself. We hook stdin-end and close to make sure we tear down.
   process.stdin.on("end",   () => { void shutdown("stdin-end");   });
   process.stdin.on("close", () => { void shutdown("stdin-close"); });
+}
+
+/** Walk up from this file's directory looking for the given repo-relative
+ *  path. Works both in `src/entrypoints/` (dev via tsx) and `dist/` (prod). */
+function resolveRepoFile(rel: string): string | undefined {
+  let dir = __dirname;
+  for (let i = 0; i < 8; i++) {
+    const candidate = path.join(dir, rel);
+    if (existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
 }
 
 main().catch((err) => {

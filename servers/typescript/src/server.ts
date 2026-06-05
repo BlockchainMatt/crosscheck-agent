@@ -17,6 +17,7 @@ import {
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { type BridgeHandle, buildPythonProxies } from "./bridge/index.js";
+import type { Provider } from "./providers/types.js";
 import { registerCoreTools, type Tool } from "./tools/index.js";
 
 export const SERVER_NAME = "crosscheck-agent";
@@ -29,6 +30,13 @@ export interface CreateServerOptions {
    *  tool name comes from Python); in Phase 5+ native TS tools
    *  override per-name. */
   bridge?: BridgeHandle;
+  /** Native LLM providers, keyed by lowercased name. Threaded into
+   *  pick / audit / confer via the tool registry. When absent, those
+   *  tools return a clear "no providers" error (or defer to the bridge
+   *  if one is wired). */
+  providers?: Readonly<Record<string, Provider>>;
+  /** Optional provider allowlist. */
+  providerAllowlist?: readonly string[] | null;
 }
 
 /**
@@ -45,7 +53,7 @@ export function createServer(opts: CreateServerOptions = {}): Server {
     { capabilities: { tools: {} } },
   );
 
-  const tools = buildToolRegistry(opts.bridge);
+  const tools = buildToolRegistry(opts);
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: Array.from(tools.values()).map((t) => ({
@@ -91,10 +99,15 @@ export async function connectAndServe(
  *
  *  The bridge is also threaded INTO native tools that need it for
  *  not-yet-ported sub-features (e.g. verify's shell + url_head). */
-function buildToolRegistry(bridge?: BridgeHandle): Map<string, Tool> {
-  const tools = registerCoreTools(bridge);
-  if (!bridge) return tools;
-  const proxies = buildPythonProxies(bridge);
+function buildToolRegistry(opts: CreateServerOptions): Map<string, Tool> {
+  const registerOpts: Parameters<typeof registerCoreTools>[0] = {};
+  if (opts.bridge)            registerOpts.bridge            = opts.bridge;
+  if (opts.providers)         registerOpts.providers         = opts.providers;
+  if (opts.providerAllowlist !== undefined)
+    registerOpts.providerAllowlist = opts.providerAllowlist;
+  const tools = registerCoreTools(registerOpts);
+  if (!opts.bridge) return tools;
+  const proxies = buildPythonProxies(opts.bridge);
   for (const [name, proxy] of proxies) {
     // Native tool wins on collision (Phase-5 cutover behavior).
     if (!tools.has(name)) tools.set(name, proxy);
