@@ -3396,6 +3396,107 @@ def fixture_review_tool() -> dict:
     }
 
 
+def fixture_list_providers_tool() -> dict:
+    """list_providers_tool.json — Phase 5 part 13 parity gate.
+
+    list_providers reads CFG.providers (active set) and CFG.moderator.
+    Both are env-dependent on the recording box; we override CFG with
+    a known controlled set so the fixture is portable, and the TS
+    test replays the same activeProviders + moderatorDefault.
+
+    Also need to control ALL_PROVIDERS so `available` is deterministic.
+    """
+    srv = _import_server()
+    cases = []
+
+    saved_cfg_providers = srv.CFG.get("providers")
+    saved_cfg_moderator = srv.CFG.get("moderator")
+    saved_all_providers = dict(srv.ALL_PROVIDERS)
+
+    # Build synthetic Provider instances (just need name + model).
+    class _StubProvider:
+        def __init__(self, name, model):
+            self.name = name
+            self.model = model
+            self.purpose = "worker"  # unused
+        def send(self, *a, **kw):
+            raise RuntimeError("stub provider")
+
+    def case(label, available_names, active_names, moderator,
+             provider_models=None):
+        srv.ALL_PROVIDERS.clear()
+        models = provider_models or {}
+        for n in available_names:
+            srv.ALL_PROVIDERS[n] = _StubProvider(n, models.get(n, f"{n}-default"))
+        srv.CFG["providers"] = list(active_names)
+        srv.CFG["moderator"] = moderator
+        out = srv.tool_list_providers({})
+        cases.append({
+            "label":   label,
+            "available_providers": list(available_names),
+            "active_providers":    list(active_names),
+            "moderator_default":   moderator,
+            "provider_models":     models,
+            "expected": out,
+        })
+
+    try:
+        # 4 providers available, all active. Standard production case.
+        case("four-available-all-active",
+             available_names=["anthropic", "openai", "xai", "gemini"],
+             active_names=["anthropic", "openai", "xai", "gemini"],
+             moderator="anthropic",
+             provider_models={"anthropic": "claude-opus-4-7",
+                              "openai":    "gpt-5",
+                              "xai":       "grok-4-latest",
+                              "gemini":    "gemini-2.5-pro"})
+
+        # 2 of 4 active (CFG narrowed) — verifies `active` flag uses CFG.
+        case("two-active-of-four-available",
+             available_names=["anthropic", "openai", "xai", "gemini"],
+             active_names=["anthropic", "openai"],
+             moderator="anthropic",
+             provider_models={"anthropic": "claude-opus-4-7",
+                              "openai":    "gpt-5",
+                              "xai":       "grok-4-latest",
+                              "gemini":    "gemini-2.5-pro"})
+
+        # Zero available — all KNOWN_PROVIDERS entries get available=false, model=null.
+        case("zero-available",
+             available_names=[],
+             active_names=[],
+             moderator="anthropic")
+
+        # Different moderator default.
+        case("alternative-moderator",
+             available_names=["anthropic", "openai"],
+             active_names=["anthropic", "openai"],
+             moderator="openai",
+             provider_models={"anthropic": "claude-opus-4-7",
+                              "openai":    "gpt-5"})
+
+    finally:
+        srv.ALL_PROVIDERS.clear()
+        srv.ALL_PROVIDERS.update(saved_all_providers)
+        if saved_cfg_providers is not None:
+            srv.CFG["providers"] = saved_cfg_providers
+        else:
+            srv.CFG.pop("providers", None)
+        if saved_cfg_moderator is not None:
+            srv.CFG["moderator"] = saved_cfg_moderator
+        else:
+            srv.CFG.pop("moderator", None)
+
+    return {
+        "module":      "list_providers_tool",
+        "description": "Native tool_list_providers parity — provider "
+                       "catalog + active set + moderator default. CFG "
+                       "patched to controlled values for portability.",
+        "case_count":  len(cases),
+        "cases":       cases,
+    }
+
+
 BUILDERS = {
     "budgets":      fixture_budgets,
     "pricing":      fixture_pricing,
@@ -3422,6 +3523,7 @@ BUILDERS = {
     "plan_tool":        fixture_plan_tool,
     "critique_tool":    fixture_critique_tool,
     "review_tool":      fixture_review_tool,
+    "list_providers_tool": fixture_list_providers_tool,
 }
 
 

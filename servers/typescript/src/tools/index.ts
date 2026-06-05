@@ -18,6 +18,7 @@ import { runConfer } from "./confer.js";
 import { runCoordinate } from "./coordinate.js";
 import { runCritique } from "./critique.js";
 import { runDebate } from "./debate.js";
+import { runListProviders } from "./list-providers.js";
 import { runPick } from "./pick.js";
 import { runPlan } from "./plan.js";
 import { runReview } from "./review.js";
@@ -99,6 +100,13 @@ export interface RegisterCoreToolsOptions {
   providers?: Readonly<Record<string, Provider>>;
   /** Optional provider allowlist. null/undefined = no allowlist. */
   providerAllowlist?: readonly string[] | null;
+  /** Providers CFG considers active. Used by list_providers to
+   *  populate the `active` flag. When null/undefined, defaults to
+   *  "all available". */
+  activeProviders?: readonly string[] | null;
+  /** Moderator default. Matches Python CFG.moderator; defaults to
+   *  "anthropic". Used by list_providers + audit + debate + coordinate. */
+  moderatorDefault?: string;
 }
 
 /** Build the native tool surface. Returns a name -> Tool map.
@@ -128,9 +136,36 @@ export function registerCoreTools(
     planTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
     critiqueTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
     reviewTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
+    listProvidersTool(o.providers ?? {}, o.activeProviders ?? null, o.moderatorDefault ?? "anthropic"),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `list_providers` — native port of Python's tool_list_providers.
+ *  Returns the static provider catalog + active set + moderator default. */
+function listProvidersTool(
+  providers: Readonly<Record<string, Provider>>,
+  activeProviders: readonly string[] | null,
+  moderatorDefault: string,
+): Tool {
+  return {
+    name: "list_providers",
+    description:
+      "Return every provider the server knows about and its status " +
+      "(available / active / model). Includes the moderator default " +
+      "and a usage hint for the ad-hoc 'providers' override.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {},
+    },
+    handler: async (args) => runListProviders(args, {
+      providers,
+      activeProviders,
+      moderatorDefault,
+    }),
+  };
 }
 
 /** `review` — native port of Python's tool_review. Tiny wrapper over

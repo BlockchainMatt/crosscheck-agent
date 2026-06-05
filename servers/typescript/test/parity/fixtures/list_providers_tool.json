@@ -1,0 +1,264 @@
+{
+  "module": "list_providers_tool",
+  "description": "Native tool_list_providers parity — provider catalog + active set + moderator default. CFG patched to controlled values for portability.",
+  "case_count": 4,
+  "cases": [
+    {
+      "label": "four-available-all-active",
+      "available_providers": [
+        "anthropic",
+        "openai",
+        "xai",
+        "gemini"
+      ],
+      "active_providers": [
+        "anthropic",
+        "openai",
+        "xai",
+        "gemini"
+      ],
+      "moderator_default": "anthropic",
+      "provider_models": {
+        "anthropic": "claude-opus-4-7",
+        "openai": "gpt-5",
+        "xai": "grok-4-latest",
+        "gemini": "gemini-2.5-pro"
+      },
+      "expected": {
+        "providers": [
+          {
+            "name": "anthropic",
+            "available": true,
+            "active": true,
+            "model": "claude-opus-4-7"
+          },
+          {
+            "name": "openai",
+            "available": true,
+            "active": true,
+            "model": "gpt-5"
+          },
+          {
+            "name": "xai",
+            "available": true,
+            "active": true,
+            "model": "grok-4-latest"
+          },
+          {
+            "name": "gemini",
+            "available": true,
+            "active": true,
+            "model": "gemini-2.5-pro"
+          },
+          {
+            "name": "mistral",
+            "available": false,
+            "active": false,
+            "model": null
+          },
+          {
+            "name": "groq",
+            "available": false,
+            "active": false,
+            "model": null
+          },
+          {
+            "name": "deepseek",
+            "available": false,
+            "active": false,
+            "model": null
+          }
+        ],
+        "moderator_default": "anthropic",
+        "usage_hint": "Pass a 'providers' array to confer/debate/plan/review to pick an ad-hoc subset, e.g. providers=['openai','gemini']. Omit the field to use the configured active set."
+      }
+    },
+    {
+      "label": "two-active-of-four-available",
+      "available_providers": [
+        "anthropic",
+        "openai",
+        "xai",
+        "gemini"
+      ],
+      "active_providers": [
+        "anthropic",
+        "openai"
+      ],
+      "moderator_default": "anthropic",
+      "provider_models": {
+        "anthropic": "claude-opus-4-7",
+        "openai": "gpt-5",
+        "xai": "grok-4-latest",
+        "gemini": "gemini-2.5-pro"
+      },
+      "expected": {
+        "providers": [
+          {
+            "name": "anthropic",
+            "available": true,
+            "active": true,
+            "model": "claude-opus-4-7"
+          },
+          {
+            "name": "openai",
+            "available": true,
+            "active": true,
+            "model": "gpt-5"
+          },
+          {
+            "name": "xai",
+            "available": true,
+            "active": false,
+            "model": "grok-4-latest"
+          },
+          {
+            "name": "gemini",
+            "available": true,
+            "active": false,
+            "model": "gemini-2.5-pro"
+          },
+          {
+            "name": "mistral",
+            "available": false,
+            "active": false,
+            "model": null
+          },
+          {
+            "name": "groq",
+            "available": false,
+            "active": false,
+            "model": null
+          },
+          {
+            "name": "deepseek",
+            "available": false,
+            "active": false,
+            "model": null
+          }
+        ],
+        "moderator_default": "anthropic",
+        "usage_hint": "Pass a 'providers' array to confer/debate/plan/review to pick an ad-hoc subset, e.g. providers=['openai','gemini']. Omit the field to use the configured active set."
+      }
+    },
+    {
+      "label": "zero-available",
+      "available_providers": [],
+      "active_providers": [],
+      "moderator_default": "anthropic",
+      "provider_models": {},
+      "expected": {
+        "providers": [
+          {
+            "name": "anthropic",
+            "available": false,
+            "active": false,
+            "model": null
+          },
+          {
+            "name": "openai",
+            "available": false,
+            "active": false,
+            "model": null
+          },
+          {
+            "name": "xai",
+            "available": false,
+            "active": false,
+            "model": null
+          },
+          {
+            "name": "gemini",
+            "available": false,
+            "active": false,
+            "model": null
+          },
+          {
+            "name": "mistral",
+            "available": false,
+            "active": false,
+            "model": null
+          },
+          {
+            "name": "groq",
+            "available": false,
+            "active": false,
+            "model": null
+          },
+          {
+            "name": "deepseek",
+            "available": false,
+            "active": false,
+            "model": null
+          }
+        ],
+        "moderator_default": "anthropic",
+        "usage_hint": "Pass a 'providers' array to confer/debate/plan/review to pick an ad-hoc subset, e.g. providers=['openai','gemini']. Omit the field to use the configured active set."
+      }
+    },
+    {
+      "label": "alternative-moderator",
+      "available_providers": [
+        "anthropic",
+        "openai"
+      ],
+      "active_providers": [
+        "anthropic",
+        "openai"
+      ],
+      "moderator_default": "openai",
+      "provider_models": {
+        "anthropic": "claude-opus-4-7",
+        "openai": "gpt-5"
+      },
+      "expected": {
+        "providers": [
+          {
+            "name": "anthropic",
+            "available": true,
+            "active": true,
+            "model": "claude-opus-4-7"
+          },
+          {
+            "name": "openai",
+            "available": true,
+            "active": true,
+            "model": "gpt-5"
+          },
+          {
+            "name": "xai",
+            "available": false,
+            "active": false,
+            "model": null
+          },
+          {
+            "name": "gemini",
+            "available": false,
+            "active": false,
+            "model": null
+          },
+          {
+            "name": "mistral",
+            "available": false,
+            "active": false,
+            "model": null
+          },
+          {
+            "name": "groq",
+            "available": false,
+            "active": false,
+            "model": null
+          },
+          {
+            "name": "deepseek",
+            "available": false,
+            "active": false,
+            "model": null
+          }
+        ],
+        "moderator_default": "openai",
+        "usage_hint": "Pass a 'providers' array to confer/debate/plan/review to pick an ad-hoc subset, e.g. providers=['openai','gemini']. Omit the field to use the configured active set."
+      }
+    }
+  ]
+}
