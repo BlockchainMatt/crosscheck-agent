@@ -1,0 +1,397 @@
+{
+  "module": "redact",
+  "description": "redactText + redactObj parity",
+  "case_count": 36,
+  "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788",
+  "session_id": "test-session-42",
+  "plain_cases": [
+    {
+      "label": "plain::00",
+      "input": "",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": ""
+    },
+    {
+      "label": "plain::01",
+      "input": "hello world",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": "hello world"
+    },
+    {
+      "label": "plain::02",
+      "input": "Email me at alice@example.com",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": "Email me at [REDACTED_EMAIL]"
+    },
+    {
+      "label": "plain::03",
+      "input": "Bad guy: bob@evil.io and charlie@example.org",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": "Bad guy: [REDACTED_EMAIL] and [REDACTED_EMAIL]"
+    },
+    {
+      "label": "plain::04",
+      "input": "IP 192.168.1.1 hit the cluster",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": "IP [REDACTED_IP] hit the cluster"
+    },
+    {
+      "label": "plain::05",
+      "input": "Multiple IPs: 10.0.0.1, 172.16.0.5, 192.168.0.255 logged out",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": "Multiple IPs: [REDACTED_IP], [REDACTED_IP], [REDACTED_IP] logged out"
+    },
+    {
+      "label": "plain::06",
+      "input": "Key AKIAABCD1234EFGH5678 leaked",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": "Key [REDACTED_AWS_KEY] leaked"
+    },
+    {
+      "label": "plain::07",
+      "input": "GitHub token ghp_abcdefghijklmnopqrstuvwxyz12 found",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": "GitHub token [REDACTED_TOKEN] found"
+    },
+    {
+      "label": "plain::08",
+      "input": "Slack token xoxb-1234567890-aaaa-bbbb leaked",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": "Slack token [REDACTED_TOKEN] leaked"
+    },
+    {
+      "label": "plain::09",
+      "input": "OpenAI key sk-aaaaaaaaaaaaaaaaaaaaaaaaaa surfaced",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": "OpenAI key [REDACTED_TOKEN] surfaced"
+    },
+    {
+      "label": "plain::10",
+      "input": "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 X",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": "Authorization: Bearer [REDACTED_TOKEN] X"
+    },
+    {
+      "label": "plain::11",
+      "input": "Card 4111 1111 1111 1111 used",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": "Card [REDACTED_CARD] used"
+    },
+    {
+      "label": "plain::12",
+      "input": "Card 4111-1111-1111-1111 used",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": "Card [REDACTED_CARD] used"
+    },
+    {
+      "label": "plain::13",
+      "input": "User alice@example.com keyed in from 10.0.0.5 with sk-abcdef1234567890abcd1234",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": "User [REDACTED_EMAIL] keyed in from [REDACTED_IP] with [REDACTED_TOKEN]"
+    },
+    {
+      "label": "plain::14",
+      "input": "everything's fine here",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": "everything's fine here"
+    },
+    {
+      "label": "plain::15",
+      "input": "Just talking about IP addresses in general",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": "Just talking about IP addresses in general"
+    },
+    {
+      "label": "plain::16",
+      "input": "你好 alice@example.com 안녕",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": "你好 [REDACTED_EMAIL] 안녕"
+    }
+  ],
+  "hmac_cases": [
+    {
+      "label": "hmac::00",
+      "input": "",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": ""
+    },
+    {
+      "label": "hmac::01",
+      "input": "hello world",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": "hello world"
+    },
+    {
+      "label": "hmac::02",
+      "input": "Email me at alice@example.com",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": "Email me at [REDACTED_EMAIL:dc651674]"
+    },
+    {
+      "label": "hmac::03",
+      "input": "Bad guy: bob@evil.io and charlie@example.org",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": "Bad guy: [REDACTED_EMAIL:83be9787] and [REDACTED_EMAIL:5b885daa]"
+    },
+    {
+      "label": "hmac::04",
+      "input": "IP 192.168.1.1 hit the cluster",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": "IP [REDACTED_IP:2065acd0] hit the cluster"
+    },
+    {
+      "label": "hmac::05",
+      "input": "Multiple IPs: 10.0.0.1, 172.16.0.5, 192.168.0.255 logged out",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": "Multiple IPs: [REDACTED_IP:8a253a78], [REDACTED_IP:1bfe5cd1], [REDACTED_IP:4581631f] logged out"
+    },
+    {
+      "label": "hmac::06",
+      "input": "Key AKIAABCD1234EFGH5678 leaked",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": "Key [REDACTED_AWS_KEY:cc71c980] leaked"
+    },
+    {
+      "label": "hmac::07",
+      "input": "GitHub token ghp_abcdefghijklmnopqrstuvwxyz12 found",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": "GitHub token [REDACTED_TOKEN:d21d201a] found"
+    },
+    {
+      "label": "hmac::08",
+      "input": "Slack token xoxb-1234567890-aaaa-bbbb leaked",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": "Slack token [REDACTED_TOKEN:49293349] leaked"
+    },
+    {
+      "label": "hmac::09",
+      "input": "OpenAI key sk-aaaaaaaaaaaaaaaaaaaaaaaaaa surfaced",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": "OpenAI key [REDACTED_TOKEN:378fce28] surfaced"
+    },
+    {
+      "label": "hmac::10",
+      "input": "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 X",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": "Authorization: Bearer [REDACTED_TOKEN:737ccc64] X"
+    },
+    {
+      "label": "hmac::11",
+      "input": "Card 4111 1111 1111 1111 used",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": "Card [REDACTED_CARD:f576dd5e] used"
+    },
+    {
+      "label": "hmac::12",
+      "input": "Card 4111-1111-1111-1111 used",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": "Card [REDACTED_CARD:2f2693f1] used"
+    },
+    {
+      "label": "hmac::13",
+      "input": "User alice@example.com keyed in from 10.0.0.5 with sk-abcdef1234567890abcd1234",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": "User [REDACTED_EMAIL:dc651674] keyed in from [REDACTED_IP:e6c777cb] with [REDACTED_TOKEN:0de714db]"
+    },
+    {
+      "label": "hmac::14",
+      "input": "everything's fine here",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": "everything's fine here"
+    },
+    {
+      "label": "hmac::15",
+      "input": "Just talking about IP addresses in general",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": "Just talking about IP addresses in general"
+    },
+    {
+      "label": "hmac::16",
+      "input": "你好 alice@example.com 안녕",
+      "config": {
+        "enabled": true,
+        "hmac_tokens": true,
+        "session_id": "test-session-42",
+        "secret_hex": "deadbeefcafebabe1122334455667788deadbeefcafebabe1122334455667788"
+      },
+      "expected": "你好 [REDACTED_EMAIL:dc651674] 안녕"
+    }
+  ],
+  "disabled_cases": [
+    {
+      "label": "disabled::email",
+      "input": "alice@example.com",
+      "config": {
+        "enabled": false,
+        "hmac_tokens": false
+      },
+      "expected": "alice@example.com"
+    }
+  ],
+  "obj_cases": [
+    {
+      "label": "obj::plain",
+      "input": {
+        "user": "bob@example.com",
+        "nested": {
+          "ip": "10.0.0.1",
+          "n": 42,
+          "list": [
+            "a@b.co",
+            "no match here",
+            123,
+            null
+          ]
+        }
+      },
+      "config": {
+        "enabled": true,
+        "hmac_tokens": false
+      },
+      "expected": {
+        "user": "[REDACTED_EMAIL]",
+        "nested": {
+          "ip": "[REDACTED_IP]",
+          "n": 42,
+          "list": [
+            "[REDACTED_EMAIL]",
+            "no match here",
+            123,
+            null
+          ]
+        }
+      }
+    }
+  ]
+}
