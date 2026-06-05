@@ -841,6 +841,136 @@ def fixture_usage() -> dict:
 
 
 # ----------------------------------------------------------------------
+# router.json — routerScore + routerRecommend
+# ----------------------------------------------------------------------
+def fixture_router() -> dict:
+    srv = _import_server()
+
+    # ---- routerScore: pure math; lots of edge cases ----
+    score_inputs = [
+        # (stats_entry, min_cost, max_cost, label)
+        ({"error_rate": 0.0, "avg_cost_usd": 0.001, "avg_total_tokens": 0.0},
+         0.001, 0.001, "all-perfect-no-spread"),
+        ({"error_rate": 0.0, "avg_cost_usd": 0.0,   "avg_total_tokens": 1500.0},
+         0.0, 0.01, "max-engagement"),
+        ({"error_rate": 0.5, "avg_cost_usd": 0.005, "avg_total_tokens": 750.0},
+         0.001, 0.01, "mid-everything"),
+        ({"error_rate": 1.0, "avg_cost_usd": 0.01,  "avg_total_tokens": 0.0},
+         0.001, 0.01, "all-bad"),
+        ({"error_rate": 0.05, "avg_cost_usd": 0.0001, "avg_total_tokens": 3000.0},
+         0.0001, 0.005, "engagement-clamps-at-1"),
+        ({"error_rate": -0.1, "avg_cost_usd": 0.005, "avg_total_tokens": 500.0},
+         0.001, 0.01, "negative-error-rate-clamps"),
+        ({"error_rate": 0.2, "avg_cost_usd": 0.02, "avg_total_tokens": 1000.0},
+         0.005, 0.005, "min-eq-max"),
+        ({"error_rate": 0.0, "avg_cost_usd": 0.5, "avg_total_tokens": 2000.0},
+         0.0, 1.0, "cost-half-range"),
+        ({},  # missing fields default to 0
+         0.0, 0.0, "empty-stats"),
+    ]
+    score_cases = []
+    for stats_entry, min_c, max_c, label in score_inputs:
+        score_cases.append({
+            "label":     f"score::{label}",
+            "stats":     stats_entry,
+            "min_cost":  min_c,
+            "max_cost":  max_c,
+            "expected":  srv._router_score(stats_entry, min_c, max_c),
+        })
+
+    # ---- routerRecommend: drive with controlled inputs ----
+    # We monkey-patch `_router_stats` and `_provider_weight` + `ALL_PROVIDERS`
+    # to exercise the full code path WITHOUT touching the DB.
+    saved_router_stats   = srv._router_stats
+    saved_provider_wt    = srv._provider_weight
+    saved_all_providers  = srv.ALL_PROVIDERS
+
+    # Synthetic stats. Three providers, varying error/cost/tokens.
+    fake_stats = {
+        "openai":    {"provider": "openai",    "calls": 10, "errors": 0,
+                      "error_rate": 0.0,
+                      "avg_total_tokens": 800.0, "avg_cost_usd": 0.002,
+                      "avg_wall_ms": 1200.0},
+        "anthropic": {"provider": "anthropic", "calls":  8, "errors": 1,
+                      "error_rate": 0.111,
+                      "avg_total_tokens": 1200.0, "avg_cost_usd": 0.005,
+                      "avg_wall_ms": 2000.0},
+        "xai":       {"provider": "xai",       "calls":  6, "errors": 2,
+                      "error_rate": 0.25,
+                      "avg_total_tokens": 600.0, "avg_cost_usd": 0.001,
+                      "avg_wall_ms":  900.0},
+    }
+    fake_weights = {"openai": 0.7, "anthropic": 0.85, "xai": 0.5}
+    fake_models  = {"openai": "gpt-5", "anthropic": "claude-x", "xai": "grok"}
+
+    # Mock the three deps.
+    srv._router_stats = lambda purpose, since_seconds=None, exclude=None: dict(fake_stats)  # noqa: ARG005
+    srv._provider_weight = lambda p: fake_weights.get(p, 0.0)
+    # Minimal ALL_PROVIDERS mock — only needs .model attribute access.
+    class _FakeProv:
+        def __init__(self, name, model): self.name, self.model = name, model
+    srv.ALL_PROVIDERS = {
+        p: _FakeProv(p, m) for p, m in fake_models.items()
+    }
+
+    recommend_inputs = [
+        # (purpose, n, exclude, label)
+        ("worker", 2, None, "top-2"),
+        ("worker", 3, None, "all-3"),
+        ("worker", 5, None, "n-bigger-than-panel"),
+        ("worker", 2, ["xai"], "exclude-xai"),
+        ("worker", 2, ["openai", "anthropic"], "exclude-most"),
+    ]
+    recommend_cases = []
+    for purpose, n, exclude, label in recommend_inputs:
+        rec, meta = srv._router_recommend(purpose, n=n, exclude=exclude)
+        recommend_cases.append({
+            "label":           f"rec::{label}",
+            "purpose":         purpose,
+            "n":               n,
+            "exclude":         exclude,
+            "stats":           dict(fake_stats),
+            "provider_weights": dict(fake_weights),
+            "provider_models": dict(fake_models),
+            "panel":           sorted(fake_models.keys()),  # alphabetical
+            "expected":        {"recommended": rec, "meta": meta},
+        })
+
+    # Cold-start case: tiny stats below threshold
+    cold_stats = {"openai": {"provider": "openai", "calls": 1, "errors": 0,
+                              "error_rate": 0.0,
+                              "avg_total_tokens": 100.0,
+                              "avg_cost_usd": 0.001,
+                              "avg_wall_ms": 500.0}}
+    srv._router_stats = lambda purpose, since_seconds=None, exclude=None: dict(cold_stats)  # noqa: ARG005
+    rec_cold, meta_cold = srv._router_recommend("worker", n=2)
+    recommend_cases.append({
+        "label":           "rec::cold-start",
+        "purpose":         "worker",
+        "n":               2,
+        "exclude":         None,
+        "stats":           dict(cold_stats),
+        "provider_weights": dict(fake_weights),
+        "provider_models": dict(fake_models),
+        "panel":           sorted(fake_models.keys()),
+        "expected":        {"recommended": rec_cold, "meta": meta_cold},
+    })
+
+    # Restore monkey-patches.
+    srv._router_stats    = saved_router_stats
+    srv._provider_weight = saved_provider_wt
+    srv.ALL_PROVIDERS    = saved_all_providers
+
+    return {
+        "module":           "router",
+        "description":      "routerScore + routerRecommend parity",
+        "case_count":       len(score_cases) + len(recommend_cases),
+        "score_cases":      score_cases,
+        "recommend_cases":  recommend_cases,
+    }
+
+
+# ----------------------------------------------------------------------
 # Wiring
 # ----------------------------------------------------------------------
 BUILDERS = {
@@ -852,6 +982,7 @@ BUILDERS = {
     "prompts":   fixture_prompts,
     "error":     fixture_error,
     "usage":     fixture_usage,
+    "router":    fixture_router,
 }
 
 

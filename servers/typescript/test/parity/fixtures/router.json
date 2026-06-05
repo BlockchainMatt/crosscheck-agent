@@ -1,0 +1,593 @@
+{
+  "module": "router",
+  "description": "routerScore + routerRecommend parity",
+  "case_count": 15,
+  "score_cases": [
+    {
+      "label": "score::all-perfect-no-spread",
+      "stats": {
+        "error_rate": 0.0,
+        "avg_cost_usd": 0.001,
+        "avg_total_tokens": 0.0
+      },
+      "min_cost": 0.001,
+      "max_cost": 0.001,
+      "expected": 0.9
+    },
+    {
+      "label": "score::max-engagement",
+      "stats": {
+        "error_rate": 0.0,
+        "avg_cost_usd": 0.0,
+        "avg_total_tokens": 1500.0
+      },
+      "min_cost": 0.0,
+      "max_cost": 0.01,
+      "expected": 1.0
+    },
+    {
+      "label": "score::mid-everything",
+      "stats": {
+        "error_rate": 0.5,
+        "avg_cost_usd": 0.005,
+        "avg_total_tokens": 750.0
+      },
+      "min_cost": 0.001,
+      "max_cost": 0.01,
+      "expected": 0.5167
+    },
+    {
+      "label": "score::all-bad",
+      "stats": {
+        "error_rate": 1.0,
+        "avg_cost_usd": 0.01,
+        "avg_total_tokens": 0.0
+      },
+      "min_cost": 0.001,
+      "max_cost": 0.01,
+      "expected": 0.0
+    },
+    {
+      "label": "score::engagement-clamps-at-1",
+      "stats": {
+        "error_rate": 0.05,
+        "avg_cost_usd": 0.0001,
+        "avg_total_tokens": 3000.0
+      },
+      "min_cost": 0.0001,
+      "max_cost": 0.005,
+      "expected": 0.97
+    },
+    {
+      "label": "score::negative-error-rate-clamps",
+      "stats": {
+        "error_rate": -0.1,
+        "avg_cost_usd": 0.005,
+        "avg_total_tokens": 500.0
+      },
+      "min_cost": 0.001,
+      "max_cost": 0.01,
+      "expected": 0.86
+    },
+    {
+      "label": "score::min-eq-max",
+      "stats": {
+        "error_rate": 0.2,
+        "avg_cost_usd": 0.02,
+        "avg_total_tokens": 1000.0
+      },
+      "min_cost": 0.005,
+      "max_cost": 0.005,
+      "expected": 0.8467
+    },
+    {
+      "label": "score::cost-half-range",
+      "stats": {
+        "error_rate": 0.0,
+        "avg_cost_usd": 0.5,
+        "avg_total_tokens": 2000.0
+      },
+      "min_cost": 0.0,
+      "max_cost": 1.0,
+      "expected": 0.85
+    },
+    {
+      "label": "score::empty-stats",
+      "stats": {},
+      "min_cost": 0.0,
+      "max_cost": 0.0,
+      "expected": 0.9
+    }
+  ],
+  "recommend_cases": [
+    {
+      "label": "rec::top-2",
+      "purpose": "worker",
+      "n": 2,
+      "exclude": null,
+      "stats": {
+        "openai": {
+          "provider": "openai",
+          "calls": 10,
+          "errors": 0,
+          "error_rate": 0.0,
+          "avg_total_tokens": 800.0,
+          "avg_cost_usd": 0.002,
+          "avg_wall_ms": 1200.0
+        },
+        "anthropic": {
+          "provider": "anthropic",
+          "calls": 8,
+          "errors": 1,
+          "error_rate": 0.111,
+          "avg_total_tokens": 1200.0,
+          "avg_cost_usd": 0.005,
+          "avg_wall_ms": 2000.0
+        },
+        "xai": {
+          "provider": "xai",
+          "calls": 6,
+          "errors": 2,
+          "error_rate": 0.25,
+          "avg_total_tokens": 600.0,
+          "avg_cost_usd": 0.001,
+          "avg_wall_ms": 900.0
+        }
+      },
+      "provider_weights": {
+        "openai": 0.7,
+        "anthropic": 0.85,
+        "xai": 0.5
+      },
+      "provider_models": {
+        "openai": "gpt-5",
+        "anthropic": "claude-x",
+        "xai": "grok"
+      },
+      "panel": [
+        "anthropic",
+        "openai",
+        "xai"
+      ],
+      "expected": {
+        "recommended": [
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "score": 0.8783,
+            "error_rate": 0.0,
+            "calls": 10,
+            "avg_cost_usd": 0.002,
+            "avg_wall_ms": 1200,
+            "rationale": "reliability=1.00 calls=10 avg_cost=$0.00200"
+          },
+          {
+            "provider": "xai",
+            "model": "grok",
+            "score": 0.79,
+            "error_rate": 0.25,
+            "calls": 6,
+            "avg_cost_usd": 0.001,
+            "avg_wall_ms": 900,
+            "rationale": "reliability=0.75 calls=6 avg_cost=$0.00100"
+          }
+        ],
+        "meta": {
+          "purpose": "worker",
+          "n_requested": 2,
+          "n_available": 3,
+          "history_calls": 24,
+          "cold_start": false,
+          "window_seconds": 2592000
+        }
+      }
+    },
+    {
+      "label": "rec::all-3",
+      "purpose": "worker",
+      "n": 3,
+      "exclude": null,
+      "stats": {
+        "openai": {
+          "provider": "openai",
+          "calls": 10,
+          "errors": 0,
+          "error_rate": 0.0,
+          "avg_total_tokens": 800.0,
+          "avg_cost_usd": 0.002,
+          "avg_wall_ms": 1200.0
+        },
+        "anthropic": {
+          "provider": "anthropic",
+          "calls": 8,
+          "errors": 1,
+          "error_rate": 0.111,
+          "avg_total_tokens": 1200.0,
+          "avg_cost_usd": 0.005,
+          "avg_wall_ms": 2000.0
+        },
+        "xai": {
+          "provider": "xai",
+          "calls": 6,
+          "errors": 2,
+          "error_rate": 0.25,
+          "avg_total_tokens": 600.0,
+          "avg_cost_usd": 0.001,
+          "avg_wall_ms": 900.0
+        }
+      },
+      "provider_weights": {
+        "openai": 0.7,
+        "anthropic": 0.85,
+        "xai": 0.5
+      },
+      "provider_models": {
+        "openai": "gpt-5",
+        "anthropic": "claude-x",
+        "xai": "grok"
+      },
+      "panel": [
+        "anthropic",
+        "openai",
+        "xai"
+      ],
+      "expected": {
+        "recommended": [
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "score": 0.8783,
+            "error_rate": 0.0,
+            "calls": 10,
+            "avg_cost_usd": 0.002,
+            "avg_wall_ms": 1200,
+            "rationale": "reliability=1.00 calls=10 avg_cost=$0.00200"
+          },
+          {
+            "provider": "xai",
+            "model": "grok",
+            "score": 0.79,
+            "error_rate": 0.25,
+            "calls": 6,
+            "avg_cost_usd": 0.001,
+            "avg_wall_ms": 900,
+            "rationale": "reliability=0.75 calls=6 avg_cost=$0.00100"
+          },
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "score": 0.6134,
+            "error_rate": 0.111,
+            "calls": 8,
+            "avg_cost_usd": 0.005,
+            "avg_wall_ms": 2000,
+            "rationale": "reliability=0.89 calls=8 avg_cost=$0.00500"
+          }
+        ],
+        "meta": {
+          "purpose": "worker",
+          "n_requested": 3,
+          "n_available": 3,
+          "history_calls": 24,
+          "cold_start": false,
+          "window_seconds": 2592000
+        }
+      }
+    },
+    {
+      "label": "rec::n-bigger-than-panel",
+      "purpose": "worker",
+      "n": 5,
+      "exclude": null,
+      "stats": {
+        "openai": {
+          "provider": "openai",
+          "calls": 10,
+          "errors": 0,
+          "error_rate": 0.0,
+          "avg_total_tokens": 800.0,
+          "avg_cost_usd": 0.002,
+          "avg_wall_ms": 1200.0
+        },
+        "anthropic": {
+          "provider": "anthropic",
+          "calls": 8,
+          "errors": 1,
+          "error_rate": 0.111,
+          "avg_total_tokens": 1200.0,
+          "avg_cost_usd": 0.005,
+          "avg_wall_ms": 2000.0
+        },
+        "xai": {
+          "provider": "xai",
+          "calls": 6,
+          "errors": 2,
+          "error_rate": 0.25,
+          "avg_total_tokens": 600.0,
+          "avg_cost_usd": 0.001,
+          "avg_wall_ms": 900.0
+        }
+      },
+      "provider_weights": {
+        "openai": 0.7,
+        "anthropic": 0.85,
+        "xai": 0.5
+      },
+      "provider_models": {
+        "openai": "gpt-5",
+        "anthropic": "claude-x",
+        "xai": "grok"
+      },
+      "panel": [
+        "anthropic",
+        "openai",
+        "xai"
+      ],
+      "expected": {
+        "recommended": [
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "score": 0.8783,
+            "error_rate": 0.0,
+            "calls": 10,
+            "avg_cost_usd": 0.002,
+            "avg_wall_ms": 1200,
+            "rationale": "reliability=1.00 calls=10 avg_cost=$0.00200"
+          },
+          {
+            "provider": "xai",
+            "model": "grok",
+            "score": 0.79,
+            "error_rate": 0.25,
+            "calls": 6,
+            "avg_cost_usd": 0.001,
+            "avg_wall_ms": 900,
+            "rationale": "reliability=0.75 calls=6 avg_cost=$0.00100"
+          },
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "score": 0.6134,
+            "error_rate": 0.111,
+            "calls": 8,
+            "avg_cost_usd": 0.005,
+            "avg_wall_ms": 2000,
+            "rationale": "reliability=0.89 calls=8 avg_cost=$0.00500"
+          }
+        ],
+        "meta": {
+          "purpose": "worker",
+          "n_requested": 5,
+          "n_available": 3,
+          "history_calls": 24,
+          "cold_start": false,
+          "window_seconds": 2592000
+        }
+      }
+    },
+    {
+      "label": "rec::exclude-xai",
+      "purpose": "worker",
+      "n": 2,
+      "exclude": [
+        "xai"
+      ],
+      "stats": {
+        "openai": {
+          "provider": "openai",
+          "calls": 10,
+          "errors": 0,
+          "error_rate": 0.0,
+          "avg_total_tokens": 800.0,
+          "avg_cost_usd": 0.002,
+          "avg_wall_ms": 1200.0
+        },
+        "anthropic": {
+          "provider": "anthropic",
+          "calls": 8,
+          "errors": 1,
+          "error_rate": 0.111,
+          "avg_total_tokens": 1200.0,
+          "avg_cost_usd": 0.005,
+          "avg_wall_ms": 2000.0
+        },
+        "xai": {
+          "provider": "xai",
+          "calls": 6,
+          "errors": 2,
+          "error_rate": 0.25,
+          "avg_total_tokens": 600.0,
+          "avg_cost_usd": 0.001,
+          "avg_wall_ms": 900.0
+        }
+      },
+      "provider_weights": {
+        "openai": 0.7,
+        "anthropic": 0.85,
+        "xai": 0.5
+      },
+      "provider_models": {
+        "openai": "gpt-5",
+        "anthropic": "claude-x",
+        "xai": "grok"
+      },
+      "panel": [
+        "anthropic",
+        "openai",
+        "xai"
+      ],
+      "expected": {
+        "recommended": [
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "score": 0.9533,
+            "error_rate": 0.0,
+            "calls": 10,
+            "avg_cost_usd": 0.002,
+            "avg_wall_ms": 1200,
+            "rationale": "reliability=1.00 calls=10 avg_cost=$0.00200"
+          },
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "score": 0.6134,
+            "error_rate": 0.111,
+            "calls": 8,
+            "avg_cost_usd": 0.005,
+            "avg_wall_ms": 2000,
+            "rationale": "reliability=0.89 calls=8 avg_cost=$0.00500"
+          }
+        ],
+        "meta": {
+          "purpose": "worker",
+          "n_requested": 2,
+          "n_available": 2,
+          "history_calls": 24,
+          "cold_start": false,
+          "window_seconds": 2592000
+        }
+      }
+    },
+    {
+      "label": "rec::exclude-most",
+      "purpose": "worker",
+      "n": 2,
+      "exclude": [
+        "openai",
+        "anthropic"
+      ],
+      "stats": {
+        "openai": {
+          "provider": "openai",
+          "calls": 10,
+          "errors": 0,
+          "error_rate": 0.0,
+          "avg_total_tokens": 800.0,
+          "avg_cost_usd": 0.002,
+          "avg_wall_ms": 1200.0
+        },
+        "anthropic": {
+          "provider": "anthropic",
+          "calls": 8,
+          "errors": 1,
+          "error_rate": 0.111,
+          "avg_total_tokens": 1200.0,
+          "avg_cost_usd": 0.005,
+          "avg_wall_ms": 2000.0
+        },
+        "xai": {
+          "provider": "xai",
+          "calls": 6,
+          "errors": 2,
+          "error_rate": 0.25,
+          "avg_total_tokens": 600.0,
+          "avg_cost_usd": 0.001,
+          "avg_wall_ms": 900.0
+        }
+      },
+      "provider_weights": {
+        "openai": 0.7,
+        "anthropic": 0.85,
+        "xai": 0.5
+      },
+      "provider_models": {
+        "openai": "gpt-5",
+        "anthropic": "claude-x",
+        "xai": "grok"
+      },
+      "panel": [
+        "anthropic",
+        "openai",
+        "xai"
+      ],
+      "expected": {
+        "recommended": [
+          {
+            "provider": "xai",
+            "model": "grok",
+            "score": 0.79,
+            "error_rate": 0.25,
+            "calls": 6,
+            "avg_cost_usd": 0.001,
+            "avg_wall_ms": 900,
+            "rationale": "reliability=0.75 calls=6 avg_cost=$0.00100"
+          }
+        ],
+        "meta": {
+          "purpose": "worker",
+          "n_requested": 2,
+          "n_available": 1,
+          "history_calls": 24,
+          "cold_start": false,
+          "window_seconds": 2592000
+        }
+      }
+    },
+    {
+      "label": "rec::cold-start",
+      "purpose": "worker",
+      "n": 2,
+      "exclude": null,
+      "stats": {
+        "openai": {
+          "provider": "openai",
+          "calls": 1,
+          "errors": 0,
+          "error_rate": 0.0,
+          "avg_total_tokens": 100.0,
+          "avg_cost_usd": 0.001,
+          "avg_wall_ms": 500.0
+        }
+      },
+      "provider_weights": {
+        "openai": 0.7,
+        "anthropic": 0.85,
+        "xai": 0.5
+      },
+      "provider_models": {
+        "openai": "gpt-5",
+        "anthropic": "claude-x",
+        "xai": "grok"
+      },
+      "panel": [
+        "anthropic",
+        "openai",
+        "xai"
+      ],
+      "expected": {
+        "recommended": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "score": 0.85,
+            "error_rate": null,
+            "calls": 0,
+            "avg_cost_usd": null,
+            "avg_wall_ms": null,
+            "rationale": "cold-start; ordered by provider_stats win-rate (insufficient usage_log history for this purpose)"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "score": 0.7,
+            "error_rate": null,
+            "calls": 1,
+            "avg_cost_usd": 0.001,
+            "avg_wall_ms": 500.0,
+            "rationale": "cold-start; ordered by provider_stats win-rate (insufficient usage_log history for this purpose)"
+          }
+        ],
+        "meta": {
+          "purpose": "worker",
+          "n_requested": 2,
+          "n_available": 3,
+          "history_calls": 1,
+          "cold_start": true,
+          "window_seconds": 2592000
+        }
+      }
+    }
+  ]
+}
