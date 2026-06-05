@@ -1,5 +1,7 @@
 # crosscheck-agent
 
+Optimize token consumption and build features and products effortlessly. 
+
 Confer with multiple LLMs from inside Claude Code. `crosscheck-agent` is a
 compact MCP server that lets Claude ask peers from other model families
 (GPT, Grok, Gemini, Mistral, Groq, DeepSeek) to reason, debate, plan,
