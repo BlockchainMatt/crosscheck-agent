@@ -1,0 +1,149 @@
+{
+  "module": "triangulate_tool",
+  "description": "Native tool_triangulate v1 parity (delegates to coordinate, reshapes; weights all 1.0 because _provider_stats_all stubbed empty).",
+  "case_count": 2,
+  "cases": [
+    {
+      "label": "three-providers-with-dissent",
+      "args": {
+        "question": "Postgres or Mysql for the new service?",
+        "providers": [
+          "anthropic",
+          "openai",
+          "xai"
+        ]
+      },
+      "canned": {
+        "anthropic": [
+          "{\"role\":\"proposer\",\"summary\":\"Use Postgres.\",\"confidence\":0.8,\"ballot\":\"agree\",\"claims\":[{\"claim\":\"Postgres has stronger ecosystem\",\"confidence\":0.9}],\"citations\":[]}",
+          "{\"consensus\":\"Postgres is the default; pick Mysql only for OLTP cases.\",\"weighted_confidence\":0.75,\"key_claims\":[{\"claim\":\"Postgres ecosystem is stronger\",\"confidence\":0.85}],\"dissent\":[{\"claim\":\"Mysql fine for OLTP\",\"providers\":[\"openai\"],\"rationale\":\"replication maturity\"}],\"citations\":[],\"open_questions\":[\"Operator familiarity?\"]}"
+        ],
+        "openai": [
+          "{\"role\":\"critic\",\"summary\":\"Mysql is fine for OLTP.\",\"confidence\":0.65,\"ballot\":\"disagree\",\"claims\":[{\"claim\":\"Mysql replication is mature\",\"confidence\":0.7}],\"citations\":[]}"
+        ],
+        "xai": [
+          "{\"role\":\"critic\",\"summary\":\"Postgres aligns with our stack.\",\"confidence\":0.7,\"ballot\":\"agree\",\"claims\":[{\"claim\":\"Ecosystem fit\",\"confidence\":0.7}],\"citations\":[]}"
+        ]
+      },
+      "expected": {
+        "tool": "triangulate",
+        "question": "Postgres or Mysql for the new service?",
+        "consensus": "Postgres is the default; pick Mysql only for OLTP cases.",
+        "weighted_confidence": 0.75,
+        "key_claims": [
+          {
+            "claim": "Postgres ecosystem is stronger",
+            "confidence": 0.85
+          }
+        ],
+        "dissent": [
+          {
+            "claim": "Mysql fine for OLTP",
+            "providers": [
+              "openai"
+            ],
+            "rationale": "replication maturity"
+          }
+        ],
+        "minority_report": "- Mysql fine for OLTP — voiced by openai: replication maturity",
+        "open_questions": [
+          "Operator familiarity?"
+        ],
+        "panel": [
+          {
+            "provider": "anthropic",
+            "weight": 1.0
+          },
+          {
+            "provider": "openai",
+            "weight": 1.0
+          },
+          {
+            "provider": "xai",
+            "weight": 1.0
+          }
+        ],
+        "providers_used": [
+          "anthropic",
+          "openai",
+          "xai"
+        ],
+        "roles": {
+          "proposer": "anthropic",
+          "critics": [
+            "openai",
+            "xai"
+          ],
+          "synthesizer": "anthropic"
+        },
+        "synthesis_errors": []
+      }
+    },
+    {
+      "label": "three-providers-no-dissent",
+      "args": {
+        "question": "Should we ship the migration tonight?",
+        "providers": [
+          "anthropic",
+          "openai",
+          "xai"
+        ]
+      },
+      "canned": {
+        "anthropic": [
+          "{\"role\":\"proposer\",\"summary\":\"Use Postgres.\",\"confidence\":0.8,\"ballot\":\"agree\",\"claims\":[{\"claim\":\"Postgres has stronger ecosystem\",\"confidence\":0.9}],\"citations\":[]}",
+          "{\"consensus\":\"Postgres unanimously.\",\"weighted_confidence\":0.85,\"key_claims\":[{\"claim\":\"Ecosystem fit\",\"confidence\":0.9}],\"dissent\":[],\"citations\":[],\"open_questions\":[]}"
+        ],
+        "openai": [
+          "{\"role\":\"critic\",\"summary\":\"Postgres aligns with our stack.\",\"confidence\":0.7,\"ballot\":\"agree\",\"claims\":[{\"claim\":\"Ecosystem fit\",\"confidence\":0.7}],\"citations\":[]}"
+        ],
+        "xai": [
+          "{\"role\":\"critic\",\"summary\":\"Postgres aligns with our stack.\",\"confidence\":0.7,\"ballot\":\"agree\",\"claims\":[{\"claim\":\"Ecosystem fit\",\"confidence\":0.7}],\"citations\":[]}"
+        ]
+      },
+      "expected": {
+        "tool": "triangulate",
+        "question": "Should we ship the migration tonight?",
+        "consensus": "Postgres unanimously.",
+        "weighted_confidence": 0.85,
+        "key_claims": [
+          {
+            "claim": "Ecosystem fit",
+            "confidence": 0.9
+          }
+        ],
+        "dissent": [],
+        "minority_report": "(no dissent recorded)",
+        "open_questions": [],
+        "panel": [
+          {
+            "provider": "anthropic",
+            "weight": 1.0
+          },
+          {
+            "provider": "openai",
+            "weight": 1.0
+          },
+          {
+            "provider": "xai",
+            "weight": 1.0
+          }
+        ],
+        "providers_used": [
+          "anthropic",
+          "openai",
+          "xai"
+        ],
+        "roles": {
+          "proposer": "anthropic",
+          "critics": [
+            "openai",
+            "xai"
+          ],
+          "synthesizer": "anthropic"
+        },
+        "synthesis_errors": []
+      }
+    }
+  ]
+}

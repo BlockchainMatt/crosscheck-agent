@@ -18,6 +18,7 @@ import { runConfer } from "./confer.js";
 import { runCoordinate } from "./coordinate.js";
 import { runDebate } from "./debate.js";
 import { runPick } from "./pick.js";
+import { runTriangulate } from "./triangulate.js";
 import { runVerify } from "./verify.js";
 
 /** A registered MCP tool. `inputSchema` is the JSON-Schema surfaced via
@@ -120,9 +121,44 @@ export function registerCoreTools(
     conferTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
     debateTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
     coordinateTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
+    triangulateTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `triangulate` — native port of Python's tool_triangulate. Thin
+ *  wrapper over coordinate that reshapes the output as consensus +
+ *  minority report. */
+function triangulateTool(
+  providers: Readonly<Record<string, Provider>>,
+  allowlist: readonly string[] | null,
+  bridge: BridgeHandle | undefined,
+): Tool {
+  return {
+    name: "triangulate",
+    description:
+      "Run a coordinate flow and reshape the output as a consensus + " +
+      "minority report with per-provider weights. v1 uses 1.0 weights " +
+      "(matches a fresh provider_stats DB); future versions thread " +
+      "real win-rate weights when the DB layer ports.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        question:    { type: "string" },
+        context:     { type: "string" },
+        providers:   { type: "array", items: { type: "string" } },
+        session_id:  { type: "string" },
+        untrusted_input: { type: "boolean" },
+      },
+      required: ["question"],
+    },
+    handler: (args) => runTriangulate(args, {
+      providers, allowlist,
+      ...(bridge ? { bridge } : {}),
+    }),
+  };
 }
 
 /** `coordinate` — native port of Python's tool_coordinate. Three-role

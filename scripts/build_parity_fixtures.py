@@ -2837,6 +2837,174 @@ def fixture_coordinate_tool() -> dict:
     }
 
 
+def fixture_triangulate_tool() -> dict:
+    """triangulate_tool.json — Phase 5 part 9 parity gate.
+
+    Triangulate wraps coordinate, so we reuse the same canned-per-
+    provider list pattern but stub out _provider_stats_all to return
+    {} (forces _provider_weights → 1.0 for every panel member, which
+    matches v1 TS native behavior).
+
+    Stripped on both sides:
+      budget, session, usage rollup, timing rollup, run_summary,
+      transcript_path, canary_leaks, _suppress_run_summary, plus
+      per-call timing on every answer envelope nested in
+      proposal_answer / critique_answers / synthesis_answer.
+    """
+    srv = _import_server()
+    cases = []
+
+    saved_ask_one        = srv._ask_one
+    saved_session_load   = srv._session_load
+    saved_log_usage      = srv.log_usage
+    saved_write          = srv.write_transcript
+    saved_session_record = srv._session_record
+    saved_session_save   = srv._session_save
+    saved_claim_add      = getattr(srv, "_claim_add", None)
+    saved_session_memory_add = getattr(srv, "_session_memory_add", None)
+    saved_record_ballot  = getattr(srv, "_record_ballot", None)
+    saved_provider_stats_all = getattr(srv, "_provider_stats_all", None)
+
+    srv._session_load    = lambda _sid: None
+    srv.log_usage        = lambda *a, **kw: None
+    srv.write_transcript = lambda *a, **kw: ""
+    srv._session_record  = lambda *a, **kw: None
+    srv._session_save    = lambda *a, **kw: None
+    srv._claim_add       = lambda *a, **kw: None
+    srv._session_memory_add = lambda *a, **kw: None
+    srv._record_ballot   = lambda *a, **kw: None
+    # Force fresh-DB behavior for _provider_weights → 1.0 per panelist.
+    srv._provider_stats_all = lambda: {}
+
+    def sanitize(out: dict) -> dict:
+        copy = dict(out)
+        for k in ("budget", "session", "usage", "timing", "run_summary",
+                  "transcript_path", "canary_leaks",
+                  "_suppress_run_summary"):
+            copy.pop(k, None)
+        return copy
+
+    def make_fake_ask_one(canned: dict[str, list[str]]):
+        cursors = {name: 0 for name in canned}
+        def fake(p, messages, deadline, max_tokens, purpose="worker"):
+            i = cursors.get(p.name, 0)
+            seq = canned.get(p.name, [])
+            text = seq[i] if i < len(seq) else ""
+            cursors[p.name] = i + 1
+            return {
+                "provider": p.name, "model": p.model,
+                "response": text,
+                "cache_hit": False, "elapsed_ms": 0, "cpu_ms": 0,
+                "attempts": 1,
+                "usage": {
+                    "provider": p.name, "model": p.model, "purpose": purpose,
+                    "prompt_tokens": 100, "completion_tokens": 50,
+                    "total_tokens": 150, "cached_tokens": 0,
+                    "cost_usd": 0.0, "estimated": False,
+                },
+                "timing": {"wall_ms": 0, "cpu_ms": 0},
+            }
+        return fake
+
+    def add(label, args, canned):
+        srv._ask_one = make_fake_ask_one(canned)
+        invoke_args = {**args, "providers": list(canned.keys())}
+        out = srv.tool_triangulate(invoke_args)
+        cases.append({
+            "label":   label,
+            "args":    invoke_args,
+            "canned":  canned,
+            "expected": sanitize(out),
+        })
+
+    PROP_OK = (
+        '{"role":"proposer","summary":"Use Postgres.",'
+        '"confidence":0.8,"ballot":"agree",'
+        '"claims":[{"claim":"Postgres has stronger ecosystem","confidence":0.9}],'
+        '"citations":[]}'
+    )
+    CRIT_OPENAI_DISSENT = (
+        '{"role":"critic","summary":"Mysql is fine for OLTP.",'
+        '"confidence":0.65,"ballot":"disagree",'
+        '"claims":[{"claim":"Mysql replication is mature","confidence":0.7}],'
+        '"citations":[]}'
+    )
+    CRIT_XAI_AGREE = (
+        '{"role":"critic","summary":"Postgres aligns with our stack.",'
+        '"confidence":0.7,"ballot":"agree",'
+        '"claims":[{"claim":"Ecosystem fit","confidence":0.7}],'
+        '"citations":[]}'
+    )
+    SYNTH_WITH_DISSENT = (
+        '{"consensus":"Postgres is the default; pick Mysql only for OLTP cases.",'
+        '"weighted_confidence":0.75,'
+        '"key_claims":[{"claim":"Postgres ecosystem is stronger","confidence":0.85}],'
+        '"dissent":[{"claim":"Mysql fine for OLTP","providers":["openai"],"rationale":"replication maturity"}],'
+        '"citations":[],"open_questions":["Operator familiarity?"]}'
+    )
+    SYNTH_NO_DISSENT = (
+        '{"consensus":"Postgres unanimously.",'
+        '"weighted_confidence":0.85,'
+        '"key_claims":[{"claim":"Ecosystem fit","confidence":0.9}],'
+        '"dissent":[],"citations":[],"open_questions":[]}'
+    )
+
+    try:
+        # Three providers + dissent — minority_report has one line.
+        add(
+            "three-providers-with-dissent",
+            {"question": "Postgres or Mysql for the new service?"},
+            {
+                "anthropic": [PROP_OK, SYNTH_WITH_DISSENT],
+                "openai":    [CRIT_OPENAI_DISSENT],
+                "xai":       [CRIT_XAI_AGREE],
+            },
+        )
+
+        # Three providers, full agreement — minority_report = "(no dissent recorded)".
+        add(
+            "three-providers-no-dissent",
+            {"question": "Should we ship the migration tonight?"},
+            {
+                "anthropic": [PROP_OK, SYNTH_NO_DISSENT],
+                "openai":    [CRIT_XAI_AGREE],
+                "xai":       [CRIT_XAI_AGREE],
+            },
+        )
+
+        # NOTE: "fewer-than-2-providers" error passthrough is NOT in
+        # the parity fixture — the underlying coordinate error
+        # envelope's `available_now` field is env-dependent (populated
+        # from ALL_PROVIDERS), which makes byte-equal fragile across
+        # recording boxes. The unit tests cover that path with a
+        # controlled providers map.
+
+    finally:
+        srv._ask_one = saved_ask_one
+        srv._session_load = saved_session_load
+        srv.log_usage = saved_log_usage
+        srv.write_transcript = saved_write
+        srv._session_record = saved_session_record
+        srv._session_save = saved_session_save
+        if saved_claim_add is not None:
+            srv._claim_add = saved_claim_add
+        if saved_session_memory_add is not None:
+            srv._session_memory_add = saved_session_memory_add
+        if saved_record_ballot is not None:
+            srv._record_ballot = saved_record_ballot
+        if saved_provider_stats_all is not None:
+            srv._provider_stats_all = saved_provider_stats_all
+
+    return {
+        "module":      "triangulate_tool",
+        "description": "Native tool_triangulate v1 parity (delegates to "
+                       "coordinate, reshapes; weights all 1.0 because "
+                       "_provider_stats_all stubbed empty).",
+        "case_count":  len(cases),
+        "cases":       cases,
+    }
+
+
 BUILDERS = {
     "budgets":      fixture_budgets,
     "pricing":      fixture_pricing,
@@ -2858,7 +3026,8 @@ BUILDERS = {
     "audit_tool":   fixture_audit_tool,
     "confer_tool":  fixture_confer_tool,
     "debate_tool":  fixture_debate_tool,
-    "coordinate_tool": fixture_coordinate_tool,
+    "coordinate_tool":  fixture_coordinate_tool,
+    "triangulate_tool": fixture_triangulate_tool,
 }
 
 
