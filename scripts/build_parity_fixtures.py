@@ -1497,6 +1497,229 @@ def fixture_worker() -> dict:
 
 
 # ----------------------------------------------------------------------
+# utils.json — safeSessionId, perCallTokens, classifyHttpError,
+# checkSessionBreakers, checkDagBreakers, projectSessionWithAnswers.
+# ----------------------------------------------------------------------
+def fixture_utils() -> dict:
+    srv = _import_server()
+
+    # ---- safeSessionId ----
+    sid_inputs = [
+        "",
+        "default",
+        "abc-123_xyz.456",
+        "has spaces and stuff!@#$",
+        "x" * 100,                  # > 64 truncation
+        "_._._._",                  # all valid punct
+        "你好 alpha",                  # unicode stripped
+        "/abs/path/like/this",
+        "ALLCAPS123",
+    ]
+    sid_cases = [
+        {
+            "label":    f"sid::{i:02d}",
+            "input":    s,
+            "expected": srv._safe_session_id(s),
+        }
+        for i, s in enumerate(sid_inputs)
+    ]
+
+    # ---- perCallTokens ----
+    saved_cfg = dict(srv.CFG)
+    try:
+        per_call_inputs = [
+            # (total_calls, token_cap_cfg, label)
+            (1,    None, "1-call-default-8000"),
+            (4,    None, "4-calls-default"),
+            (10,   None, "10-calls-default"),
+            (100,  None, "floor-256"),
+            (0,    None, "zero-calls-treated-as-1"),
+            (-5,   None, "negative-clamped"),
+            (1,    16000, "explicit-16k-cap"),
+            (4,    1024, "small-cap-256-floor"),
+            # Note: Python crashes on a non-numeric `token_cap` config;
+            # the TS port falls back to 8000 (more defensive). Documented
+            # divergence — not fixture-tested.
+        ]
+        per_call_cases = []
+        for calls, cap, label in per_call_inputs:
+            if cap is not None:
+                srv.CFG = dict(saved_cfg)
+                srv.CFG["token_cap"] = cap
+            else:
+                srv.CFG = dict(saved_cfg)
+                srv.CFG.pop("token_cap", None)
+            per_call_cases.append({
+                "label":    f"per_call::{label}",
+                "calls":    calls,
+                "cfg":      {"token_cap": cap} if cap is not None else None,
+                "expected": srv._per_call_tokens(calls),
+            })
+    finally:
+        srv.CFG = saved_cfg
+
+    # ---- classifyHttpError — mimic the relevant slice (status / body /
+    #      Retry-After mapping) since we can't easily synth a urllib
+    #      HTTPError. We exercise the kind+transient mapping directly
+    #      by inlining the logic in a tiny shim that mirrors Python.
+    def py_classify(status, body, retry_after):
+        msg = f"HTTP {status}: {body[:512]}"
+        if status in (401, 403):
+            return {"kind": "auth", "transient": False, "status": status,
+                    "message": msg, "retry_after_s": retry_after}
+        if status == 429:
+            return {"kind": "rate_limit", "transient": True, "status": status,
+                    "message": msg, "retry_after_s": retry_after}
+        if 500 <= status <= 599:
+            return {"kind": "server", "transient": True, "status": status,
+                    "message": msg, "retry_after_s": retry_after}
+        return {"kind": "client", "transient": False, "status": status,
+                "message": msg, "retry_after_s": retry_after}
+
+    http_inputs = [
+        (200, "ok",                None, "200-client"),
+        (400, "bad request",       None, "400-client"),
+        (401, "unauthorized",      None, "401-auth"),
+        (403, "forbidden",         None, "403-auth"),
+        (404, "not found",         None, "404-client"),
+        (429, "rate limited",      30.0, "429-with-retry-after"),
+        (429, "rate limited",      None, "429-no-retry-after"),
+        (500, "internal",          None, "500-server"),
+        (503, "service unavail.",  120.0, "503-with-retry-after"),
+        (599, "edge server",       None, "599-edge"),
+        (418, "i am a teapot",     None, "418-client"),
+        (502, "x" * 1000,          None, "502-body-truncated"),  # body[:512]
+    ]
+    http_cases = [
+        {
+            "label":      f"http::{label}",
+            "status":     status,
+            "body":       body,
+            "retry_after": retry,
+            "expected":   py_classify(status, body, retry),
+        }
+        for (status, body, retry, label) in http_inputs
+    ]
+
+    # ---- checkSessionBreakers ----
+    breaker_inputs = [
+        # (session, cfg, label)
+        (None, {"max_session_cost_usd": 1.0}, "null-session"),
+        ({"total_cost_usd": 0.5},  {},                          "no-cfg"),
+        ({"total_cost_usd": 0.5},  {"max_session_cost_usd": 1.0},   "under-cost"),
+        ({"total_cost_usd": 1.5},  {"max_session_cost_usd": 1.0},   "over-cost"),
+        ({"total_tokens": 500},    {"max_session_tokens":   1000}, "under-tokens"),
+        ({"total_tokens": 1500},   {"max_session_tokens":   1000}, "over-tokens"),
+        ({"wall_ms": 5_000},       {"max_session_wall_seconds":   10}, "under-wall"),
+        ({"wall_ms": 15_000},      {"max_session_wall_seconds":   10}, "over-wall"),
+        # Cost-first ordering — cost trips first even when others would.
+        ({"total_cost_usd": 2.0, "total_tokens": 2000, "wall_ms": 99999},
+          {"max_session_cost_usd": 1.0, "max_session_tokens": 1000,
+           "max_session_wall_seconds": 10},                       "all-three-tripped-cost-first"),
+    ]
+    breaker_cases = []
+    for sess, cfg, label in breaker_inputs:
+        saved = dict(srv.CFG)
+        srv.CFG = dict(saved)
+        srv.CFG["circuit_breakers"] = cfg
+        try:
+            tripped = srv._check_session_breakers(sess)
+        finally:
+            srv.CFG = saved
+        breaker_cases.append({
+            "label":    f"breaker::{label}",
+            "session":  sess,
+            "cfg":      cfg,
+            "expected": None if tripped is None
+                         else {"name": tripped[0], "reason": tripped[1]},
+        })
+
+    # ---- checkDagBreakers ----
+    dag_inputs = [
+        # (dag, cfg, label)
+        ({"nodes": [{"id": "a"}, {"id": "b"}, {"id": "c"}]}, {}, "no-cfg"),
+        ({"nodes": [{"id": "a"}]}, {"max_dag_nodes": 5}, "under-nodes"),
+        ({"nodes": [{"id": x} for x in "abcdefghi"]}, {"max_dag_nodes": 5}, "over-nodes"),
+        ({"nodes": [
+            {"id": "a"},
+            {"id": "b", "depends_on": ["a"]},
+            {"id": "c", "depends_on": ["b"]},
+        ]}, {"max_dag_depth": 2}, "depth-exceeds"),
+        ({"nodes": [
+            {"id": "a"},
+            {"id": "b", "depends_on": ["a"]},
+        ]}, {"max_dag_depth": 5}, "depth-under-cap"),
+        # Cycle -> fail-closed via the depth check
+        ({"nodes": [
+            {"id": "a", "depends_on": ["b"]},
+            {"id": "b", "depends_on": ["a"]},
+        ]}, {"max_dag_depth": 5}, "cycle-fail-closed"),
+        # Cycle but depth breaker is disabled -> null (Python only checks
+        # cycles inside the depth path)
+        ({"nodes": [
+            {"id": "a", "depends_on": ["b"]},
+            {"id": "b", "depends_on": ["a"]},
+        ]}, {}, "cycle-but-no-depth-cap"),
+    ]
+    dag_cases = []
+    for dag, cfg, label in dag_inputs:
+        saved = dict(srv.CFG)
+        srv.CFG = dict(saved)
+        srv.CFG["circuit_breakers"] = cfg
+        try:
+            tripped = srv._check_dag_breakers(dag)
+        finally:
+            srv.CFG = saved
+        dag_cases.append({
+            "label":    f"dag::{label}",
+            "dag":      dag,
+            "cfg":      cfg,
+            "expected": None if tripped is None
+                         else {"name": tripped[0], "reason": tripped[1]},
+        })
+
+    # ---- projectSessionWithAnswers ----
+    project_inputs = [
+        # (session, extra_answers, label)
+        (None, [], "null-session"),
+        ({"total_cost_usd": 0.5, "total_tokens": 100, "wall_ms": 1000}, [], "no-extras"),
+        ({"total_cost_usd": 0.5, "total_tokens": 100, "wall_ms": 1000},
+         [{"usage": {"cost_usd": 0.1, "total_tokens": 20}, "elapsed_ms": 100}],
+         "single-extra"),
+        ({"total_cost_usd": 1.0, "total_tokens": 200, "wall_ms": 500},
+         [{"usage": {"cost_usd": 0.01, "total_tokens": 5}, "elapsed_ms": 10},
+          {"usage": {"cost_usd": 0.02, "total_tokens": 10}, "elapsed_ms": 20},
+          {"usage": {"cost_usd": 0.03, "total_tokens": 15}, "elapsed_ms": 30}],
+         "three-extras"),
+        ({"total_cost_usd": 0.0},  # missing fields default to 0
+         [{"usage": {"cost_usd": 0.5}}],
+         "missing-fields"),
+    ]
+    project_cases = [
+        {
+            "label":    f"project::{label}",
+            "session":  sess,
+            "extras":   extras,
+            "expected": srv._project_session_with_answers(sess, extras),
+        }
+        for (sess, extras, label) in project_inputs
+    ]
+
+    return {
+        "module":         "utils",
+        "description":    "small utility helpers parity",
+        "case_count": (len(sid_cases) + len(per_call_cases) + len(http_cases)
+                       + len(breaker_cases) + len(dag_cases) + len(project_cases)),
+        "sid_cases":      sid_cases,
+        "per_call_cases": per_call_cases,
+        "http_cases":     http_cases,
+        "breaker_cases":  breaker_cases,
+        "dag_cases":      dag_cases,
+        "project_cases":  project_cases,
+    }
+
+
+# ----------------------------------------------------------------------
 # Wiring
 # ----------------------------------------------------------------------
 BUILDERS = {
@@ -1512,6 +1735,7 @@ BUILDERS = {
     "tiers":     fixture_tiers,
     "audit":     fixture_audit,
     "worker":    fixture_worker,
+    "utils":     fixture_utils,
 }
 
 

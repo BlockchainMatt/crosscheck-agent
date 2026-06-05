@@ -1,0 +1,637 @@
+{
+  "module": "utils",
+  "description": "small utility helpers parity",
+  "case_count": 50,
+  "sid_cases": [
+    {
+      "label": "sid::00",
+      "input": "",
+      "expected": "default"
+    },
+    {
+      "label": "sid::01",
+      "input": "default",
+      "expected": "default"
+    },
+    {
+      "label": "sid::02",
+      "input": "abc-123_xyz.456",
+      "expected": "abc-123_xyz.456"
+    },
+    {
+      "label": "sid::03",
+      "input": "has spaces and stuff!@#$",
+      "expected": "hasspacesandstuff"
+    },
+    {
+      "label": "sid::04",
+      "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "expected": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "label": "sid::05",
+      "input": "_._._._",
+      "expected": "_._._._"
+    },
+    {
+      "label": "sid::06",
+      "input": "你好 alpha",
+      "expected": "alpha"
+    },
+    {
+      "label": "sid::07",
+      "input": "/abs/path/like/this",
+      "expected": "abspathlikethis"
+    },
+    {
+      "label": "sid::08",
+      "input": "ALLCAPS123",
+      "expected": "ALLCAPS123"
+    }
+  ],
+  "per_call_cases": [
+    {
+      "label": "per_call::1-call-default-8000",
+      "calls": 1,
+      "cfg": null,
+      "expected": 8000
+    },
+    {
+      "label": "per_call::4-calls-default",
+      "calls": 4,
+      "cfg": null,
+      "expected": 2000
+    },
+    {
+      "label": "per_call::10-calls-default",
+      "calls": 10,
+      "cfg": null,
+      "expected": 800
+    },
+    {
+      "label": "per_call::floor-256",
+      "calls": 100,
+      "cfg": null,
+      "expected": 256
+    },
+    {
+      "label": "per_call::zero-calls-treated-as-1",
+      "calls": 0,
+      "cfg": null,
+      "expected": 8000
+    },
+    {
+      "label": "per_call::negative-clamped",
+      "calls": -5,
+      "cfg": null,
+      "expected": 8000
+    },
+    {
+      "label": "per_call::explicit-16k-cap",
+      "calls": 1,
+      "cfg": {
+        "token_cap": 16000
+      },
+      "expected": 16000
+    },
+    {
+      "label": "per_call::small-cap-256-floor",
+      "calls": 4,
+      "cfg": {
+        "token_cap": 1024
+      },
+      "expected": 256
+    }
+  ],
+  "http_cases": [
+    {
+      "label": "http::200-client",
+      "status": 200,
+      "body": "ok",
+      "retry_after": null,
+      "expected": {
+        "kind": "client",
+        "transient": false,
+        "status": 200,
+        "message": "HTTP 200: ok",
+        "retry_after_s": null
+      }
+    },
+    {
+      "label": "http::400-client",
+      "status": 400,
+      "body": "bad request",
+      "retry_after": null,
+      "expected": {
+        "kind": "client",
+        "transient": false,
+        "status": 400,
+        "message": "HTTP 400: bad request",
+        "retry_after_s": null
+      }
+    },
+    {
+      "label": "http::401-auth",
+      "status": 401,
+      "body": "unauthorized",
+      "retry_after": null,
+      "expected": {
+        "kind": "auth",
+        "transient": false,
+        "status": 401,
+        "message": "HTTP 401: unauthorized",
+        "retry_after_s": null
+      }
+    },
+    {
+      "label": "http::403-auth",
+      "status": 403,
+      "body": "forbidden",
+      "retry_after": null,
+      "expected": {
+        "kind": "auth",
+        "transient": false,
+        "status": 403,
+        "message": "HTTP 403: forbidden",
+        "retry_after_s": null
+      }
+    },
+    {
+      "label": "http::404-client",
+      "status": 404,
+      "body": "not found",
+      "retry_after": null,
+      "expected": {
+        "kind": "client",
+        "transient": false,
+        "status": 404,
+        "message": "HTTP 404: not found",
+        "retry_after_s": null
+      }
+    },
+    {
+      "label": "http::429-with-retry-after",
+      "status": 429,
+      "body": "rate limited",
+      "retry_after": 30.0,
+      "expected": {
+        "kind": "rate_limit",
+        "transient": true,
+        "status": 429,
+        "message": "HTTP 429: rate limited",
+        "retry_after_s": 30.0
+      }
+    },
+    {
+      "label": "http::429-no-retry-after",
+      "status": 429,
+      "body": "rate limited",
+      "retry_after": null,
+      "expected": {
+        "kind": "rate_limit",
+        "transient": true,
+        "status": 429,
+        "message": "HTTP 429: rate limited",
+        "retry_after_s": null
+      }
+    },
+    {
+      "label": "http::500-server",
+      "status": 500,
+      "body": "internal",
+      "retry_after": null,
+      "expected": {
+        "kind": "server",
+        "transient": true,
+        "status": 500,
+        "message": "HTTP 500: internal",
+        "retry_after_s": null
+      }
+    },
+    {
+      "label": "http::503-with-retry-after",
+      "status": 503,
+      "body": "service unavail.",
+      "retry_after": 120.0,
+      "expected": {
+        "kind": "server",
+        "transient": true,
+        "status": 503,
+        "message": "HTTP 503: service unavail.",
+        "retry_after_s": 120.0
+      }
+    },
+    {
+      "label": "http::599-edge",
+      "status": 599,
+      "body": "edge server",
+      "retry_after": null,
+      "expected": {
+        "kind": "server",
+        "transient": true,
+        "status": 599,
+        "message": "HTTP 599: edge server",
+        "retry_after_s": null
+      }
+    },
+    {
+      "label": "http::418-client",
+      "status": 418,
+      "body": "i am a teapot",
+      "retry_after": null,
+      "expected": {
+        "kind": "client",
+        "transient": false,
+        "status": 418,
+        "message": "HTTP 418: i am a teapot",
+        "retry_after_s": null
+      }
+    },
+    {
+      "label": "http::502-body-truncated",
+      "status": 502,
+      "body": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "retry_after": null,
+      "expected": {
+        "kind": "server",
+        "transient": true,
+        "status": 502,
+        "message": "HTTP 502: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "retry_after_s": null
+      }
+    }
+  ],
+  "breaker_cases": [
+    {
+      "label": "breaker::null-session",
+      "session": null,
+      "cfg": {
+        "max_session_cost_usd": 1.0
+      },
+      "expected": null
+    },
+    {
+      "label": "breaker::no-cfg",
+      "session": {
+        "total_cost_usd": 0.5
+      },
+      "cfg": {},
+      "expected": null
+    },
+    {
+      "label": "breaker::under-cost",
+      "session": {
+        "total_cost_usd": 0.5
+      },
+      "cfg": {
+        "max_session_cost_usd": 1.0
+      },
+      "expected": null
+    },
+    {
+      "label": "breaker::over-cost",
+      "session": {
+        "total_cost_usd": 1.5
+      },
+      "cfg": {
+        "max_session_cost_usd": 1.0
+      },
+      "expected": {
+        "name": "max_session_cost_usd",
+        "reason": "session cost $1.5000 >= cap $1.0000"
+      }
+    },
+    {
+      "label": "breaker::under-tokens",
+      "session": {
+        "total_tokens": 500
+      },
+      "cfg": {
+        "max_session_tokens": 1000
+      },
+      "expected": null
+    },
+    {
+      "label": "breaker::over-tokens",
+      "session": {
+        "total_tokens": 1500
+      },
+      "cfg": {
+        "max_session_tokens": 1000
+      },
+      "expected": {
+        "name": "max_session_tokens",
+        "reason": "session tokens 1500 >= cap 1000"
+      }
+    },
+    {
+      "label": "breaker::under-wall",
+      "session": {
+        "wall_ms": 5000
+      },
+      "cfg": {
+        "max_session_wall_seconds": 10
+      },
+      "expected": null
+    },
+    {
+      "label": "breaker::over-wall",
+      "session": {
+        "wall_ms": 15000
+      },
+      "cfg": {
+        "max_session_wall_seconds": 10
+      },
+      "expected": {
+        "name": "max_session_wall_seconds",
+        "reason": "session wall 15000ms >= cap 10000ms"
+      }
+    },
+    {
+      "label": "breaker::all-three-tripped-cost-first",
+      "session": {
+        "total_cost_usd": 2.0,
+        "total_tokens": 2000,
+        "wall_ms": 99999
+      },
+      "cfg": {
+        "max_session_cost_usd": 1.0,
+        "max_session_tokens": 1000,
+        "max_session_wall_seconds": 10
+      },
+      "expected": {
+        "name": "max_session_cost_usd",
+        "reason": "session cost $2.0000 >= cap $1.0000"
+      }
+    }
+  ],
+  "dag_cases": [
+    {
+      "label": "dag::no-cfg",
+      "dag": {
+        "nodes": [
+          {
+            "id": "a"
+          },
+          {
+            "id": "b"
+          },
+          {
+            "id": "c"
+          }
+        ]
+      },
+      "cfg": {},
+      "expected": null
+    },
+    {
+      "label": "dag::under-nodes",
+      "dag": {
+        "nodes": [
+          {
+            "id": "a"
+          }
+        ]
+      },
+      "cfg": {
+        "max_dag_nodes": 5
+      },
+      "expected": null
+    },
+    {
+      "label": "dag::over-nodes",
+      "dag": {
+        "nodes": [
+          {
+            "id": "a"
+          },
+          {
+            "id": "b"
+          },
+          {
+            "id": "c"
+          },
+          {
+            "id": "d"
+          },
+          {
+            "id": "e"
+          },
+          {
+            "id": "f"
+          },
+          {
+            "id": "g"
+          },
+          {
+            "id": "h"
+          },
+          {
+            "id": "i"
+          }
+        ]
+      },
+      "cfg": {
+        "max_dag_nodes": 5
+      },
+      "expected": {
+        "name": "max_dag_nodes",
+        "reason": "dag has 9 nodes > cap 5"
+      }
+    },
+    {
+      "label": "dag::depth-exceeds",
+      "dag": {
+        "nodes": [
+          {
+            "id": "a"
+          },
+          {
+            "id": "b",
+            "depends_on": [
+              "a"
+            ]
+          },
+          {
+            "id": "c",
+            "depends_on": [
+              "b"
+            ]
+          }
+        ]
+      },
+      "cfg": {
+        "max_dag_depth": 2
+      },
+      "expected": {
+        "name": "max_dag_depth",
+        "reason": "dag depth 3 > cap 2"
+      }
+    },
+    {
+      "label": "dag::depth-under-cap",
+      "dag": {
+        "nodes": [
+          {
+            "id": "a"
+          },
+          {
+            "id": "b",
+            "depends_on": [
+              "a"
+            ]
+          }
+        ]
+      },
+      "cfg": {
+        "max_dag_depth": 5
+      },
+      "expected": null
+    },
+    {
+      "label": "dag::cycle-fail-closed",
+      "dag": {
+        "nodes": [
+          {
+            "id": "a",
+            "depends_on": [
+              "b"
+            ]
+          },
+          {
+            "id": "b",
+            "depends_on": [
+              "a"
+            ]
+          }
+        ]
+      },
+      "cfg": {
+        "max_dag_depth": 5
+      },
+      "expected": {
+        "name": "max_dag_depth",
+        "reason": "cycle detected at node a; depth can't be bounded — fail-closed (this normally means _validate_dag missed it)"
+      }
+    },
+    {
+      "label": "dag::cycle-but-no-depth-cap",
+      "dag": {
+        "nodes": [
+          {
+            "id": "a",
+            "depends_on": [
+              "b"
+            ]
+          },
+          {
+            "id": "b",
+            "depends_on": [
+              "a"
+            ]
+          }
+        ]
+      },
+      "cfg": {},
+      "expected": null
+    }
+  ],
+  "project_cases": [
+    {
+      "label": "project::null-session",
+      "session": null,
+      "extras": [],
+      "expected": null
+    },
+    {
+      "label": "project::no-extras",
+      "session": {
+        "total_cost_usd": 0.5,
+        "total_tokens": 100,
+        "wall_ms": 1000
+      },
+      "extras": [],
+      "expected": {
+        "total_cost_usd": 0.5,
+        "total_tokens": 100,
+        "wall_ms": 1000
+      }
+    },
+    {
+      "label": "project::single-extra",
+      "session": {
+        "total_cost_usd": 0.5,
+        "total_tokens": 100,
+        "wall_ms": 1000
+      },
+      "extras": [
+        {
+          "usage": {
+            "cost_usd": 0.1,
+            "total_tokens": 20
+          },
+          "elapsed_ms": 100
+        }
+      ],
+      "expected": {
+        "total_cost_usd": 0.6,
+        "total_tokens": 120,
+        "wall_ms": 1100
+      }
+    },
+    {
+      "label": "project::three-extras",
+      "session": {
+        "total_cost_usd": 1.0,
+        "total_tokens": 200,
+        "wall_ms": 500
+      },
+      "extras": [
+        {
+          "usage": {
+            "cost_usd": 0.01,
+            "total_tokens": 5
+          },
+          "elapsed_ms": 10
+        },
+        {
+          "usage": {
+            "cost_usd": 0.02,
+            "total_tokens": 10
+          },
+          "elapsed_ms": 20
+        },
+        {
+          "usage": {
+            "cost_usd": 0.03,
+            "total_tokens": 15
+          },
+          "elapsed_ms": 30
+        }
+      ],
+      "expected": {
+        "total_cost_usd": 1.06,
+        "total_tokens": 230,
+        "wall_ms": 560
+      }
+    },
+    {
+      "label": "project::missing-fields",
+      "session": {
+        "total_cost_usd": 0.0
+      },
+      "extras": [
+        {
+          "usage": {
+            "cost_usd": 0.5
+          }
+        }
+      ],
+      "expected": {
+        "total_cost_usd": 0.5,
+        "total_tokens": 0,
+        "wall_ms": 0
+      }
+    }
+  ]
+}
