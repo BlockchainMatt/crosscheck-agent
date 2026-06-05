@@ -1914,6 +1914,196 @@ def fixture_anthropic() -> dict:
 BUILDERS["anthropic"] = fixture_anthropic
 
 
+# ----------------------------------------------------------------------
+# openai_compat.json — buildOpenAICompatibleRequest +
+# parseOpenAICompatibleResponse parity across openai / xai / mistral /
+# groq / deepseek.
+# ----------------------------------------------------------------------
+def fixture_openai_compat() -> dict:
+    srv = _import_server()
+    pricing_payload = {
+        "openai":    {"gpt-test": {"prompt_per_1k": 0.0001, "completion_per_1k": 0.0003, "cached_per_1k": 0.00005},
+                       "gpt-5":    {"prompt_per_1k": 0.001,  "completion_per_1k": 0.003,  "cached_per_1k": 0.0005}},
+        "xai":       {"grok-test": {"prompt_per_1k": 0.005,  "completion_per_1k": 0.015,  "cached_per_1k": 0.0025},
+                       "grok-4-latest": {"prompt_per_1k": 0.005, "completion_per_1k": 0.015, "cached_per_1k": 0.0025}},
+        "mistral":   {"mistral-test": {"prompt_per_1k": 0.001, "completion_per_1k": 0.003, "cached_per_1k": 0.0001}},
+        "groq":      {"groq-test":    {"prompt_per_1k": 0.0001, "completion_per_1k": 0.0003, "cached_per_1k": 0.00005}},
+        "deepseek":  {"ds-test":      {"prompt_per_1k": 0.0001, "completion_per_1k": 0.0003, "cached_per_1k": 0.00005}},
+    }
+
+    captured: list[dict] = []
+    def fake_post(url, headers, body, *, timeout, deadline):
+        captured.append({"url": url, "headers": dict(headers), "body": dict(body)})
+        return ({
+            "choices": [{"message": {"content": "FAKE"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5,
+                      "total_tokens": 15},
+        }, 1)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "pricing.json"
+        p.write_text(json.dumps(pricing_payload))
+        os.environ["CROSSCHECK_PRICING_PATH"] = str(p)
+        srv.PRICING_PATH = p
+        srv._PRICING_CACHE = None
+
+        saved_post = srv._http_post_resilient
+        saved_env  = dict(srv.ENV)
+        saved_cfg  = dict(srv.CFG)
+        try:
+            srv._http_post_resilient = fake_post
+            srv.ENV = dict(srv.ENV)
+            for k in ("OPENAI_API_KEY", "XAI_API_KEY", "MISTRAL_API_KEY",
+                       "GROQ_API_KEY", "DEEPSEEK_API_KEY"):
+                srv.ENV[k] = "test-key"
+
+            provider_specs = [
+                ("openai",   "gpt-test",      "https://api.openai.com/v1/chat/completions",
+                 ("openai",   "https://api.openai.com/v1/chat/completions",   "OPENAI_API_KEY",   "OPENAI_MODEL",   "gpt-5")),
+                ("openai",   "gpt-5",          "https://api.openai.com/v1/chat/completions",
+                 ("openai",   "https://api.openai.com/v1/chat/completions",   "OPENAI_API_KEY",   "OPENAI_MODEL",   "gpt-5")),
+                ("xai",      "grok-test",      "https://api.x.ai/v1/chat/completions",
+                 ("xai",      "https://api.x.ai/v1/chat/completions",         "XAI_API_KEY",      "XAI_MODEL",      "grok-4-latest")),
+                ("mistral",  "mistral-test",   "https://api.mistral.ai/v1/chat/completions",
+                 ("mistral",  "https://api.mistral.ai/v1/chat/completions",   "MISTRAL_API_KEY",  "MISTRAL_MODEL",  "mistral-large-latest")),
+                ("groq",     "groq-test",      "https://api.groq.com/openai/v1/chat/completions",
+                 ("groq",     "https://api.groq.com/openai/v1/chat/completions","GROQ_API_KEY",   "GROQ_MODEL",     "llama-3.3-70b-versatile")),
+                ("deepseek", "ds-test",        "https://api.deepseek.com/v1/chat/completions",
+                 ("deepseek", "https://api.deepseek.com/v1/chat/completions", "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "deepseek-chat")),
+            ]
+
+            req_cases = []
+            messages = [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user",   "content": "Hello"},
+            ]
+            for provider, model, url, factory_args in provider_specs:
+                model_env_key = factory_args[3]
+                captured.clear()
+                srv.ENV = dict(srv.ENV)
+                srv.ENV[model_env_key] = model
+                p_obj = srv.openai_compatible(*factory_args)
+                assert p_obj is not None
+                p_obj.send(messages, 200, 0.4, "worker")
+                wire = captured[0]
+                wire["headers"].setdefault("content-type", "application/json")
+                req_cases.append({
+                    "label":       f"req::{provider}::{model}",
+                    "provider":    provider,
+                    "model":       model,
+                    "url":         url,
+                    "api_key":     "test-key",
+                    "messages":    messages,
+                    "max_tokens":  200,
+                    "temperature": 0.4,
+                    "expected":    {"url": wire["url"], "headers": wire["headers"], "body": wire["body"]},
+                })
+
+            # reasoning-class: gpt-5 uses max_completion_tokens, omits temperature
+            captured.clear()
+            srv.ENV["OPENAI_MODEL"] = "gpt-5"
+            p_obj = srv.openai_compatible(
+                "openai", "https://api.openai.com/v1/chat/completions",
+                "OPENAI_API_KEY", "OPENAI_MODEL", "gpt-5",
+            )
+            p_obj.send([{"role": "user", "content": "Solve this puzzle."}], 2048, 0.4, "worker")
+            wire = captured[0]
+            wire["headers"].setdefault("content-type", "application/json")
+            req_cases.append({
+                "label":       "req::openai::gpt-5 (reasoning omits temperature)",
+                "provider":    "openai",
+                "model":       "gpt-5",
+                "url":         "https://api.openai.com/v1/chat/completions",
+                "api_key":     "test-key",
+                "messages":    [{"role": "user", "content": "Solve this puzzle."}],
+                "max_tokens":  2048,
+                "temperature": 0.4,
+                "expected":    {"url": wire["url"], "headers": wire["headers"], "body": wire["body"]},
+            })
+
+            def py_parse_via_send(resp_obj, provider, model, factory_args, purpose="worker"):
+                captured.clear()
+                def custom_post(*a, **kw):
+                    return (resp_obj, 1)
+                srv._http_post_resilient = custom_post
+                srv.ENV = dict(srv.ENV)
+                srv.ENV[factory_args[3]] = model
+                p_obj = srv.openai_compatible(*factory_args)
+                assert p_obj is not None
+                result = p_obj.send([{"role": "user", "content": "hi"}], 100, 0.4, purpose)
+                srv._http_post_resilient = fake_post
+                return {"text": result.text, "usage": result.usage.to_dict()}
+
+            resp_cases = []
+            resp_inputs = [
+                ("openai", "gpt-test",
+                 ("openai", "https://api.openai.com/v1/chat/completions", "OPENAI_API_KEY", "OPENAI_MODEL", "gpt-5"),
+                 {"choices": [{"message": {"content": "Hi there"}}],
+                  "usage":   {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}},
+                 "worker", "basic"),
+                ("openai", "gpt-test",
+                 ("openai", "https://api.openai.com/v1/chat/completions", "OPENAI_API_KEY", "OPENAI_MODEL", "gpt-5"),
+                 {"choices": [{"message": {"content": "with cache"}}],
+                  "usage":   {"prompt_tokens": 100, "completion_tokens": 30, "total_tokens": 130,
+                              "prompt_tokens_details": {"cached_tokens": 50}}},
+                 "synth", "with-cached"),
+                ("openai", "gpt-test",
+                 ("openai", "https://api.openai.com/v1/chat/completions", "OPENAI_API_KEY", "OPENAI_MODEL", "gpt-5"),
+                 {"choices": [{"message": {"content": ""}}]},
+                 "worker", "missing-usage-estimated"),
+                ("openai", "gpt-test",
+                 ("openai", "https://api.openai.com/v1/chat/completions", "OPENAI_API_KEY", "OPENAI_MODEL", "gpt-5"),
+                 {"choices": [{"message": {"content": "no total"}}],
+                  "usage":   {"prompt_tokens": 7, "completion_tokens": 3}},
+                 "worker", "no-total-fills-from-prompt-plus-completion"),
+                ("xai", "grok-test",
+                 ("xai", "https://api.x.ai/v1/chat/completions", "XAI_API_KEY", "XAI_MODEL", "grok-4-latest"),
+                 {"choices": [{"message": {"content": "xai response"}}],
+                  "usage":   {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}},
+                 "worker", "xai-basic"),
+                ("mistral", "mistral-test",
+                 ("mistral", "https://api.mistral.ai/v1/chat/completions", "MISTRAL_API_KEY", "MISTRAL_MODEL", "mistral-large-latest"),
+                 {"choices": [{"message": {"content": "mistral"}}],
+                  "usage":   {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}},
+                 "worker", "mistral-basic"),
+                ("groq", "groq-test",
+                 ("groq", "https://api.groq.com/openai/v1/chat/completions", "GROQ_API_KEY", "GROQ_MODEL", "llama-3.3-70b-versatile"),
+                 {"choices": [{"message": {"content": "groq"}}],
+                  "usage":   {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}},
+                 "worker", "groq-basic"),
+                ("deepseek", "ds-test",
+                 ("deepseek", "https://api.deepseek.com/v1/chat/completions", "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "deepseek-chat"),
+                 {"choices": [{"message": {"content": "ds"}}],
+                  "usage":   {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}},
+                 "worker", "deepseek-basic"),
+            ]
+            for provider, model, factory_args, resp_obj, purpose, label in resp_inputs:
+                resp_cases.append({
+                    "label":     f"resp::{provider}::{label}",
+                    "provider":  provider,
+                    "model":     model,
+                    "resp":      resp_obj,
+                    "purpose":   purpose,
+                    "expected":  py_parse_via_send(resp_obj, provider, model, factory_args, purpose),
+                })
+        finally:
+            srv._http_post_resilient = saved_post
+            srv.ENV = saved_env
+            srv.CFG = saved_cfg
+
+    return {
+        "module":      "openai_compat",
+        "description": "OpenAI-compatible adapter parity (openai/xai/mistral/groq/deepseek)",
+        "case_count":  len(req_cases) + len(resp_cases),
+        "pricing_doc": pricing_payload,
+        "req_cases":   req_cases,
+        "resp_cases":  resp_cases,
+    }
+
+
+BUILDERS["openai_compat"] = fixture_openai_compat
+
+
 def main(argv: list[str]) -> int:
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
     targets = argv[1:] if len(argv) > 1 else sorted(BUILDERS)

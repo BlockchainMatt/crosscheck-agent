@@ -1,0 +1,602 @@
+{
+  "module": "openai_compat",
+  "description": "OpenAI-compatible adapter parity (openai/xai/mistral/groq/deepseek)",
+  "case_count": 15,
+  "pricing_doc": {
+    "openai": {
+      "gpt-test": {
+        "prompt_per_1k": 0.0001,
+        "completion_per_1k": 0.0003,
+        "cached_per_1k": 5e-05
+      },
+      "gpt-5": {
+        "prompt_per_1k": 0.001,
+        "completion_per_1k": 0.003,
+        "cached_per_1k": 0.0005
+      }
+    },
+    "xai": {
+      "grok-test": {
+        "prompt_per_1k": 0.005,
+        "completion_per_1k": 0.015,
+        "cached_per_1k": 0.0025
+      },
+      "grok-4-latest": {
+        "prompt_per_1k": 0.005,
+        "completion_per_1k": 0.015,
+        "cached_per_1k": 0.0025
+      }
+    },
+    "mistral": {
+      "mistral-test": {
+        "prompt_per_1k": 0.001,
+        "completion_per_1k": 0.003,
+        "cached_per_1k": 0.0001
+      }
+    },
+    "groq": {
+      "groq-test": {
+        "prompt_per_1k": 0.0001,
+        "completion_per_1k": 0.0003,
+        "cached_per_1k": 5e-05
+      }
+    },
+    "deepseek": {
+      "ds-test": {
+        "prompt_per_1k": 0.0001,
+        "completion_per_1k": 0.0003,
+        "cached_per_1k": 5e-05
+      }
+    }
+  },
+  "req_cases": [
+    {
+      "label": "req::openai::gpt-test",
+      "provider": "openai",
+      "model": "gpt-test",
+      "url": "https://api.openai.com/v1/chat/completions",
+      "api_key": "test-key",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are helpful."
+        },
+        {
+          "role": "user",
+          "content": "Hello"
+        }
+      ],
+      "max_tokens": 200,
+      "temperature": 0.4,
+      "expected": {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "headers": {
+          "Authorization": "Bearer test-key",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "gpt-test",
+          "messages": [
+            {
+              "role": "system",
+              "content": "You are helpful."
+            },
+            {
+              "role": "user",
+              "content": "Hello"
+            }
+          ],
+          "max_tokens": 200,
+          "temperature": 0.4
+        }
+      }
+    },
+    {
+      "label": "req::openai::gpt-5",
+      "provider": "openai",
+      "model": "gpt-5",
+      "url": "https://api.openai.com/v1/chat/completions",
+      "api_key": "test-key",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are helpful."
+        },
+        {
+          "role": "user",
+          "content": "Hello"
+        }
+      ],
+      "max_tokens": 200,
+      "temperature": 0.4,
+      "expected": {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "headers": {
+          "Authorization": "Bearer test-key",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "gpt-5",
+          "messages": [
+            {
+              "role": "system",
+              "content": "You are helpful."
+            },
+            {
+              "role": "user",
+              "content": "Hello"
+            }
+          ],
+          "max_completion_tokens": 200
+        }
+      }
+    },
+    {
+      "label": "req::xai::grok-test",
+      "provider": "xai",
+      "model": "grok-test",
+      "url": "https://api.x.ai/v1/chat/completions",
+      "api_key": "test-key",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are helpful."
+        },
+        {
+          "role": "user",
+          "content": "Hello"
+        }
+      ],
+      "max_tokens": 200,
+      "temperature": 0.4,
+      "expected": {
+        "url": "https://api.x.ai/v1/chat/completions",
+        "headers": {
+          "Authorization": "Bearer test-key",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "grok-test",
+          "messages": [
+            {
+              "role": "system",
+              "content": "You are helpful."
+            },
+            {
+              "role": "user",
+              "content": "Hello"
+            }
+          ],
+          "max_tokens": 200,
+          "temperature": 0.4
+        }
+      }
+    },
+    {
+      "label": "req::mistral::mistral-test",
+      "provider": "mistral",
+      "model": "mistral-test",
+      "url": "https://api.mistral.ai/v1/chat/completions",
+      "api_key": "test-key",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are helpful."
+        },
+        {
+          "role": "user",
+          "content": "Hello"
+        }
+      ],
+      "max_tokens": 200,
+      "temperature": 0.4,
+      "expected": {
+        "url": "https://api.mistral.ai/v1/chat/completions",
+        "headers": {
+          "Authorization": "Bearer test-key",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "mistral-test",
+          "messages": [
+            {
+              "role": "system",
+              "content": "You are helpful."
+            },
+            {
+              "role": "user",
+              "content": "Hello"
+            }
+          ],
+          "max_tokens": 200,
+          "temperature": 0.4
+        }
+      }
+    },
+    {
+      "label": "req::groq::groq-test",
+      "provider": "groq",
+      "model": "groq-test",
+      "url": "https://api.groq.com/openai/v1/chat/completions",
+      "api_key": "test-key",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are helpful."
+        },
+        {
+          "role": "user",
+          "content": "Hello"
+        }
+      ],
+      "max_tokens": 200,
+      "temperature": 0.4,
+      "expected": {
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "headers": {
+          "Authorization": "Bearer test-key",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "groq-test",
+          "messages": [
+            {
+              "role": "system",
+              "content": "You are helpful."
+            },
+            {
+              "role": "user",
+              "content": "Hello"
+            }
+          ],
+          "max_tokens": 200,
+          "temperature": 0.4
+        }
+      }
+    },
+    {
+      "label": "req::deepseek::ds-test",
+      "provider": "deepseek",
+      "model": "ds-test",
+      "url": "https://api.deepseek.com/v1/chat/completions",
+      "api_key": "test-key",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are helpful."
+        },
+        {
+          "role": "user",
+          "content": "Hello"
+        }
+      ],
+      "max_tokens": 200,
+      "temperature": 0.4,
+      "expected": {
+        "url": "https://api.deepseek.com/v1/chat/completions",
+        "headers": {
+          "Authorization": "Bearer test-key",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "ds-test",
+          "messages": [
+            {
+              "role": "system",
+              "content": "You are helpful."
+            },
+            {
+              "role": "user",
+              "content": "Hello"
+            }
+          ],
+          "max_tokens": 200,
+          "temperature": 0.4
+        }
+      }
+    },
+    {
+      "label": "req::openai::gpt-5 (reasoning omits temperature)",
+      "provider": "openai",
+      "model": "gpt-5",
+      "url": "https://api.openai.com/v1/chat/completions",
+      "api_key": "test-key",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Solve this puzzle."
+        }
+      ],
+      "max_tokens": 2048,
+      "temperature": 0.4,
+      "expected": {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "headers": {
+          "Authorization": "Bearer test-key",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "gpt-5",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Solve this puzzle."
+            }
+          ],
+          "max_completion_tokens": 2048
+        }
+      }
+    }
+  ],
+  "resp_cases": [
+    {
+      "label": "resp::openai::basic",
+      "provider": "openai",
+      "model": "gpt-test",
+      "resp": {
+        "choices": [
+          {
+            "message": {
+              "content": "Hi there"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 10,
+          "completion_tokens": 5,
+          "total_tokens": 15
+        }
+      },
+      "purpose": "worker",
+      "expected": {
+        "text": "Hi there",
+        "usage": {
+          "provider": "openai",
+          "model": "gpt-test",
+          "prompt_tokens": 10,
+          "completion_tokens": 5,
+          "cached_tokens": 0,
+          "total_tokens": 15,
+          "cost_usd": 2.5e-06,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      }
+    },
+    {
+      "label": "resp::openai::with-cached",
+      "provider": "openai",
+      "model": "gpt-test",
+      "resp": {
+        "choices": [
+          {
+            "message": {
+              "content": "with cache"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 100,
+          "completion_tokens": 30,
+          "total_tokens": 130,
+          "prompt_tokens_details": {
+            "cached_tokens": 50
+          }
+        }
+      },
+      "purpose": "synth",
+      "expected": {
+        "text": "with cache",
+        "usage": {
+          "provider": "openai",
+          "model": "gpt-test",
+          "prompt_tokens": 100,
+          "completion_tokens": 30,
+          "cached_tokens": 50,
+          "total_tokens": 130,
+          "cost_usd": 1.65e-05,
+          "estimated": false,
+          "purpose": "synth"
+        }
+      }
+    },
+    {
+      "label": "resp::openai::missing-usage-estimated",
+      "provider": "openai",
+      "model": "gpt-test",
+      "resp": {
+        "choices": [
+          {
+            "message": {
+              "content": ""
+            }
+          }
+        ]
+      },
+      "purpose": "worker",
+      "expected": {
+        "text": "",
+        "usage": {
+          "provider": "openai",
+          "model": "gpt-test",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cached_tokens": 0,
+          "total_tokens": 0,
+          "cost_usd": 0.0,
+          "estimated": true,
+          "purpose": "worker"
+        }
+      }
+    },
+    {
+      "label": "resp::openai::no-total-fills-from-prompt-plus-completion",
+      "provider": "openai",
+      "model": "gpt-test",
+      "resp": {
+        "choices": [
+          {
+            "message": {
+              "content": "no total"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 7,
+          "completion_tokens": 3
+        }
+      },
+      "purpose": "worker",
+      "expected": {
+        "text": "no total",
+        "usage": {
+          "provider": "openai",
+          "model": "gpt-test",
+          "prompt_tokens": 7,
+          "completion_tokens": 3,
+          "cached_tokens": 0,
+          "total_tokens": 10,
+          "cost_usd": 1.6e-06,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      }
+    },
+    {
+      "label": "resp::xai::xai-basic",
+      "provider": "xai",
+      "model": "grok-test",
+      "resp": {
+        "choices": [
+          {
+            "message": {
+              "content": "xai response"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 20,
+          "completion_tokens": 10,
+          "total_tokens": 30
+        }
+      },
+      "purpose": "worker",
+      "expected": {
+        "text": "xai response",
+        "usage": {
+          "provider": "xai",
+          "model": "grok-test",
+          "prompt_tokens": 20,
+          "completion_tokens": 10,
+          "cached_tokens": 0,
+          "total_tokens": 30,
+          "cost_usd": 0.00025,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      }
+    },
+    {
+      "label": "resp::mistral::mistral-basic",
+      "provider": "mistral",
+      "model": "mistral-test",
+      "resp": {
+        "choices": [
+          {
+            "message": {
+              "content": "mistral"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 5,
+          "completion_tokens": 2,
+          "total_tokens": 7
+        }
+      },
+      "purpose": "worker",
+      "expected": {
+        "text": "mistral",
+        "usage": {
+          "provider": "mistral",
+          "model": "mistral-test",
+          "prompt_tokens": 5,
+          "completion_tokens": 2,
+          "cached_tokens": 0,
+          "total_tokens": 7,
+          "cost_usd": 1.1e-05,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      }
+    },
+    {
+      "label": "resp::groq::groq-basic",
+      "provider": "groq",
+      "model": "groq-test",
+      "resp": {
+        "choices": [
+          {
+            "message": {
+              "content": "groq"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 5,
+          "completion_tokens": 2,
+          "total_tokens": 7
+        }
+      },
+      "purpose": "worker",
+      "expected": {
+        "text": "groq",
+        "usage": {
+          "provider": "groq",
+          "model": "groq-test",
+          "prompt_tokens": 5,
+          "completion_tokens": 2,
+          "cached_tokens": 0,
+          "total_tokens": 7,
+          "cost_usd": 1.1e-06,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      }
+    },
+    {
+      "label": "resp::deepseek::deepseek-basic",
+      "provider": "deepseek",
+      "model": "ds-test",
+      "resp": {
+        "choices": [
+          {
+            "message": {
+              "content": "ds"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 5,
+          "completion_tokens": 2,
+          "total_tokens": 7
+        }
+      },
+      "purpose": "worker",
+      "expected": {
+        "text": "ds",
+        "usage": {
+          "provider": "deepseek",
+          "model": "ds-test",
+          "prompt_tokens": 5,
+          "completion_tokens": 2,
+          "cached_tokens": 0,
+          "total_tokens": 7,
+          "cost_usd": 1.1e-06,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      }
+    }
+  ]
+}
