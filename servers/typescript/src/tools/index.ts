@@ -18,6 +18,7 @@ import { runConfer } from "./confer.js";
 import { runCoordinate } from "./coordinate.js";
 import { runCritique } from "./critique.js";
 import { runDebate } from "./debate.js";
+import { runExplain } from "./explain.js";
 import { runListProviders } from "./list-providers.js";
 import { runPick } from "./pick.js";
 import { runPlan } from "./plan.js";
@@ -119,6 +120,10 @@ export interface RegisterCoreToolsOptions {
   /** Path to the events.jsonl file used by scoreboard's
    *  `recent_events` tail. When unset, that field is always empty. */
   eventsPath?: string;
+  /** Directory holding transcript JSON files (used by `explain` to
+   *  walk per-session transcripts). When unset, the transcripts
+   *  list is empty (matches Python's "dir missing"). */
+  transcriptsDir?: string;
 }
 
 /** Build the native tool surface. Returns a name -> Tool map.
@@ -152,9 +157,44 @@ export function registerCoreTools(
     recallTool(o.storage, o.bridge),
     sessionMemoryTool(o.storage, o.bridge),
     scoreboardTool(o.storage, o.bridge, o.eventsPath),
+    explainTool(o.storage, o.bridge, o.transcriptsDir),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `explain` — native port of Python's tool_explain. Session replay
+ *  + cost/latency tree. Requires Storage; optionally reads a
+ *  transcripts directory for the per-tool summary block. */
+function explainTool(
+  storage: Storage | undefined,
+  bridge: BridgeHandle | undefined,
+  transcriptsDir: string | undefined,
+): Tool {
+  return {
+    name: "explain",
+    description:
+      "Replay a session as a navigable tree with cost/latency " +
+      "annotations. Reads usage_log + optionally walks the " +
+      "transcripts directory for per-tool summaries.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        session_id:      { type: "string" },
+        include_text:    { type: "boolean" },
+        max_transcripts: { type: "integer", minimum: 1 },
+        only_purpose:    { type: "array", items: { type: "string" } },
+        only_provider:   { type: "array", items: { type: "string" } },
+      },
+      required: ["session_id"],
+    },
+    handler: (args) => runExplain(args, {
+      ...(storage        ? { storage }        : {}),
+      ...(bridge         ? { bridge }         : {}),
+      ...(transcriptsDir ? { transcriptsDir } : {}),
+    }),
+  };
 }
 
 /** `scoreboard` — native port of Python's tool_scoreboard. Aggregates
