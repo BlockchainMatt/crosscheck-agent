@@ -1,10 +1,18 @@
-// Tool registry. Phase 0 ships ONE tool — `ping`. Subsequent phases will
-// register the full surface (confer, debate, plan, ...). Keeping the
-// shape generic from day one so we don't refactor it later.
+// Tool registry. Native TS tools ported phase-by-phase land here; the
+// rest of the surface is proxied through the Python bridge by the
+// server's buildToolRegistry(). Native entries automatically shadow
+// bridge proxies of the same name — that's the per-tool-cutover
+// mechanism (see server.ts).
+//
+// Tools that need to defer to the bridge for advanced sub-features
+// (e.g. verify's shell + url_head check kinds) take the bridge handle
+// as a closure capture in their handler.
 
 import { z } from "zod";
 
+import type { BridgeHandle } from "../bridge/index.js";
 import { SERVER_NAME, SERVER_VERSION } from "../server.js";
+import { runVerify } from "./verify.js";
 
 /** A registered MCP tool. `inputSchema` is the JSON-Schema surfaced via
  *  tools/list; `handler` runs on tools/call. */
@@ -68,12 +76,53 @@ function zodToJsonSchema(schema: z.ZodType<unknown>): unknown {
   return {};
 }
 
-/** Build the Phase-0 tool surface. Returns a name -> Tool map. */
-export function registerCoreTools(): Map<string, Tool> {
+/** Build the native tool surface. Returns a name -> Tool map.
+ *
+ *  `bridge` is optional. When supplied, tools that have sub-features
+ *  not yet ported natively can defer those calls to Python. Without a
+ *  bridge those calls return a clear error pointing at bridge mode.
+ *
+ *  Native entries take precedence over bridge proxies of the same name
+ *  (see server.ts buildToolRegistry). */
+export function registerCoreTools(bridge?: BridgeHandle): Map<string, Tool> {
   const tools = new Map<string, Tool>();
-  const list: Tool[] = [pingTool()];
+  const list: Tool[] = [pingTool(), verifyTool(bridge)];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `verify` — native port of Python's deterministic property-check
+ *  tool. See src/tools/verify.ts for the surface contract.
+ *
+ *  We don't use defineTool() here because Python's tool_verify is
+ *  permissive on input (returns an error ENVELOPE rather than throwing
+ *  on bad shape), and we need byte-equal output. The hand-written JSON
+ *  schema mirrors what the Python server documents. */
+function verifyTool(bridge: BridgeHandle | undefined): Tool {
+  return {
+    name: "verify",
+    description:
+      "Run a list of deterministic property checks against caller-supplied data. " +
+      "No LLM calls; everything is local. Returns per-check {passed, reason} plus " +
+      "all_passed / summary / timing fields. Supports the text kinds (contains, " +
+      "not_contains, regex_match, contains_any, contains_all, min_length); shell " +
+      "and url_head kinds require the Python bridge.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        checks: {
+          type: "array",
+          minItems: 1,
+          items: { type: "object", additionalProperties: true },
+        },
+        session_id: { type: "string" },
+        allow_shell: { type: "boolean" },
+      },
+      required: ["checks"],
+    },
+    handler: (args) => runVerify(args, bridge),
+  };
 }
 
 /** `ping` — proves the MCP wire is live and returns the server's

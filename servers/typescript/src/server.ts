@@ -87,9 +87,12 @@ export async function connectAndServe(
 /** Merge native TS tools with bridge proxies. Native wins on name
  *  collisions so per-tool cutover works without restart: ship a TS
  *  port, ship the new server build, and the bridge proxy for that
- *  name silently gets shadowed. */
+ *  name silently gets shadowed.
+ *
+ *  The bridge is also threaded INTO native tools that need it for
+ *  not-yet-ported sub-features (e.g. verify's shell + url_head). */
 function buildToolRegistry(bridge?: BridgeHandle): Map<string, Tool> {
-  const tools = registerCoreTools();
+  const tools = registerCoreTools(bridge);
   if (!bridge) return tools;
   const proxies = buildPythonProxies(bridge);
   for (const [name, proxy] of proxies) {

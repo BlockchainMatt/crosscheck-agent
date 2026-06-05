@@ -1,0 +1,723 @@
+{
+  "module": "verify",
+  "description": "Native tool_verify parity (text kinds + error envelopes; timing/run_summary stripped, non-deterministic)",
+  "case_count": 26,
+  "cases": [
+    {
+      "label": "contains-pass",
+      "args": {
+        "checks": [
+          {
+            "kind": "contains",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": "fox"
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "contains",
+            "passed": true,
+            "reason": "ok"
+          }
+        ],
+        "all_passed": true,
+        "summary": "1 of 1 checks passed"
+      }
+    },
+    {
+      "label": "contains-fail",
+      "args": {
+        "checks": [
+          {
+            "kind": "contains",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": "wolf"
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "contains",
+            "passed": false,
+            "reason": "failed: contains 'wolf'"
+          }
+        ],
+        "all_passed": false,
+        "summary": "0 of 1 checks passed"
+      }
+    },
+    {
+      "label": "contains-ci-pass",
+      "args": {
+        "checks": [
+          {
+            "kind": "contains",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": "FOX",
+            "case_insensitive": true
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "contains",
+            "passed": true,
+            "reason": "ok"
+          }
+        ],
+        "all_passed": true,
+        "summary": "1 of 1 checks passed"
+      }
+    },
+    {
+      "label": "not_contains-pass",
+      "args": {
+        "checks": [
+          {
+            "kind": "not_contains",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": "wolf"
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "not_contains",
+            "passed": true,
+            "reason": "ok"
+          }
+        ],
+        "all_passed": true,
+        "summary": "1 of 1 checks passed"
+      }
+    },
+    {
+      "label": "not_contains-fail",
+      "args": {
+        "checks": [
+          {
+            "kind": "not_contains",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": "fox"
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "not_contains",
+            "passed": false,
+            "reason": "failed: not_contains 'fox'"
+          }
+        ],
+        "all_passed": false,
+        "summary": "0 of 1 checks passed"
+      }
+    },
+    {
+      "label": "regex_match-pass",
+      "args": {
+        "checks": [
+          {
+            "kind": "regex_match",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": "qu\\w+ brown"
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "regex_match",
+            "passed": true,
+            "reason": "ok"
+          }
+        ],
+        "all_passed": true,
+        "summary": "1 of 1 checks passed"
+      }
+    },
+    {
+      "label": "regex_match-fail",
+      "args": {
+        "checks": [
+          {
+            "kind": "regex_match",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": "sloth"
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "regex_match",
+            "passed": false,
+            "reason": "failed: regex_match 'sloth'"
+          }
+        ],
+        "all_passed": false,
+        "summary": "0 of 1 checks passed"
+      }
+    },
+    {
+      "label": "regex_match-bad",
+      "args": {
+        "checks": [
+          {
+            "kind": "regex_match",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": "([unclosed"
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "regex_match",
+            "passed": false,
+            "reason": "failed: regex_match[bad pattern: unterminated character set at position 1]"
+          }
+        ],
+        "all_passed": false,
+        "summary": "0 of 1 checks passed"
+      }
+    },
+    {
+      "label": "regex_match-ci",
+      "args": {
+        "checks": [
+          {
+            "kind": "regex_match",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": "FOX",
+            "case_insensitive": true
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "regex_match",
+            "passed": true,
+            "reason": "ok"
+          }
+        ],
+        "all_passed": true,
+        "summary": "1 of 1 checks passed"
+      }
+    },
+    {
+      "label": "contains_any-pass",
+      "args": {
+        "checks": [
+          {
+            "kind": "contains_any",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "values": [
+              "wolf",
+              "fox",
+              "bear"
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "contains_any",
+            "passed": true,
+            "reason": "ok"
+          }
+        ],
+        "all_passed": true,
+        "summary": "1 of 1 checks passed"
+      }
+    },
+    {
+      "label": "contains_any-fail",
+      "args": {
+        "checks": [
+          {
+            "kind": "contains_any",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "values": [
+              "wolf",
+              "bear"
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "contains_any",
+            "passed": false,
+            "reason": "failed: contains_any ['wolf', 'bear']"
+          }
+        ],
+        "all_passed": false,
+        "summary": "0 of 1 checks passed"
+      }
+    },
+    {
+      "label": "contains_any-empty",
+      "args": {
+        "checks": [
+          {
+            "kind": "contains_any",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "values": []
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "contains_any",
+            "passed": false,
+            "reason": "failed: contains_any []"
+          }
+        ],
+        "all_passed": false,
+        "summary": "0 of 1 checks passed"
+      }
+    },
+    {
+      "label": "contains_all-pass",
+      "args": {
+        "checks": [
+          {
+            "kind": "contains_all",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "values": [
+              "quick",
+              "fox",
+              "lazy"
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "contains_all",
+            "passed": true,
+            "reason": "ok"
+          }
+        ],
+        "all_passed": true,
+        "summary": "1 of 1 checks passed"
+      }
+    },
+    {
+      "label": "contains_all-fail",
+      "args": {
+        "checks": [
+          {
+            "kind": "contains_all",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "values": [
+              "quick",
+              "wolf"
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "contains_all",
+            "passed": false,
+            "reason": "failed: contains_all ['quick', 'wolf']"
+          }
+        ],
+        "all_passed": false,
+        "summary": "0 of 1 checks passed"
+      }
+    },
+    {
+      "label": "contains_all-ci",
+      "args": {
+        "checks": [
+          {
+            "kind": "contains_all",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "values": [
+              "QUICK",
+              "Fox"
+            ],
+            "case_insensitive": true
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "contains_all",
+            "passed": true,
+            "reason": "ok"
+          }
+        ],
+        "all_passed": true,
+        "summary": "1 of 1 checks passed"
+      }
+    },
+    {
+      "label": "min_length-pass",
+      "args": {
+        "checks": [
+          {
+            "kind": "min_length",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": 10
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "min_length",
+            "passed": true,
+            "reason": "ok"
+          }
+        ],
+        "all_passed": true,
+        "summary": "1 of 1 checks passed"
+      }
+    },
+    {
+      "label": "min_length-fail",
+      "args": {
+        "checks": [
+          {
+            "kind": "min_length",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": 1000
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "min_length",
+            "passed": false,
+            "reason": "failed: min_length 1000"
+          }
+        ],
+        "all_passed": false,
+        "summary": "0 of 1 checks passed"
+      }
+    },
+    {
+      "label": "min_length-boundary",
+      "args": {
+        "checks": [
+          {
+            "kind": "min_length",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": 43
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "min_length",
+            "passed": true,
+            "reason": "ok"
+          }
+        ],
+        "all_passed": true,
+        "summary": "1 of 1 checks passed"
+      }
+    },
+    {
+      "label": "empty-checks",
+      "args": {
+        "checks": []
+      },
+      "expected": {
+        "tool": "verify",
+        "error": "must provide a non-empty `checks` list",
+        "error_code": "VERIFY_MISSING_CHECKS",
+        "error_kind": "client",
+        "operator_hint": "Each check is {kind, ...}; see schema for the supported kinds.",
+        "transient": false
+      }
+    },
+    {
+      "label": "non-list-checks",
+      "args": {
+        "checks": "nope"
+      },
+      "expected": {
+        "tool": "verify",
+        "error": "must provide a non-empty `checks` list",
+        "error_code": "VERIFY_MISSING_CHECKS",
+        "error_kind": "client",
+        "operator_hint": "Each check is {kind, ...}; see schema for the supported kinds.",
+        "transient": false
+      }
+    },
+    {
+      "label": "missing-kind",
+      "args": {
+        "checks": [
+          {
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog"
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "check1",
+            "kind": null,
+            "passed": false,
+            "reason": "check missing `kind`"
+          }
+        ],
+        "all_passed": false,
+        "summary": "0 of 1 checks passed"
+      }
+    },
+    {
+      "label": "unknown-kind",
+      "args": {
+        "checks": [
+          {
+            "kind": "color_match",
+            "id": "c1",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": "blue"
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "color_match",
+            "passed": false,
+            "reason": "unknown check kind 'color_match'"
+          }
+        ],
+        "all_passed": false,
+        "summary": "0 of 1 checks passed"
+      }
+    },
+    {
+      "label": "multi-mixed",
+      "args": {
+        "checks": [
+          {
+            "kind": "contains",
+            "id": "a",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": "fox"
+          },
+          {
+            "kind": "not_contains",
+            "id": "b",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": "fox"
+          },
+          {
+            "kind": "min_length",
+            "id": "c",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": 5
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 3,
+        "results": [
+          {
+            "id": "a",
+            "kind": "contains",
+            "passed": true,
+            "reason": "ok"
+          },
+          {
+            "id": "b",
+            "kind": "not_contains",
+            "passed": false,
+            "reason": "failed: not_contains 'fox'"
+          },
+          {
+            "id": "c",
+            "kind": "min_length",
+            "passed": true,
+            "reason": "ok"
+          }
+        ],
+        "all_passed": false,
+        "summary": "2 of 3 checks passed"
+      }
+    },
+    {
+      "label": "default-id",
+      "args": {
+        "checks": [
+          {
+            "kind": "contains",
+            "target_text": "the quick brown fox jumps over the lazy dog",
+            "value": "fox"
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "check1",
+            "kind": "contains",
+            "passed": true,
+            "reason": "ok"
+          }
+        ],
+        "all_passed": true,
+        "summary": "1 of 1 checks passed"
+      }
+    },
+    {
+      "label": "shell-disabled-default",
+      "args": {
+        "checks": [
+          {
+            "kind": "shell",
+            "id": "s1",
+            "cmd": "echo hi"
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "s1",
+            "kind": "shell",
+            "passed": false,
+            "reason": "shell checks disabled; pass `allow_shell:true` to opt in"
+          }
+        ],
+        "all_passed": false,
+        "summary": "0 of 1 checks passed"
+      }
+    },
+    {
+      "label": "contains-tricky-quote",
+      "args": {
+        "checks": [
+          {
+            "kind": "contains",
+            "id": "c1",
+            "target_text": "can't find it",
+            "value": "won't"
+          }
+        ]
+      },
+      "expected": {
+        "tool": "verify",
+        "checks_run": 1,
+        "results": [
+          {
+            "id": "c1",
+            "kind": "contains",
+            "passed": false,
+            "reason": "failed: contains \"won't\""
+          }
+        ],
+        "all_passed": false,
+        "summary": "0 of 1 checks passed"
+      }
+    }
+  ]
+}

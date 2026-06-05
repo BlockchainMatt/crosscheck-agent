@@ -1722,6 +1722,114 @@ def fixture_utils() -> dict:
 # ----------------------------------------------------------------------
 # Wiring
 # ----------------------------------------------------------------------
+def fixture_verify() -> dict:
+    """verify.json — Phase 5 part 1 parity gate.
+
+    Builds (input, expected) pairs by calling Python tool_verify(). We
+    sanitize the expected output so the TS test can assert byte-equal
+    after running the same input through the native TS port:
+
+      - `timing` (wall_ms, cpu_ms) is stripped — clock-dependent.
+      - `run_summary` is stripped — depends on session/DB state and has
+        its own ended_at timestamp + pre-rendered text tree. (The TS
+        port omits it entirely for Phase 5 part 1; we'll re-port it
+        when session_memory lands.)
+
+    All other fields — including the exact "failed: contains 'fox'"
+    reason strings that come out of Python's f"…{v!r}" interpolations
+    — must match byte-for-byte. This is what catches drift.
+    """
+    srv = _import_server()
+
+    def sanitize(out: dict) -> dict:
+        cleaned = {k: v for k, v in out.items() if k not in ("timing", "run_summary")}
+        return cleaned
+
+    cases = []
+
+    def add(label, args):
+        out = srv.tool_verify(args)
+        cases.append({
+            "label":    label,
+            "args":     args,
+            "expected": sanitize(out),
+        })
+
+    text = "the quick brown fox jumps over the lazy dog"
+
+    add("contains-pass",       {"checks": [{"kind": "contains",     "id": "c1",
+                                            "target_text": text, "value": "fox"}]})
+    add("contains-fail",       {"checks": [{"kind": "contains",     "id": "c1",
+                                            "target_text": text, "value": "wolf"}]})
+    add("contains-ci-pass",    {"checks": [{"kind": "contains",     "id": "c1",
+                                            "target_text": text, "value": "FOX",
+                                            "case_insensitive": True}]})
+    add("not_contains-pass",   {"checks": [{"kind": "not_contains", "id": "c1",
+                                            "target_text": text, "value": "wolf"}]})
+    add("not_contains-fail",   {"checks": [{"kind": "not_contains", "id": "c1",
+                                            "target_text": text, "value": "fox"}]})
+    add("regex_match-pass",    {"checks": [{"kind": "regex_match",  "id": "c1",
+                                            "target_text": text, "value": r"qu\w+ brown"}]})
+    add("regex_match-fail",    {"checks": [{"kind": "regex_match",  "id": "c1",
+                                            "target_text": text, "value": r"sloth"}]})
+    add("regex_match-bad",     {"checks": [{"kind": "regex_match",  "id": "c1",
+                                            "target_text": text, "value": "([unclosed"}]})
+    add("regex_match-ci",      {"checks": [{"kind": "regex_match",  "id": "c1",
+                                            "target_text": text, "value": "FOX",
+                                            "case_insensitive": True}]})
+    add("contains_any-pass",   {"checks": [{"kind": "contains_any", "id": "c1",
+                                            "target_text": text,
+                                            "values": ["wolf", "fox", "bear"]}]})
+    add("contains_any-fail",   {"checks": [{"kind": "contains_any", "id": "c1",
+                                            "target_text": text,
+                                            "values": ["wolf", "bear"]}]})
+    add("contains_any-empty",  {"checks": [{"kind": "contains_any", "id": "c1",
+                                            "target_text": text, "values": []}]})
+    add("contains_all-pass",   {"checks": [{"kind": "contains_all", "id": "c1",
+                                            "target_text": text,
+                                            "values": ["quick", "fox", "lazy"]}]})
+    add("contains_all-fail",   {"checks": [{"kind": "contains_all", "id": "c1",
+                                            "target_text": text,
+                                            "values": ["quick", "wolf"]}]})
+    add("contains_all-ci",     {"checks": [{"kind": "contains_all", "id": "c1",
+                                            "target_text": text,
+                                            "values": ["QUICK", "Fox"],
+                                            "case_insensitive": True}]})
+    add("min_length-pass",     {"checks": [{"kind": "min_length",   "id": "c1",
+                                            "target_text": text, "value": 10}]})
+    add("min_length-fail",     {"checks": [{"kind": "min_length",   "id": "c1",
+                                            "target_text": text, "value": 1000}]})
+    add("min_length-boundary", {"checks": [{"kind": "min_length",   "id": "c1",
+                                            "target_text": text, "value": len(text)}]})
+
+    add("empty-checks",        {"checks": []})
+    add("non-list-checks",     {"checks": "nope"})
+    add("missing-kind",        {"checks": [{"id": "c1", "target_text": text}]})
+    add("unknown-kind",        {"checks": [{"kind": "color_match",  "id": "c1",
+                                            "target_text": text, "value": "blue"}]})
+    add("multi-mixed",         {"checks": [
+        {"kind": "contains",     "id": "a", "target_text": text, "value": "fox"},
+        {"kind": "not_contains", "id": "b", "target_text": text, "value": "fox"},
+        {"kind": "min_length",   "id": "c", "target_text": text, "value": 5},
+    ]})
+    add("default-id",          {"checks": [{"kind": "contains",
+                                            "target_text": text, "value": "fox"}]})
+    add("shell-disabled-default", {"checks": [
+        {"kind": "shell", "id": "s1", "cmd": "echo hi"},
+    ]})
+    add("contains-tricky-quote", {"checks": [{"kind": "contains", "id": "c1",
+                                              "target_text": "can't find it",
+                                              "value": "won't"}]})
+
+    return {
+        "module":      "verify",
+        "description": "Native tool_verify parity (text kinds + error envelopes; "
+                       "timing/run_summary stripped, non-deterministic)",
+        "case_count":  len(cases),
+        "cases":       cases,
+    }
+
+
 BUILDERS = {
     "budgets":   fixture_budgets,
     "pricing":   fixture_pricing,
@@ -1736,6 +1844,7 @@ BUILDERS = {
     "audit":     fixture_audit,
     "worker":    fixture_worker,
     "utils":     fixture_utils,
+    "verify":    fixture_verify,
 }
 
 

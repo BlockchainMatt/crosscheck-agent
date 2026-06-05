@@ -12,6 +12,7 @@
 // registry is ported.
 
 import { modelPricing, type PricingDoc } from "./pricing.js";
+import { pyListRepr } from "./pyrepr.js";
 
 /** The three difficulty tiers, in ascending difficulty / cost. Order
  *  matches Python's `_DIFFICULTY_TIERS` constant. */
@@ -53,12 +54,7 @@ export function tierLadder(pricing: PricingDoc): TierLadder {
   return out;
 }
 
-/** Format an array of strings the way Python's `str(list)` does:
- *  `['a', 'b']`. Used in the reason string to keep the parity test
- *  byte-equal with Python. */
-function pyListRepr(xs: readonly string[]): string {
-  return "[" + xs.map((s) => `'${s.replace(/'/g, "\\'")}'`).join(", ") + "]";
-}
+// pyListRepr is centralised in core/pyrepr.ts (used by verify, audit, …).
 
 
 /** Typical-call cost for one tier entry: 1k prompt + 256 completion at
