@@ -2651,6 +2651,192 @@ def fixture_debate_tool() -> dict:
     }
 
 
+def fixture_coordinate_tool() -> dict:
+    """coordinate_tool.json — Phase 5 part 8 parity gate.
+
+    Three-role orchestration: proposer → critics → synthesizer with
+    structured output at every step. Each canned[name] is a LIST
+    consumed in the order the provider is called.
+
+    For coordinate, a provider can play multiple roles in one call
+    (e.g. the same provider as both proposer and critic if the panel
+    is small) — but in our fixtures we keep roles disjoint to keep
+    the canned lists tractable.
+
+    Stripped on both sides:
+      budget, session, usage rollup, timing rollup, run_summary,
+      transcript_path, canary_leaks, _suppress_run_summary, plus
+      per-answer timing fields (elapsed_ms, cpu_ms, cache_hit, timing).
+    """
+    srv = _import_server()
+    cases = []
+
+    saved_ask_one        = srv._ask_one
+    saved_session_load   = srv._session_load
+    saved_log_usage      = srv.log_usage
+    saved_write          = srv.write_transcript
+    saved_session_record = srv._session_record
+    saved_session_save   = srv._session_save
+    saved_claim_add      = getattr(srv, "_claim_add", None)
+    saved_session_memory_add = getattr(srv, "_session_memory_add", None)
+    saved_record_ballot  = getattr(srv, "_record_ballot", None)
+
+    srv._session_load    = lambda _sid: None
+    srv.log_usage        = lambda *a, **kw: None
+    srv.write_transcript = lambda *a, **kw: ""
+    srv._session_record  = lambda *a, **kw: None
+    srv._session_save    = lambda *a, **kw: None
+    srv._claim_add       = lambda *a, **kw: None
+    srv._session_memory_add = lambda *a, **kw: None
+    srv._record_ballot   = lambda *a, **kw: None
+
+    def sanitize(out: dict) -> dict:
+        copy = dict(out)
+        for k in ("budget", "session", "usage", "timing", "run_summary",
+                  "transcript_path", "canary_leaks",
+                  "_suppress_run_summary"):
+            copy.pop(k, None)
+        # Per-answer timing on proposal_answer / critique_answers / synthesis_answer.
+        for k in ("proposal_answer", "synthesis_answer"):
+            a = copy.get(k)
+            if isinstance(a, dict):
+                for kk in ("elapsed_ms", "cpu_ms", "cache_hit", "timing"):
+                    a.pop(kk, None)
+        critique_answers = copy.get("critique_answers") or []
+        for a in critique_answers:
+            if isinstance(a, dict):
+                for kk in ("elapsed_ms", "cpu_ms", "cache_hit", "timing"):
+                    a.pop(kk, None)
+        return copy
+
+    def make_fake_ask_one(canned: dict[str, list[str]]):
+        cursors = {name: 0 for name in canned}
+        def fake(p, messages, deadline, max_tokens, purpose="worker"):
+            i = cursors.get(p.name, 0)
+            seq = canned.get(p.name, [])
+            text = seq[i] if i < len(seq) else ""
+            cursors[p.name] = i + 1
+            return {
+                "provider": p.name, "model": p.model,
+                "response": text,
+                "cache_hit": False, "elapsed_ms": 0, "cpu_ms": 0,
+                "attempts": 1,
+                "usage": {
+                    "provider": p.name, "model": p.model, "purpose": purpose,
+                    "prompt_tokens": 100, "completion_tokens": 50,
+                    "total_tokens": 150, "cached_tokens": 0,
+                    "cost_usd": 0.0, "estimated": False,
+                },
+                "timing": {"wall_ms": 0, "cpu_ms": 0},
+            }
+        return fake
+
+    def add(label, args, canned):
+        srv._ask_one = make_fake_ask_one(canned)
+        invoke_args = {**args, "providers": list(canned.keys())}
+        out = srv.tool_coordinate(invoke_args)
+        cases.append({
+            "label":   label,
+            "args":    invoke_args,
+            "canned":  canned,
+            "expected": sanitize(out),
+        })
+
+    # Canonical valid RoleTurn (proposer)
+    PROP_OK = (
+        '{"role":"proposer","summary":"Use Postgres.",'
+        '"confidence":0.8,"ballot":"agree",'
+        '"claims":[{"claim":"Postgres has stronger ecosystem","confidence":0.9}],'
+        '"citations":[]}'
+    )
+    CRIT_OK_OPENAI = (
+        '{"role":"critic","summary":"Mysql is fine for OLTP.",'
+        '"confidence":0.65,"ballot":"disagree",'
+        '"claims":[{"claim":"Mysql replication is mature","confidence":0.7}],'
+        '"citations":[]}'
+    )
+    CRIT_OK_XAI = (
+        '{"role":"critic","summary":"Either works; pick by ops.",'
+        '"confidence":0.6,"ballot":"abstain",'
+        '"claims":[{"claim":"Both fine; ops familiarity wins","confidence":0.6}],'
+        '"citations":[]}'
+    )
+    SYNTH_OK = (
+        '{"consensus":"Postgres is the default; switch only on ops constraints.",'
+        '"weighted_confidence":0.75,'
+        '"key_claims":[{"claim":"Postgres ecosystem is stronger","confidence":0.85}],'
+        '"dissent":[{"claim":"Mysql fine for OLTP","providers":["openai"]}],'
+        '"citations":[],"open_questions":["Operator familiarity?"]}'
+    )
+
+    try:
+        # 3 providers, default role assignment.
+        # proposer = first selected (anthropic)
+        # synth    = moderator config (anthropic) — falls back to last (xai) only if anthropic isn't reachable
+        #            On the recording box anthropic IS in ALL_PROVIDERS, so synth = anthropic. That means
+        #            anthropic plays both proposer AND synth roles.
+        # critics  = remaining = [openai, xai]
+        add(
+            "three-providers-default-roles",
+            {"topic": "Postgres or Mysql for the new service?"},
+            {
+                "anthropic": [PROP_OK, SYNTH_OK],
+                "openai":    [CRIT_OK_OPENAI],
+                "xai":       [CRIT_OK_XAI],
+            },
+        )
+
+        # Explicit roles: openai as proposer, anthropic as synth, xai as critic.
+        add(
+            "explicit-roles",
+            {"topic": "Should we adopt Bun?",
+             "proposer": "openai",
+             "synthesizer": "anthropic",
+             "critics": ["xai"]},
+            {
+                "openai":    [PROP_OK],
+                "xai":       [CRIT_OK_XAI],
+                "anthropic": [SYNTH_OK],
+            },
+        )
+
+        # Provider returns malformed JSON for the critic role → null
+        # structured + raw answer text stays.
+        add(
+            "critic-returns-malformed",
+            {"topic": "Argue.",
+             "proposer": "anthropic",
+             "synthesizer": "anthropic",
+             "critics": ["openai"]},
+            {
+                "anthropic": [PROP_OK, SYNTH_OK],
+                "openai":    ["this is not JSON"],
+            },
+        )
+
+    finally:
+        srv._ask_one = saved_ask_one
+        srv._session_load = saved_session_load
+        srv.log_usage = saved_log_usage
+        srv.write_transcript = saved_write
+        srv._session_record = saved_session_record
+        srv._session_save = saved_session_save
+        if saved_claim_add is not None:
+            srv._claim_add = saved_claim_add
+        if saved_session_memory_add is not None:
+            srv._session_memory_add = saved_session_memory_add
+        if saved_record_ballot is not None:
+            srv._record_ballot = saved_record_ballot
+
+    return {
+        "module":      "coordinate_tool",
+        "description": "Native tool_coordinate v1 parity (plain three-role; "
+                       "opts defer to bridge; tail fields stripped on both sides).",
+        "case_count":  len(cases),
+        "cases":       cases,
+    }
+
+
 BUILDERS = {
     "budgets":      fixture_budgets,
     "pricing":      fixture_pricing,
@@ -2672,6 +2858,7 @@ BUILDERS = {
     "audit_tool":   fixture_audit_tool,
     "confer_tool":  fixture_confer_tool,
     "debate_tool":  fixture_debate_tool,
+    "coordinate_tool": fixture_coordinate_tool,
 }
 
 

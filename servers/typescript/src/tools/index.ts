@@ -15,6 +15,7 @@ import type { Provider } from "../providers/types.js";
 import { SERVER_NAME, SERVER_VERSION } from "../server.js";
 import { runAudit } from "./audit.js";
 import { runConfer } from "./confer.js";
+import { runCoordinate } from "./coordinate.js";
 import { runDebate } from "./debate.js";
 import { runPick } from "./pick.js";
 import { runVerify } from "./verify.js";
@@ -118,9 +119,50 @@ export function registerCoreTools(
     auditTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
     conferTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
     debateTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
+    coordinateTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `coordinate` — native port of Python's tool_coordinate. Three-role
+ *  orchestration: proposer → critics → synthesizer with structured
+ *  output at every step. Defers to bridge on the deferred opts. */
+function coordinateTool(
+  providers: Readonly<Record<string, Provider>>,
+  allowlist: readonly string[] | null,
+  bridge: BridgeHandle | undefined,
+): Tool {
+  return {
+    name: "coordinate",
+    description:
+      "Run a three-role coordination flow (proposer → critics → synthesizer) " +
+      "with structured output at every step. v1 native covers the plain " +
+      "path; advanced opts (untrusted_input, inject_session_memory, " +
+      "worker_tools) require the Python bridge.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        topic:        { type: "string" },
+        context:      { type: "string" },
+        providers:    { type: "array", items: { type: "string" } },
+        proposer:     { type: "string" },
+        synthesizer:  { type: "string" },
+        moderator:    { type: "string" },
+        critics:      { type: "array", items: { type: "string" } },
+        session_id:   { type: "string" },
+        untrusted_input:       { type: "boolean" },
+        inject_session_memory: { type: "boolean" },
+        worker_tools:          { type: "array", items: { type: "string" } },
+      },
+      required: ["topic"],
+    },
+    handler: (args) => runCoordinate(args, {
+      providers, allowlist,
+      ...(bridge ? { bridge } : {}),
+    }),
+  };
 }
 
 /** `debate` — native port of Python's tool_debate. v1 covers the

@@ -1,0 +1,442 @@
+{
+  "module": "coordinate_tool",
+  "description": "Native tool_coordinate v1 parity (plain three-role; opts defer to bridge; tail fields stripped on both sides).",
+  "case_count": 3,
+  "cases": [
+    {
+      "label": "three-providers-default-roles",
+      "args": {
+        "topic": "Postgres or Mysql for the new service?",
+        "providers": [
+          "anthropic",
+          "openai",
+          "xai"
+        ]
+      },
+      "canned": {
+        "anthropic": [
+          "{\"role\":\"proposer\",\"summary\":\"Use Postgres.\",\"confidence\":0.8,\"ballot\":\"agree\",\"claims\":[{\"claim\":\"Postgres has stronger ecosystem\",\"confidence\":0.9}],\"citations\":[]}",
+          "{\"consensus\":\"Postgres is the default; switch only on ops constraints.\",\"weighted_confidence\":0.75,\"key_claims\":[{\"claim\":\"Postgres ecosystem is stronger\",\"confidence\":0.85}],\"dissent\":[{\"claim\":\"Mysql fine for OLTP\",\"providers\":[\"openai\"]}],\"citations\":[],\"open_questions\":[\"Operator familiarity?\"]}"
+        ],
+        "openai": [
+          "{\"role\":\"critic\",\"summary\":\"Mysql is fine for OLTP.\",\"confidence\":0.65,\"ballot\":\"disagree\",\"claims\":[{\"claim\":\"Mysql replication is mature\",\"confidence\":0.7}],\"citations\":[]}"
+        ],
+        "xai": [
+          "{\"role\":\"critic\",\"summary\":\"Either works; pick by ops.\",\"confidence\":0.6,\"ballot\":\"abstain\",\"claims\":[{\"claim\":\"Both fine; ops familiarity wins\",\"confidence\":0.6}],\"citations\":[]}"
+        ]
+      },
+      "expected": {
+        "tool": "coordinate",
+        "topic": "Postgres or Mysql for the new service?",
+        "roles": {
+          "proposer": "anthropic",
+          "critics": [
+            "openai",
+            "xai"
+          ],
+          "synthesizer": "anthropic"
+        },
+        "proposal_answer": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-7",
+          "response": "{\"role\":\"proposer\",\"summary\":\"Use Postgres.\",\"confidence\":0.8,\"ballot\":\"agree\",\"claims\":[{\"claim\":\"Postgres has stronger ecosystem\",\"confidence\":0.9}],\"citations\":[]}",
+          "attempts": 1,
+          "usage": {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "purpose": "worker",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "estimated": false
+          }
+        },
+        "proposal_structured": {
+          "role": "proposer",
+          "summary": "Use Postgres.",
+          "confidence": 0.8,
+          "ballot": "agree",
+          "claims": [
+            {
+              "claim": "Postgres has stronger ecosystem",
+              "confidence": 0.9
+            }
+          ],
+          "citations": []
+        },
+        "critique_answers": [
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "{\"role\":\"critic\",\"summary\":\"Mysql is fine for OLTP.\",\"confidence\":0.65,\"ballot\":\"disagree\",\"claims\":[{\"claim\":\"Mysql replication is mature\",\"confidence\":0.7}],\"citations\":[]}",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "worker",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            }
+          },
+          {
+            "provider": "xai",
+            "model": "grok-4-latest",
+            "response": "{\"role\":\"critic\",\"summary\":\"Either works; pick by ops.\",\"confidence\":0.6,\"ballot\":\"abstain\",\"claims\":[{\"claim\":\"Both fine; ops familiarity wins\",\"confidence\":0.6}],\"citations\":[]}",
+            "attempts": 1,
+            "usage": {
+              "provider": "xai",
+              "model": "grok-4-latest",
+              "purpose": "worker",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            }
+          }
+        ],
+        "critique_structured": [
+          {
+            "role": "critic",
+            "summary": "Mysql is fine for OLTP.",
+            "confidence": 0.65,
+            "ballot": "disagree",
+            "claims": [
+              {
+                "claim": "Mysql replication is mature",
+                "confidence": 0.7
+              }
+            ],
+            "citations": []
+          },
+          {
+            "role": "critic",
+            "summary": "Either works; pick by ops.",
+            "confidence": 0.6,
+            "ballot": "abstain",
+            "claims": [
+              {
+                "claim": "Both fine; ops familiarity wins",
+                "confidence": 0.6
+              }
+            ],
+            "citations": []
+          }
+        ],
+        "synthesis_answer": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-7",
+          "response": "{\"consensus\":\"Postgres is the default; switch only on ops constraints.\",\"weighted_confidence\":0.75,\"key_claims\":[{\"claim\":\"Postgres ecosystem is stronger\",\"confidence\":0.85}],\"dissent\":[{\"claim\":\"Mysql fine for OLTP\",\"providers\":[\"openai\"]}],\"citations\":[],\"open_questions\":[\"Operator familiarity?\"]}",
+          "attempts": 1,
+          "usage": {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "purpose": "synth",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "estimated": false
+          }
+        },
+        "synthesis_structured": {
+          "consensus": "Postgres is the default; switch only on ops constraints.",
+          "weighted_confidence": 0.75,
+          "key_claims": [
+            {
+              "claim": "Postgres ecosystem is stronger",
+              "confidence": 0.85
+            }
+          ],
+          "dissent": [
+            {
+              "claim": "Mysql fine for OLTP",
+              "providers": [
+                "openai"
+              ]
+            }
+          ],
+          "citations": [],
+          "open_questions": [
+            "Operator familiarity?"
+          ]
+        }
+      }
+    },
+    {
+      "label": "explicit-roles",
+      "args": {
+        "topic": "Should we adopt Bun?",
+        "proposer": "openai",
+        "synthesizer": "anthropic",
+        "critics": [
+          "xai"
+        ],
+        "providers": [
+          "openai",
+          "xai",
+          "anthropic"
+        ]
+      },
+      "canned": {
+        "openai": [
+          "{\"role\":\"proposer\",\"summary\":\"Use Postgres.\",\"confidence\":0.8,\"ballot\":\"agree\",\"claims\":[{\"claim\":\"Postgres has stronger ecosystem\",\"confidence\":0.9}],\"citations\":[]}"
+        ],
+        "xai": [
+          "{\"role\":\"critic\",\"summary\":\"Either works; pick by ops.\",\"confidence\":0.6,\"ballot\":\"abstain\",\"claims\":[{\"claim\":\"Both fine; ops familiarity wins\",\"confidence\":0.6}],\"citations\":[]}"
+        ],
+        "anthropic": [
+          "{\"consensus\":\"Postgres is the default; switch only on ops constraints.\",\"weighted_confidence\":0.75,\"key_claims\":[{\"claim\":\"Postgres ecosystem is stronger\",\"confidence\":0.85}],\"dissent\":[{\"claim\":\"Mysql fine for OLTP\",\"providers\":[\"openai\"]}],\"citations\":[],\"open_questions\":[\"Operator familiarity?\"]}"
+        ]
+      },
+      "expected": {
+        "tool": "coordinate",
+        "topic": "Should we adopt Bun?",
+        "roles": {
+          "proposer": "openai",
+          "critics": [
+            "xai"
+          ],
+          "synthesizer": "anthropic"
+        },
+        "proposal_answer": {
+          "provider": "openai",
+          "model": "gpt-5",
+          "response": "{\"role\":\"proposer\",\"summary\":\"Use Postgres.\",\"confidence\":0.8,\"ballot\":\"agree\",\"claims\":[{\"claim\":\"Postgres has stronger ecosystem\",\"confidence\":0.9}],\"citations\":[]}",
+          "attempts": 1,
+          "usage": {
+            "provider": "openai",
+            "model": "gpt-5",
+            "purpose": "worker",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "estimated": false
+          }
+        },
+        "proposal_structured": {
+          "role": "proposer",
+          "summary": "Use Postgres.",
+          "confidence": 0.8,
+          "ballot": "agree",
+          "claims": [
+            {
+              "claim": "Postgres has stronger ecosystem",
+              "confidence": 0.9
+            }
+          ],
+          "citations": []
+        },
+        "critique_answers": [
+          {
+            "provider": "xai",
+            "model": "grok-4-latest",
+            "response": "{\"role\":\"critic\",\"summary\":\"Either works; pick by ops.\",\"confidence\":0.6,\"ballot\":\"abstain\",\"claims\":[{\"claim\":\"Both fine; ops familiarity wins\",\"confidence\":0.6}],\"citations\":[]}",
+            "attempts": 1,
+            "usage": {
+              "provider": "xai",
+              "model": "grok-4-latest",
+              "purpose": "worker",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            }
+          }
+        ],
+        "critique_structured": [
+          {
+            "role": "critic",
+            "summary": "Either works; pick by ops.",
+            "confidence": 0.6,
+            "ballot": "abstain",
+            "claims": [
+              {
+                "claim": "Both fine; ops familiarity wins",
+                "confidence": 0.6
+              }
+            ],
+            "citations": []
+          }
+        ],
+        "synthesis_answer": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-7",
+          "response": "{\"consensus\":\"Postgres is the default; switch only on ops constraints.\",\"weighted_confidence\":0.75,\"key_claims\":[{\"claim\":\"Postgres ecosystem is stronger\",\"confidence\":0.85}],\"dissent\":[{\"claim\":\"Mysql fine for OLTP\",\"providers\":[\"openai\"]}],\"citations\":[],\"open_questions\":[\"Operator familiarity?\"]}",
+          "attempts": 1,
+          "usage": {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "purpose": "synth",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "estimated": false
+          }
+        },
+        "synthesis_structured": {
+          "consensus": "Postgres is the default; switch only on ops constraints.",
+          "weighted_confidence": 0.75,
+          "key_claims": [
+            {
+              "claim": "Postgres ecosystem is stronger",
+              "confidence": 0.85
+            }
+          ],
+          "dissent": [
+            {
+              "claim": "Mysql fine for OLTP",
+              "providers": [
+                "openai"
+              ]
+            }
+          ],
+          "citations": [],
+          "open_questions": [
+            "Operator familiarity?"
+          ]
+        }
+      }
+    },
+    {
+      "label": "critic-returns-malformed",
+      "args": {
+        "topic": "Argue.",
+        "proposer": "anthropic",
+        "synthesizer": "anthropic",
+        "critics": [
+          "openai"
+        ],
+        "providers": [
+          "anthropic",
+          "openai"
+        ]
+      },
+      "canned": {
+        "anthropic": [
+          "{\"role\":\"proposer\",\"summary\":\"Use Postgres.\",\"confidence\":0.8,\"ballot\":\"agree\",\"claims\":[{\"claim\":\"Postgres has stronger ecosystem\",\"confidence\":0.9}],\"citations\":[]}",
+          "{\"consensus\":\"Postgres is the default; switch only on ops constraints.\",\"weighted_confidence\":0.75,\"key_claims\":[{\"claim\":\"Postgres ecosystem is stronger\",\"confidence\":0.85}],\"dissent\":[{\"claim\":\"Mysql fine for OLTP\",\"providers\":[\"openai\"]}],\"citations\":[],\"open_questions\":[\"Operator familiarity?\"]}"
+        ],
+        "openai": [
+          "this is not JSON"
+        ]
+      },
+      "expected": {
+        "tool": "coordinate",
+        "topic": "Argue.",
+        "roles": {
+          "proposer": "anthropic",
+          "critics": [
+            "openai"
+          ],
+          "synthesizer": "anthropic"
+        },
+        "proposal_answer": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-7",
+          "response": "{\"role\":\"proposer\",\"summary\":\"Use Postgres.\",\"confidence\":0.8,\"ballot\":\"agree\",\"claims\":[{\"claim\":\"Postgres has stronger ecosystem\",\"confidence\":0.9}],\"citations\":[]}",
+          "attempts": 1,
+          "usage": {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "purpose": "worker",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "estimated": false
+          }
+        },
+        "proposal_structured": {
+          "role": "proposer",
+          "summary": "Use Postgres.",
+          "confidence": 0.8,
+          "ballot": "agree",
+          "claims": [
+            {
+              "claim": "Postgres has stronger ecosystem",
+              "confidence": 0.9
+            }
+          ],
+          "citations": []
+        },
+        "critique_answers": [
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "worker",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            }
+          }
+        ],
+        "critique_structured": [
+          null
+        ],
+        "synthesis_answer": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-7",
+          "response": "{\"consensus\":\"Postgres is the default; switch only on ops constraints.\",\"weighted_confidence\":0.75,\"key_claims\":[{\"claim\":\"Postgres ecosystem is stronger\",\"confidence\":0.85}],\"dissent\":[{\"claim\":\"Mysql fine for OLTP\",\"providers\":[\"openai\"]}],\"citations\":[],\"open_questions\":[\"Operator familiarity?\"]}",
+          "attempts": 1,
+          "usage": {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "purpose": "synth",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "estimated": false
+          }
+        },
+        "synthesis_structured": {
+          "consensus": "Postgres is the default; switch only on ops constraints.",
+          "weighted_confidence": 0.75,
+          "key_claims": [
+            {
+              "claim": "Postgres ecosystem is stronger",
+              "confidence": 0.85
+            }
+          ],
+          "dissent": [
+            {
+              "claim": "Mysql fine for OLTP",
+              "providers": [
+                "openai"
+              ]
+            }
+          ],
+          "citations": [],
+          "open_questions": [
+            "Operator familiarity?"
+          ]
+        }
+      }
+    }
+  ]
+}
