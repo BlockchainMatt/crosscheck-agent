@@ -2104,6 +2104,144 @@ def fixture_openai_compat() -> dict:
 BUILDERS["openai_compat"] = fixture_openai_compat
 
 
+# ----------------------------------------------------------------------
+# gemini.json — buildGeminiRequest + parseGeminiResponse parity.
+# ----------------------------------------------------------------------
+def fixture_gemini() -> dict:
+    srv = _import_server()
+    pricing_payload = {
+        "gemini": {
+            "gemini-2.5-pro":    {"prompt_per_1k": 0.0025, "completion_per_1k": 0.01,  "cached_per_1k": 0.0005},
+            "gemini-1.5-flash":  {"prompt_per_1k": 0.0001, "completion_per_1k": 0.0003, "cached_per_1k": 0.00005},
+        },
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "pricing.json"
+        p.write_text(json.dumps(pricing_payload))
+        os.environ["CROSSCHECK_PRICING_PATH"] = str(p)
+        srv.PRICING_PATH = p
+        srv._PRICING_CACHE = None
+
+        captured: list[dict] = []
+        def fake_post(url, headers, body, *, timeout, deadline):
+            captured.append({"url": url, "headers": dict(headers), "body": dict(body)})
+            return ({
+                "candidates": [{"content": {"parts": [{"text": "FAKE"}]}}],
+                "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5,
+                                   "totalTokenCount": 15},
+            }, 1)
+
+        saved_post = srv._http_post_resilient
+        saved_env  = dict(srv.ENV)
+        saved_cfg  = dict(srv.CFG)
+        try:
+            srv._http_post_resilient = fake_post
+            srv.ENV = dict(srv.ENV)
+            srv.ENV["GEMINI_API_KEY"] = "test-key"
+
+            req_cases = []
+            req_inputs = [
+                ("gemini-2.5-pro",
+                 [{"role": "user", "content": "Hello"}],
+                 100, 0.4, "basic-user-only"),
+                ("gemini-2.5-pro",
+                 [{"role": "system", "content": "You are helpful."},
+                  {"role": "user",   "content": "Hi"}],
+                 200, 0.7, "with-system"),
+                ("gemini-1.5-flash",
+                 [{"role": "user", "content": "u1"},
+                  {"role": "assistant", "content": "a1"},
+                  {"role": "user", "content": "u2"}],
+                 100, 0.4, "multi-turn-assistant-maps-to-model"),
+                ("gemini-2.5-pro",
+                 [{"role": "system", "content": "first sys"},
+                  {"role": "system", "content": "LAST sys wins"},
+                  {"role": "user",   "content": "u1"}],
+                 50, 0.4, "last-system-wins-in-gemini"),
+            ]
+            for model, messages, max_tok, temp, label in req_inputs:
+                captured.clear()
+                srv.ENV = dict(srv.ENV)
+                srv.ENV["GEMINI_MODEL"] = model
+                prov = srv.gemini_provider()
+                assert prov is not None
+                prov.send(messages, max_tok, temp, "worker")
+                wire = captured[0]
+                req_cases.append({
+                    "label":       f"req::{label}",
+                    "model":       model,
+                    "messages":    messages,
+                    "max_tokens":  max_tok,
+                    "temperature": temp,
+                    "api_key":     "test-key",
+                    "expected":    {"url": wire["url"], "headers": wire["headers"], "body": wire["body"]},
+                })
+
+            def py_parse_via_send(resp_obj, model, purpose="worker"):
+                captured.clear()
+                def custom_post(*a, **kw):
+                    return (resp_obj, 1)
+                srv._http_post_resilient = custom_post
+                srv.ENV = dict(srv.ENV)
+                srv.ENV["GEMINI_MODEL"] = model
+                prov = srv.gemini_provider()
+                result = prov.send([{"role": "user", "content": "hi"}], 100, 0.4, purpose)
+                srv._http_post_resilient = fake_post
+                return {"text": result.text, "usage": result.usage.to_dict()}
+
+            resp_cases = []
+            resp_inputs = [
+                ({"candidates": [{"content": {"parts": [{"text": "hello"}]}}],
+                  "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5,
+                                     "totalTokenCount": 15}},
+                 "gemini-2.5-pro", "worker", "basic"),
+                ({"candidates": [{"content": {"parts": [{"text": "alpha "},
+                                                          {"text": "beta"}]}}],
+                  "usageMetadata": {"promptTokenCount": 100, "candidatesTokenCount": 50,
+                                     "totalTokenCount": 150}},
+                 "gemini-2.5-pro", "synth", "two-parts"),
+                ({"candidates": [{"content": {"parts": [{"text": "with cache"}]}}],
+                  "usageMetadata": {"promptTokenCount": 200, "candidatesTokenCount": 10,
+                                     "totalTokenCount": 510, "cachedContentTokenCount": 300}},
+                 "gemini-2.5-pro", "worker", "with-cached-content"),
+                ({"candidates": [{"content": {"parts": [{"text": ""}]}}],
+                  "usageMetadata": {"promptTokenCount": 0, "candidatesTokenCount": 0,
+                                     "totalTokenCount": 0}},
+                 "gemini-2.5-pro", "worker", "empty-everything"),
+                ({"candidates": [],
+                  "usageMetadata": {"promptTokenCount": 50, "candidatesTokenCount": 0,
+                                     "totalTokenCount": 50}},
+                 "gemini-2.5-pro", "worker", "safety-filtered-empty-candidates"),
+                ({"candidates": [{"content": {"parts": [{"text": "no usage block"}]}}]},
+                 "gemini-2.5-pro", "worker", "missing-usage-estimated-true"),
+            ]
+            for resp_obj, model, purpose, label in resp_inputs:
+                resp_cases.append({
+                    "label":    f"resp::{label}",
+                    "resp":     resp_obj,
+                    "model":    model,
+                    "purpose":  purpose,
+                    "expected": py_parse_via_send(resp_obj, model, purpose),
+                })
+        finally:
+            srv._http_post_resilient = saved_post
+            srv.ENV = saved_env
+            srv.CFG = saved_cfg
+
+    return {
+        "module":      "gemini",
+        "description": "buildGeminiRequest + parseGeminiResponse parity",
+        "case_count":  len(req_cases) + len(resp_cases),
+        "pricing_doc": pricing_payload,
+        "req_cases":   req_cases,
+        "resp_cases":  resp_cases,
+    }
+
+
+BUILDERS["gemini"] = fixture_gemini
+
+
 def main(argv: list[str]) -> int:
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
     targets = argv[1:] if len(argv) > 1 else sorted(BUILDERS)

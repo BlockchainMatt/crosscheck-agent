@@ -1,0 +1,416 @@
+{
+  "module": "gemini",
+  "description": "buildGeminiRequest + parseGeminiResponse parity",
+  "case_count": 10,
+  "pricing_doc": {
+    "gemini": {
+      "gemini-2.5-pro": {
+        "prompt_per_1k": 0.0025,
+        "completion_per_1k": 0.01,
+        "cached_per_1k": 0.0005
+      },
+      "gemini-1.5-flash": {
+        "prompt_per_1k": 0.0001,
+        "completion_per_1k": 0.0003,
+        "cached_per_1k": 5e-05
+      }
+    }
+  },
+  "req_cases": [
+    {
+      "label": "req::basic-user-only",
+      "model": "gemini-2.5-pro",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hello"
+        }
+      ],
+      "max_tokens": 100,
+      "temperature": 0.4,
+      "api_key": "test-key",
+      "expected": {
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=test-key",
+        "headers": {},
+        "body": {
+          "contents": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": "Hello"
+                }
+              ]
+            }
+          ],
+          "generationConfig": {
+            "maxOutputTokens": 100,
+            "temperature": 0.4
+          }
+        }
+      }
+    },
+    {
+      "label": "req::with-system",
+      "model": "gemini-2.5-pro",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are helpful."
+        },
+        {
+          "role": "user",
+          "content": "Hi"
+        }
+      ],
+      "max_tokens": 200,
+      "temperature": 0.7,
+      "api_key": "test-key",
+      "expected": {
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=test-key",
+        "headers": {},
+        "body": {
+          "contents": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": "Hi"
+                }
+              ]
+            }
+          ],
+          "generationConfig": {
+            "maxOutputTokens": 200,
+            "temperature": 0.7
+          },
+          "systemInstruction": {
+            "parts": [
+              {
+                "text": "You are helpful."
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "label": "req::multi-turn-assistant-maps-to-model",
+      "model": "gemini-1.5-flash",
+      "messages": [
+        {
+          "role": "user",
+          "content": "u1"
+        },
+        {
+          "role": "assistant",
+          "content": "a1"
+        },
+        {
+          "role": "user",
+          "content": "u2"
+        }
+      ],
+      "max_tokens": 100,
+      "temperature": 0.4,
+      "api_key": "test-key",
+      "expected": {
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=test-key",
+        "headers": {},
+        "body": {
+          "contents": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": "u1"
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": "a1"
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": "u2"
+                }
+              ]
+            }
+          ],
+          "generationConfig": {
+            "maxOutputTokens": 100,
+            "temperature": 0.4
+          }
+        }
+      }
+    },
+    {
+      "label": "req::last-system-wins-in-gemini",
+      "model": "gemini-2.5-pro",
+      "messages": [
+        {
+          "role": "system",
+          "content": "first sys"
+        },
+        {
+          "role": "system",
+          "content": "LAST sys wins"
+        },
+        {
+          "role": "user",
+          "content": "u1"
+        }
+      ],
+      "max_tokens": 50,
+      "temperature": 0.4,
+      "api_key": "test-key",
+      "expected": {
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=test-key",
+        "headers": {},
+        "body": {
+          "contents": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": "u1"
+                }
+              ]
+            }
+          ],
+          "generationConfig": {
+            "maxOutputTokens": 50,
+            "temperature": 0.4
+          },
+          "systemInstruction": {
+            "parts": [
+              {
+                "text": "LAST sys wins"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "resp_cases": [
+    {
+      "label": "resp::basic",
+      "resp": {
+        "candidates": [
+          {
+            "content": {
+              "parts": [
+                {
+                  "text": "hello"
+                }
+              ]
+            }
+          }
+        ],
+        "usageMetadata": {
+          "promptTokenCount": 10,
+          "candidatesTokenCount": 5,
+          "totalTokenCount": 15
+        }
+      },
+      "model": "gemini-2.5-pro",
+      "purpose": "worker",
+      "expected": {
+        "text": "hello",
+        "usage": {
+          "provider": "gemini",
+          "model": "gemini-2.5-pro",
+          "prompt_tokens": 10,
+          "completion_tokens": 5,
+          "cached_tokens": 0,
+          "total_tokens": 15,
+          "cost_usd": 7.5e-05,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      }
+    },
+    {
+      "label": "resp::two-parts",
+      "resp": {
+        "candidates": [
+          {
+            "content": {
+              "parts": [
+                {
+                  "text": "alpha "
+                },
+                {
+                  "text": "beta"
+                }
+              ]
+            }
+          }
+        ],
+        "usageMetadata": {
+          "promptTokenCount": 100,
+          "candidatesTokenCount": 50,
+          "totalTokenCount": 150
+        }
+      },
+      "model": "gemini-2.5-pro",
+      "purpose": "synth",
+      "expected": {
+        "text": "alpha beta",
+        "usage": {
+          "provider": "gemini",
+          "model": "gemini-2.5-pro",
+          "prompt_tokens": 100,
+          "completion_tokens": 50,
+          "cached_tokens": 0,
+          "total_tokens": 150,
+          "cost_usd": 0.00075,
+          "estimated": false,
+          "purpose": "synth"
+        }
+      }
+    },
+    {
+      "label": "resp::with-cached-content",
+      "resp": {
+        "candidates": [
+          {
+            "content": {
+              "parts": [
+                {
+                  "text": "with cache"
+                }
+              ]
+            }
+          }
+        ],
+        "usageMetadata": {
+          "promptTokenCount": 200,
+          "candidatesTokenCount": 10,
+          "totalTokenCount": 510,
+          "cachedContentTokenCount": 300
+        }
+      },
+      "model": "gemini-2.5-pro",
+      "purpose": "worker",
+      "expected": {
+        "text": "with cache",
+        "usage": {
+          "provider": "gemini",
+          "model": "gemini-2.5-pro",
+          "prompt_tokens": 200,
+          "completion_tokens": 10,
+          "cached_tokens": 300,
+          "total_tokens": 510,
+          "cost_usd": 0.00025,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      }
+    },
+    {
+      "label": "resp::empty-everything",
+      "resp": {
+        "candidates": [
+          {
+            "content": {
+              "parts": [
+                {
+                  "text": ""
+                }
+              ]
+            }
+          }
+        ],
+        "usageMetadata": {
+          "promptTokenCount": 0,
+          "candidatesTokenCount": 0,
+          "totalTokenCount": 0
+        }
+      },
+      "model": "gemini-2.5-pro",
+      "purpose": "worker",
+      "expected": {
+        "text": "",
+        "usage": {
+          "provider": "gemini",
+          "model": "gemini-2.5-pro",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cached_tokens": 0,
+          "total_tokens": 0,
+          "cost_usd": 0.0,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      }
+    },
+    {
+      "label": "resp::safety-filtered-empty-candidates",
+      "resp": {
+        "candidates": [],
+        "usageMetadata": {
+          "promptTokenCount": 50,
+          "candidatesTokenCount": 0,
+          "totalTokenCount": 50
+        }
+      },
+      "model": "gemini-2.5-pro",
+      "purpose": "worker",
+      "expected": {
+        "text": "",
+        "usage": {
+          "provider": "gemini",
+          "model": "gemini-2.5-pro",
+          "prompt_tokens": 50,
+          "completion_tokens": 0,
+          "cached_tokens": 0,
+          "total_tokens": 50,
+          "cost_usd": 0.000125,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      }
+    },
+    {
+      "label": "resp::missing-usage-estimated-true",
+      "resp": {
+        "candidates": [
+          {
+            "content": {
+              "parts": [
+                {
+                  "text": "no usage block"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "model": "gemini-2.5-pro",
+      "purpose": "worker",
+      "expected": {
+        "text": "no usage block",
+        "usage": {
+          "provider": "gemini",
+          "model": "gemini-2.5-pro",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cached_tokens": 0,
+          "total_tokens": 0,
+          "cost_usd": 0.0,
+          "estimated": true,
+          "purpose": "worker"
+        }
+      }
+    }
+  ]
+}
