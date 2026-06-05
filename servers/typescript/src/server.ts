@@ -16,22 +16,36 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
-import { registerCoreTools } from "./tools/index.js";
+import { type BridgeHandle, buildPythonProxies } from "./bridge/index.js";
+import { registerCoreTools, type Tool } from "./tools/index.js";
 
 export const SERVER_NAME = "crosscheck-agent";
 export const SERVER_VERSION = "0.1.0-alpha.0";
 
+export interface CreateServerOptions {
+  /** Optional Python bridge. When supplied, the bridge's tools are
+   *  merged into the registry as proxy entries — they forward `tools/call`
+   *  to the Python child. In Phase 4 this is route-all mode (every
+   *  tool name comes from Python); in Phase 5+ native TS tools
+   *  override per-name. */
+  bridge?: BridgeHandle;
+}
+
 /**
  * Create a not-yet-connected MCP server with the current tool surface
  * registered. The caller is responsible for connecting it to a Transport.
+ *
+ * When `opts.bridge` is supplied, the Python tool surface is merged in
+ * via proxy handlers — TS-native tools win on name collisions so we can
+ * cut over per-tool in Phase 5 without restarting.
  */
-export function createServer(): Server {
+export function createServer(opts: CreateServerOptions = {}): Server {
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
     { capabilities: { tools: {} } },
   );
 
-  const tools = registerCoreTools();
+  const tools = buildToolRegistry(opts.bridge);
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: Array.from(tools.values()).map((t) => ({
@@ -61,8 +75,26 @@ export function createServer(): Server {
  * Connect a server to a transport and start serving. Pure plumbing — kept
  * here so the entrypoint files stay short.
  */
-export async function connectAndServe(transport: Transport): Promise<Server> {
-  const server = createServer();
+export async function connectAndServe(
+  transport: Transport,
+  opts: CreateServerOptions = {},
+): Promise<Server> {
+  const server = createServer(opts);
   await server.connect(transport);
   return server;
+}
+
+/** Merge native TS tools with bridge proxies. Native wins on name
+ *  collisions so per-tool cutover works without restart: ship a TS
+ *  port, ship the new server build, and the bridge proxy for that
+ *  name silently gets shadowed. */
+function buildToolRegistry(bridge?: BridgeHandle): Map<string, Tool> {
+  const tools = registerCoreTools();
+  if (!bridge) return tools;
+  const proxies = buildPythonProxies(bridge);
+  for (const [name, proxy] of proxies) {
+    // Native tool wins on collision (Phase-5 cutover behavior).
+    if (!tools.has(name)) tools.set(name, proxy);
+  }
+  return tools;
 }
