@@ -1739,6 +1739,181 @@ BUILDERS = {
 }
 
 
+# ----------------------------------------------------------------------
+# anthropic.json — buildAnthropicRequest + parseAnthropicResponse parity.
+#
+# We exercise the request-build side by capturing what Python's
+# `anthropic_provider().send` WOULD send for a grid of inputs, via the
+# `_http_post_resilient` mock. The response-parse side runs the same
+# function on a grid of canned API responses and records (text, usage).
+# ----------------------------------------------------------------------
+def fixture_anthropic() -> dict:
+    srv = _import_server()
+
+    # Build a tmp pricing doc and wire it in so .with_cost() runs the
+    # same calculation in both languages on these fixtures.
+    pricing_payload = {
+        "anthropic": {
+            "claude-test":       {"prompt_per_1k": 0.003, "completion_per_1k": 0.015, "cached_per_1k": 0.0003},
+            "claude-opus-4-7":   {"prompt_per_1k": 0.015, "completion_per_1k": 0.075, "cached_per_1k": 0.0015},
+            "claude-opus-4-5":   {"prompt_per_1k": 0.015, "completion_per_1k": 0.075, "cached_per_1k": 0.0015},
+        },
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "pricing.json"
+        p.write_text(json.dumps(pricing_payload))
+        os.environ["CROSSCHECK_PRICING_PATH"] = str(p)
+        srv.PRICING_PATH = p
+        srv._PRICING_CACHE = None
+
+        # Capture the body that the Python adapter would send by mocking
+        # _http_post_resilient. We invoke the public send() through the
+        # provider factory so any future code path under it is exercised.
+        captured: list[dict] = []
+
+        def fake_post(url, headers, body, *, timeout, deadline):
+            captured.append({"url": url, "headers": dict(headers), "body": dict(body)})
+            # Return a deterministic 200 so send() finishes.
+            return ({
+                "content": [{"type": "text", "text": "FAKE"}],
+                "usage": {"input_tokens": 10, "output_tokens": 5,
+                          "cache_read_input_tokens": 0},
+            }, 1)
+
+        saved_post = srv._http_post_resilient
+        saved_env = dict(srv.ENV)
+        saved_cfg = dict(srv.CFG)
+        try:
+            srv._http_post_resilient = fake_post
+            srv.ENV = dict(srv.ENV)
+            srv.ENV["ANTHROPIC_API_KEY"] = "test-key"
+
+            # ---- request-build grid ----
+            req_cases = []
+            req_inputs = [
+                # (model, messages, max_tokens, temperature, label)
+                ("claude-test",
+                 [{"role": "user", "content": "Hello"}],
+                 100, 0.4, "basic-user-only"),
+                ("claude-test",
+                 [{"role": "system", "content": "You are helpful."},
+                  {"role": "user",   "content": "Hi"}],
+                 200, 0.7, "with-system"),
+                ("claude-opus-4-7",
+                 [{"role": "system", "content": "Think carefully."},
+                  {"role": "user",   "content": "Solve"}],
+                 2048, 0.5, "reasoning-class-omits-temperature"),
+                ("claude-test",
+                 [{"role": "system", "content": "first sys"},
+                  {"role": "system", "content": "second sys IGNORED"},
+                  {"role": "user",   "content": "u1"}],
+                 50, 0.4, "first-system-wins"),
+                ("claude-test",
+                 [{"role": "user", "content": "u1"},
+                  {"role": "assistant", "content": "a1"},
+                  {"role": "user", "content": "u2"}],
+                 100, 0.4, "multi-turn-no-system"),
+            ]
+            for model, messages, max_tok, temp, label in req_inputs:
+                captured.clear()
+                srv.ENV = dict(srv.ENV)
+                srv.ENV["ANTHROPIC_MODEL"] = model
+                prov = srv.anthropic_provider()
+                assert prov is not None
+                prov.send(messages, max_tok, temp, "worker")
+                assert len(captured) == 1
+                wire = captured[0]
+                # Anthropic's send doesn't include Content-Type explicitly
+                # — the helper adds it. Mirror that detail by adding it
+                # here so TS comparison includes the same shape.
+                wire["headers"].setdefault("content-type", "application/json")
+                req_cases.append({
+                    "label":       f"req::{label}",
+                    "model":       model,
+                    "messages":    messages,
+                    "max_tokens":  max_tok,
+                    "temperature": temp,
+                    "api_key":     "test-key",
+                    "expected":    {"url": wire["url"], "headers": wire["headers"], "body": wire["body"]},
+                })
+
+            # ---- response-parse grid ----
+            # Reuse the provider's parsing slice via _model_pricing.
+            # Easier: call the helpers directly with synthetic shapes.
+            from dataclasses import asdict
+            def py_parse(resp_obj, model, purpose):
+                # Mirrors the lines inside anthropic_provider().send that
+                # produce (text, usage). We can't easily reach the inner
+                # closure, so we inline the same expression here.
+                u = resp_obj.get("usage") or {}
+                prompt = int(u.get("input_tokens") or 0)
+                cached = int(u.get("cache_read_input_tokens") or 0)
+                completion = int(u.get("output_tokens") or 0)
+                text = "".join(b.get("text", "") for b in resp_obj.get("content", []))
+                usage = srv.Usage(
+                    provider="anthropic", model=model,
+                    prompt_tokens=prompt + cached,
+                    completion_tokens=completion,
+                    cached_tokens=cached,
+                    purpose=purpose,
+                    estimated=not bool(u),
+                ).with_cost()
+                return {"text": text, "usage": usage.to_dict()}
+
+            resp_inputs = [
+                # (resp_body, model, purpose, label)
+                ({"content": [{"type": "text", "text": "hello"}],
+                  "usage":   {"input_tokens": 10, "output_tokens": 5,
+                              "cache_read_input_tokens": 0}},
+                 "claude-test", "worker", "basic"),
+                ({"content": [{"type": "text", "text": "alpha "},
+                              {"type": "text", "text": "beta"}],
+                  "usage":   {"input_tokens": 100, "output_tokens": 50}},
+                 "claude-test", "synth", "two-blocks-no-cache-key"),
+                ({"content": [{"type": "text", "text": "with cache"}],
+                  "usage":   {"input_tokens": 200, "output_tokens": 10,
+                              "cache_read_input_tokens": 300}},
+                 "claude-test", "worker", "with-cache-reads"),
+                ({"content": [{"type": "text", "text": "no usage block"}]},
+                 "claude-test", "worker", "missing-usage-estimated-true"),
+                ({"content": [{"type": "text", "text": ""}],
+                  "usage":   {"input_tokens": 0, "output_tokens": 0}},
+                 "claude-test", "worker", "empty-everything"),
+                # Non-text blocks (e.g. tool_use) skipped silently.
+                ({"content": [{"type": "tool_use", "name": "x"},
+                              {"type": "text", "text": "only text"}],
+                  "usage":   {"input_tokens": 5, "output_tokens": 3}},
+                 "claude-test", "worker", "mixed-block-types"),
+            ]
+            resp_cases = []
+            for resp_obj, model, purpose, label in resp_inputs:
+                resp_cases.append({
+                    "label":    f"resp::{label}",
+                    "resp":     resp_obj,
+                    "model":    model,
+                    "purpose":  purpose,
+                    "expected": py_parse(resp_obj, model, purpose),
+                })
+        finally:
+            srv._http_post_resilient = saved_post
+            srv.ENV = saved_env
+            srv.CFG = saved_cfg
+
+    return {
+        "module":      "anthropic",
+        "description": "buildAnthropicRequest + parseAnthropicResponse parity",
+        "case_count":  len(req_cases) + len(resp_cases),
+        "pricing_doc": pricing_payload,
+        "req_cases":   req_cases,
+        "resp_cases":  resp_cases,
+    }
+
+
+# Register the late-defined builder.
+BUILDERS["anthropic"] = fixture_anthropic
+
+
 def main(argv: list[str]) -> int:
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
     targets = argv[1:] if len(argv) > 1 else sorted(BUILDERS)

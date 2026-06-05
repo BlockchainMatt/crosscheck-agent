@@ -1,0 +1,414 @@
+{
+  "module": "anthropic",
+  "description": "buildAnthropicRequest + parseAnthropicResponse parity",
+  "case_count": 11,
+  "pricing_doc": {
+    "anthropic": {
+      "claude-test": {
+        "prompt_per_1k": 0.003,
+        "completion_per_1k": 0.015,
+        "cached_per_1k": 0.0003
+      },
+      "claude-opus-4-7": {
+        "prompt_per_1k": 0.015,
+        "completion_per_1k": 0.075,
+        "cached_per_1k": 0.0015
+      },
+      "claude-opus-4-5": {
+        "prompt_per_1k": 0.015,
+        "completion_per_1k": 0.075,
+        "cached_per_1k": 0.0015
+      }
+    }
+  },
+  "req_cases": [
+    {
+      "label": "req::basic-user-only",
+      "model": "claude-test",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hello"
+        }
+      ],
+      "max_tokens": 100,
+      "temperature": 0.4,
+      "api_key": "test-key",
+      "expected": {
+        "url": "https://api.anthropic.com/v1/messages",
+        "headers": {
+          "x-api-key": "test-key",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "claude-test",
+          "max_tokens": 100,
+          "messages": [
+            {
+              "role": "user",
+              "content": "Hello"
+            }
+          ],
+          "temperature": 0.4
+        }
+      }
+    },
+    {
+      "label": "req::with-system",
+      "model": "claude-test",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are helpful."
+        },
+        {
+          "role": "user",
+          "content": "Hi"
+        }
+      ],
+      "max_tokens": 200,
+      "temperature": 0.7,
+      "api_key": "test-key",
+      "expected": {
+        "url": "https://api.anthropic.com/v1/messages",
+        "headers": {
+          "x-api-key": "test-key",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "claude-test",
+          "max_tokens": 200,
+          "messages": [
+            {
+              "role": "user",
+              "content": "Hi"
+            }
+          ],
+          "temperature": 0.7,
+          "system": "You are helpful."
+        }
+      }
+    },
+    {
+      "label": "req::reasoning-class-omits-temperature",
+      "model": "claude-opus-4-7",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Think carefully."
+        },
+        {
+          "role": "user",
+          "content": "Solve"
+        }
+      ],
+      "max_tokens": 2048,
+      "temperature": 0.5,
+      "api_key": "test-key",
+      "expected": {
+        "url": "https://api.anthropic.com/v1/messages",
+        "headers": {
+          "x-api-key": "test-key",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "claude-opus-4-7",
+          "max_tokens": 2048,
+          "messages": [
+            {
+              "role": "user",
+              "content": "Solve"
+            }
+          ],
+          "system": "Think carefully."
+        }
+      }
+    },
+    {
+      "label": "req::first-system-wins",
+      "model": "claude-test",
+      "messages": [
+        {
+          "role": "system",
+          "content": "first sys"
+        },
+        {
+          "role": "system",
+          "content": "second sys IGNORED"
+        },
+        {
+          "role": "user",
+          "content": "u1"
+        }
+      ],
+      "max_tokens": 50,
+      "temperature": 0.4,
+      "api_key": "test-key",
+      "expected": {
+        "url": "https://api.anthropic.com/v1/messages",
+        "headers": {
+          "x-api-key": "test-key",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "claude-test",
+          "max_tokens": 50,
+          "messages": [
+            {
+              "role": "user",
+              "content": "u1"
+            }
+          ],
+          "temperature": 0.4,
+          "system": "first sys"
+        }
+      }
+    },
+    {
+      "label": "req::multi-turn-no-system",
+      "model": "claude-test",
+      "messages": [
+        {
+          "role": "user",
+          "content": "u1"
+        },
+        {
+          "role": "assistant",
+          "content": "a1"
+        },
+        {
+          "role": "user",
+          "content": "u2"
+        }
+      ],
+      "max_tokens": 100,
+      "temperature": 0.4,
+      "api_key": "test-key",
+      "expected": {
+        "url": "https://api.anthropic.com/v1/messages",
+        "headers": {
+          "x-api-key": "test-key",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json"
+        },
+        "body": {
+          "model": "claude-test",
+          "max_tokens": 100,
+          "messages": [
+            {
+              "role": "user",
+              "content": "u1"
+            },
+            {
+              "role": "assistant",
+              "content": "a1"
+            },
+            {
+              "role": "user",
+              "content": "u2"
+            }
+          ],
+          "temperature": 0.4
+        }
+      }
+    }
+  ],
+  "resp_cases": [
+    {
+      "label": "resp::basic",
+      "resp": {
+        "content": [
+          {
+            "type": "text",
+            "text": "hello"
+          }
+        ],
+        "usage": {
+          "input_tokens": 10,
+          "output_tokens": 5,
+          "cache_read_input_tokens": 0
+        }
+      },
+      "model": "claude-test",
+      "purpose": "worker",
+      "expected": {
+        "text": "hello",
+        "usage": {
+          "provider": "anthropic",
+          "model": "claude-test",
+          "prompt_tokens": 10,
+          "completion_tokens": 5,
+          "cached_tokens": 0,
+          "total_tokens": 15,
+          "cost_usd": 0.000105,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      }
+    },
+    {
+      "label": "resp::two-blocks-no-cache-key",
+      "resp": {
+        "content": [
+          {
+            "type": "text",
+            "text": "alpha "
+          },
+          {
+            "type": "text",
+            "text": "beta"
+          }
+        ],
+        "usage": {
+          "input_tokens": 100,
+          "output_tokens": 50
+        }
+      },
+      "model": "claude-test",
+      "purpose": "synth",
+      "expected": {
+        "text": "alpha beta",
+        "usage": {
+          "provider": "anthropic",
+          "model": "claude-test",
+          "prompt_tokens": 100,
+          "completion_tokens": 50,
+          "cached_tokens": 0,
+          "total_tokens": 150,
+          "cost_usd": 0.00105,
+          "estimated": false,
+          "purpose": "synth"
+        }
+      }
+    },
+    {
+      "label": "resp::with-cache-reads",
+      "resp": {
+        "content": [
+          {
+            "type": "text",
+            "text": "with cache"
+          }
+        ],
+        "usage": {
+          "input_tokens": 200,
+          "output_tokens": 10,
+          "cache_read_input_tokens": 300
+        }
+      },
+      "model": "claude-test",
+      "purpose": "worker",
+      "expected": {
+        "text": "with cache",
+        "usage": {
+          "provider": "anthropic",
+          "model": "claude-test",
+          "prompt_tokens": 500,
+          "completion_tokens": 10,
+          "cached_tokens": 300,
+          "total_tokens": 510,
+          "cost_usd": 0.00084,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      }
+    },
+    {
+      "label": "resp::missing-usage-estimated-true",
+      "resp": {
+        "content": [
+          {
+            "type": "text",
+            "text": "no usage block"
+          }
+        ]
+      },
+      "model": "claude-test",
+      "purpose": "worker",
+      "expected": {
+        "text": "no usage block",
+        "usage": {
+          "provider": "anthropic",
+          "model": "claude-test",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cached_tokens": 0,
+          "total_tokens": 0,
+          "cost_usd": 0.0,
+          "estimated": true,
+          "purpose": "worker"
+        }
+      }
+    },
+    {
+      "label": "resp::empty-everything",
+      "resp": {
+        "content": [
+          {
+            "type": "text",
+            "text": ""
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      },
+      "model": "claude-test",
+      "purpose": "worker",
+      "expected": {
+        "text": "",
+        "usage": {
+          "provider": "anthropic",
+          "model": "claude-test",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cached_tokens": 0,
+          "total_tokens": 0,
+          "cost_usd": 0.0,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      }
+    },
+    {
+      "label": "resp::mixed-block-types",
+      "resp": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "x"
+          },
+          {
+            "type": "text",
+            "text": "only text"
+          }
+        ],
+        "usage": {
+          "input_tokens": 5,
+          "output_tokens": 3
+        }
+      },
+      "model": "claude-test",
+      "purpose": "worker",
+      "expected": {
+        "text": "only text",
+        "usage": {
+          "provider": "anthropic",
+          "model": "claude-test",
+          "prompt_tokens": 5,
+          "completion_tokens": 3,
+          "cached_tokens": 0,
+          "total_tokens": 8,
+          "cost_usd": 6e-05,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      }
+    }
+  ]
+}
