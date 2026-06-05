@@ -21,9 +21,12 @@ import { runDebate } from "./debate.js";
 import { runListProviders } from "./list-providers.js";
 import { runPick } from "./pick.js";
 import { runPlan } from "./plan.js";
+import { runRecall } from "./recall.js";
 import { runReview } from "./review.js";
 import { runTriangulate } from "./triangulate.js";
 import { runVerify } from "./verify.js";
+
+import type { Storage } from "../adapters/storage/interface.js";
 
 /** A registered MCP tool. `inputSchema` is the JSON-Schema surfaced via
  *  tools/list; `handler` runs on tools/call. */
@@ -107,6 +110,10 @@ export interface RegisterCoreToolsOptions {
   /** Moderator default. Matches Python CFG.moderator; defaults to
    *  "anthropic". Used by list_providers + audit + debate + coordinate. */
   moderatorDefault?: string;
+  /** SQLite-backed storage adapter. When supplied, storage-driven
+   *  tools (recall, scoreboard, session_memory, explain) run natively.
+   *  When absent, they defer to the bridge (or return an error). */
+  storage?: Storage;
 }
 
 /** Build the native tool surface. Returns a name -> Tool map.
@@ -137,9 +144,43 @@ export function registerCoreTools(
     critiqueTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
     reviewTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
     listProvidersTool(o.providers ?? {}, o.activeProviders ?? null, o.moderatorDefault ?? "anthropic"),
+    recallTool(o.storage, o.bridge),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `recall` — native port of Python's tool_recall. FTS5 search over
+ *  persisted transcripts. Requires a Storage adapter; defers to
+ *  bridge when not wired. */
+function recallTool(
+  storage: Storage | undefined,
+  bridge: BridgeHandle | undefined,
+): Tool {
+  return {
+    name: "recall",
+    description:
+      "Full-text search across persisted transcripts via SQLite FTS5. " +
+      "Returns rows ordered by relevance with a windowed snippet. " +
+      "Requires a wired Storage adapter; falls back to the Python " +
+      "bridge when not available.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        query:      { type: "string" },
+        k:          { type: "integer", minimum: 1, maximum: 50 },
+        session_id: { type: "string" },
+        tool:       { type: "string" },
+        since_days: { type: "number", minimum: 0 },
+      },
+      required: ["query"],
+    },
+    handler: (args) => runRecall(args, {
+      ...(storage ? { storage } : {}),
+      ...(bridge  ? { bridge  } : {}),
+    }),
+  };
 }
 
 /** `list_providers` — native port of Python's tool_list_providers.
