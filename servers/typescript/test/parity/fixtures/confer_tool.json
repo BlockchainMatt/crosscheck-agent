@@ -1,0 +1,224 @@
+{
+  "module": "confer_tool",
+  "description": "Native tool_confer v1 parity (plain panel-call path; all opts defer to bridge; budget/session/usage/timing/run_summary/transcript stripped + per-answer timing).",
+  "case_count": 4,
+  "cases": [
+    {
+      "label": "two-providers-plain",
+      "args": {
+        "question": "What's the capital of France?",
+        "providers": [
+          "anthropic",
+          "openai"
+        ]
+      },
+      "canned": {
+        "anthropic": "Paris.",
+        "openai": "The capital is Paris."
+      },
+      "expected": {
+        "tool": "confer",
+        "question": "What's the capital of France?",
+        "answers": [
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "response": "Paris.",
+            "attempts": 1,
+            "usage": {
+              "provider": "anthropic",
+              "model": "claude-opus-4-7",
+              "purpose": "confer",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            }
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "The capital is Paris.",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "confer",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "three-providers-with-context",
+      "args": {
+        "question": "Best framework for SSR?",
+        "context": "We have a small team and want fast TTFB.",
+        "providers": [
+          "anthropic",
+          "openai",
+          "xai"
+        ]
+      },
+      "canned": {
+        "anthropic": "Next.js for the ecosystem.",
+        "openai": "Remix or Next; Remix has the cleaner DX.",
+        "xai": "Astro if content-heavy, else Next."
+      },
+      "expected": {
+        "tool": "confer",
+        "question": "Best framework for SSR?",
+        "answers": [
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "response": "Next.js for the ecosystem.",
+            "attempts": 1,
+            "usage": {
+              "provider": "anthropic",
+              "model": "claude-opus-4-7",
+              "purpose": "confer",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            }
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "Remix or Next; Remix has the cleaner DX.",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "confer",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            }
+          },
+          {
+            "provider": "xai",
+            "model": "grok-4-latest",
+            "response": "Astro if content-heavy, else Next.",
+            "attempts": 1,
+            "usage": {
+              "provider": "xai",
+              "model": "grok-4-latest",
+              "purpose": "confer",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "single-provider",
+      "args": {
+        "question": "Sanity check: 2+2?",
+        "providers": [
+          "anthropic"
+        ]
+      },
+      "canned": {
+        "anthropic": "4"
+      },
+      "expected": {
+        "tool": "confer",
+        "question": "Sanity check: 2+2?",
+        "answers": [
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "response": "4",
+            "attempts": 1,
+            "usage": {
+              "provider": "anthropic",
+              "model": "claude-opus-4-7",
+              "purpose": "confer",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "one-empty-response",
+      "args": {
+        "question": "Anything?",
+        "providers": [
+          "anthropic",
+          "openai"
+        ]
+      },
+      "canned": {
+        "anthropic": "",
+        "openai": "Sure, here you go."
+      },
+      "expected": {
+        "tool": "confer",
+        "question": "Anything?",
+        "answers": [
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "response": "",
+            "attempts": 1,
+            "usage": {
+              "provider": "anthropic",
+              "model": "claude-opus-4-7",
+              "purpose": "confer",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            }
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "Sure, here you go.",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "confer",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

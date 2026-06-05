@@ -2379,6 +2379,118 @@ def fixture_audit_tool() -> dict:
     }
 
 
+def fixture_confer_tool() -> dict:
+    """confer_tool.json — Phase 5 part 5 parity gate.
+
+    Same cassette pattern as pick + audit. Records (args, canned,
+    expected) per case. v1 native confer covers the plain panel-call
+    path; v1 opts (untrusted_input, extract_claims, early_stop,
+    inject_session_memory, auto_panel, worker_tools) defer to the
+    bridge — fixtures here exercise the v1 native path only.
+
+    Stripped on both sides: budget, session, usage rollup, timing
+    rollup, run_summary, transcript_path/transcript, and per-answer
+    timing fields (elapsed_ms, cpu_ms, cache_hit, timing).
+    """
+    srv = _import_server()
+    cases = []
+
+    saved_ask_one        = srv._ask_one
+    saved_session_load   = srv._session_load
+    saved_log_usage      = srv.log_usage
+    saved_write          = srv.write_transcript
+
+    srv._session_load = lambda _sid: None
+    srv.log_usage     = lambda *a, **kw: None
+    srv.write_transcript = lambda *a, **kw: ""
+
+    def sanitize_top(out: dict) -> dict:
+        copy = dict(out)
+        for k in ("budget", "session", "usage", "timing", "run_summary",
+                  "transcript_path", "transcript", "_suppress_run_summary"):
+            copy.pop(k, None)
+        ans = copy.get("answers") or []
+        new_ans = []
+        for a in ans:
+            if isinstance(a, dict):
+                b = dict(a)
+                for k in ("elapsed_ms", "cpu_ms", "cache_hit", "timing"):
+                    b.pop(k, None)
+                new_ans.append(b)
+            else:
+                new_ans.append(a)
+        copy["answers"] = new_ans
+        return copy
+
+    def make_fake_ask_one(canned: dict[str, str]):
+        def fake(p, messages, deadline, max_tokens, purpose="worker"):
+            text = canned.get(p.name, "")
+            return {
+                "provider": p.name, "model": p.model,
+                "response": text,
+                "cache_hit": False, "elapsed_ms": 0, "cpu_ms": 0,
+                "attempts": 1,
+                "usage": {
+                    "provider": p.name, "model": p.model, "purpose": purpose,
+                    "prompt_tokens": 100, "completion_tokens": 50,
+                    "total_tokens": 150, "cached_tokens": 0,
+                    "cost_usd": 0.0, "estimated": False,
+                },
+                "timing": {"wall_ms": 0, "cpu_ms": 0},
+            }
+        return fake
+
+    def add(label, args, canned):
+        srv._ask_one = make_fake_ask_one(canned)
+        invoke_args = {**args, "providers": list(canned.keys())}
+        out = srv.tool_confer(invoke_args)
+        cases.append({
+            "label":   label,
+            "args":    invoke_args,
+            "canned":  canned,
+            "expected": sanitize_top(out),
+        })
+
+    try:
+        add(
+            "two-providers-plain",
+            {"question": "What's the capital of France?"},
+            {"anthropic": "Paris.", "openai": "The capital is Paris."},
+        )
+        add(
+            "three-providers-with-context",
+            {"question": "Best framework for SSR?",
+             "context": "We have a small team and want fast TTFB."},
+            {"anthropic": "Next.js for the ecosystem.",
+             "openai":    "Remix or Next; Remix has the cleaner DX.",
+             "xai":       "Astro if content-heavy, else Next."},
+        )
+        add(
+            "single-provider",
+            {"question": "Sanity check: 2+2?"},
+            {"anthropic": "4"},
+        )
+        add(
+            "one-empty-response",
+            {"question": "Anything?"},
+            {"anthropic": "", "openai": "Sure, here you go."},
+        )
+    finally:
+        srv._ask_one = saved_ask_one
+        srv._session_load = saved_session_load
+        srv.log_usage = saved_log_usage
+        srv.write_transcript = saved_write
+
+    return {
+        "module":      "confer_tool",
+        "description": "Native tool_confer v1 parity (plain panel-call path; "
+                       "all opts defer to bridge; budget/session/usage/timing/"
+                       "run_summary/transcript stripped + per-answer timing).",
+        "case_count":  len(cases),
+        "cases":       cases,
+    }
+
+
 BUILDERS = {
     "budgets":      fixture_budgets,
     "pricing":      fixture_pricing,
@@ -2398,6 +2510,7 @@ BUILDERS = {
     "json_schema":  fixture_json_schema,
     "pick":         fixture_pick,
     "audit_tool":   fixture_audit_tool,
+    "confer_tool":  fixture_confer_tool,
 }
 
 

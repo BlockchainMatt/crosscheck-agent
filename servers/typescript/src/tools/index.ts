@@ -14,6 +14,7 @@ import type { BridgeHandle } from "../bridge/index.js";
 import type { Provider } from "../providers/types.js";
 import { SERVER_NAME, SERVER_VERSION } from "../server.js";
 import { runAudit } from "./audit.js";
+import { runConfer } from "./confer.js";
 import { runPick } from "./pick.js";
 import { runVerify } from "./verify.js";
 
@@ -114,9 +115,53 @@ export function registerCoreTools(
     verifyTool(o.bridge),
     pickTool(o.providers ?? {}, o.providerAllowlist ?? null),
     auditTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
+    conferTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `confer` — native port of Python's tool_confer. v1 covers the
+ *  plain panel-call path; opts (untrusted_input, extract_claims,
+ *  early_stop, inject_session_memory, auto_panel, worker_tools) defer
+ *  to the bridge when supplied. */
+function conferTool(
+  providers: Readonly<Record<string, Provider>>,
+  allowlist: readonly string[] | null,
+  bridge: BridgeHandle | undefined,
+): Tool {
+  return {
+    name: "confer",
+    description:
+      "Ask a panel of LLM providers the same question; return one answer per " +
+      "provider. v1 native covers the plain panel call; advanced opts " +
+      "(untrusted_input, extract_claims, early_stop, inject_session_memory, " +
+      "auto_panel, worker_tools) require the Python bridge.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        question:   { type: "string" },
+        context:    { type: "string" },
+        providers:  { type: "array", items: { type: "string" } },
+        session_id: { type: "string" },
+        untrusted_input:        { type: "boolean" },
+        extract_claims:         { type: "boolean" },
+        early_stop:             { type: "boolean" },
+        early_stop_threshold:   { type: "number" },
+        inject_session_memory:  { type: "boolean" },
+        auto_panel:             { type: "boolean" },
+        auto_panel_n:           { type: "integer" },
+        worker_tools:           { type: "array", items: { type: "string" } },
+      },
+      required: ["question"],
+    },
+    handler: (args) => runConfer(args, {
+      providers,
+      allowlist,
+      ...(bridge ? { bridge } : {}),
+    }),
+  };
 }
 
 /** `audit` — native port of Python's tool_audit (single-mode).
