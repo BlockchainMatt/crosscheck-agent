@@ -25,6 +25,7 @@ import { runListProviders } from "./list-providers.js";
 import { runPick } from "./pick.js";
 import { runPlan } from "./plan.js";
 import { runRecall } from "./recall.js";
+import { runRecommendPanel } from "./recommend-panel.js";
 import { runReview } from "./review.js";
 import { runScoreboard } from "./scoreboard.js";
 import { runSessionMemory } from "./session-memory.js";
@@ -168,9 +169,44 @@ export function registerCoreTools(
     delegateTool(o.providers ?? {}, o.providerAllowlist ?? null,
                  o.storage, o.bridge, o.moderatorDefault ?? "anthropic"),
     fetchTool(o.storage, o.fetchConfig, o.repoRoot),
+    recommendPanelTool(o.providers ?? {}, o.storage, o.bridge),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `recommend_panel` — native port of Python's tool_recommend_panel.
+ *  Pulls usage stats + provider weights from Storage and delegates
+ *  the scoring + cold-start logic to the Phase-2-ported routerRecommend. */
+function recommendPanelTool(
+  providers: Readonly<Record<string, Provider>>,
+  storage: Storage | undefined,
+  bridge: BridgeHandle | undefined,
+): Tool {
+  return {
+    name: "recommend_panel",
+    description:
+      "Recommend a minimal effective panel for a given purpose, based " +
+      "on historical usage_log + provider_stats. Cold-start falls back " +
+      "to the configured panel ordered by win-rate.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        purpose:        { type: "string" },
+        n:              { type: "integer", minimum: 1 },
+        exclude:        { type: "array", items: { type: "string" } },
+        since_days:     { type: "integer", minimum: 0 },
+        available_only: { type: "boolean" },
+      },
+      required: ["purpose"],
+    },
+    handler: (args) => runRecommendPanel(args, {
+      providers,
+      ...(storage ? { storage } : {}),
+      ...(bridge  ? { bridge }  : {}),
+    }),
+  };
 }
 
 /** `fetch` — native port of Python's tool_fetch. HTTP retrieval with

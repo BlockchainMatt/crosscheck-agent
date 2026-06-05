@@ -252,6 +252,26 @@ export interface StorageRead {
     }[]
   >;
 
+  /** Per-provider per-purpose averages for the smart router. Filters
+   *  to ts >= sinceMs (epoch ms) when supplied. Returns provider,
+   *  calls + token sum + averages (tokens, cost, wall_ms). Mirrors
+   *  Python's `_router_stats` aggregation, sans the event-log error
+   *  counts (TS doesn't write an events.jsonl; callers default
+   *  error_rate to 0). */
+  listRouterStatsByPurpose(
+    purpose: string,
+    sinceMs?: number,
+  ): Promise<
+    readonly {
+      provider:         string;
+      calls:            number;
+      tokens_sum:       number;
+      avg_total_tokens: number;
+      avg_cost_usd:     number;
+      avg_wall_ms:      number;
+    }[]
+  >;
+
   // claims
   listClaimsForSession(sessionId: string): Promise<readonly ClaimRow[]>;
   getClaim(claimId: number): Promise<ClaimRow | null>;

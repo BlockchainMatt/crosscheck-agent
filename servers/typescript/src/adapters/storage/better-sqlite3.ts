@@ -400,6 +400,42 @@ class BetterSqliteStorage implements Storage {
     ).all() as Awaited<ReturnType<Storage["listUsageGroupedByProvider"]>>;
   }
 
+  async listRouterStatsByPurpose(
+    purpose: string,
+    sinceMs?: number,
+  ): Promise<
+    Awaited<ReturnType<Storage["listRouterStatsByPurpose"]>>
+  > {
+    if (sinceMs !== undefined) {
+      return this.cached(
+        "router-stats-purpose-since",
+        `SELECT LOWER(provider)              AS provider,
+                COUNT(*)                     AS calls,
+                COALESCE(SUM(total_tokens), 0) AS tokens_sum,
+                COALESCE(AVG(total_tokens), 0) AS avg_total_tokens,
+                COALESCE(AVG(cost_usd),     0) AS avg_cost_usd,
+                COALESCE(AVG(wall_ms),      0) AS avg_wall_ms
+         FROM usage_log
+         WHERE purpose = ? AND ts >= ? AND provider IS NOT NULL
+         GROUP BY LOWER(provider)
+         ORDER BY provider`,
+      ).all(purpose, sinceMs) as Awaited<ReturnType<Storage["listRouterStatsByPurpose"]>>;
+    }
+    return this.cached(
+      "router-stats-purpose",
+      `SELECT LOWER(provider)              AS provider,
+              COUNT(*)                     AS calls,
+              COALESCE(SUM(total_tokens), 0) AS tokens_sum,
+              COALESCE(AVG(total_tokens), 0) AS avg_total_tokens,
+              COALESCE(AVG(cost_usd),     0) AS avg_cost_usd,
+              COALESCE(AVG(wall_ms),      0) AS avg_wall_ms
+       FROM usage_log
+       WHERE purpose = ? AND provider IS NOT NULL
+       GROUP BY LOWER(provider)
+       ORDER BY provider`,
+    ).all(purpose) as Awaited<ReturnType<Storage["listRouterStatsByPurpose"]>>;
+  }
+
   // ==================================================================
   // claims
   // ==================================================================
