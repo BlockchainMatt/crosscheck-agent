@@ -537,6 +537,187 @@ def _run_python_redact_obj(srv, obj, secret, session_id, *, hmac_mode):
 
 
 # ----------------------------------------------------------------------
+# prompts.json — adaptMessages + stripReasoningPreamble + anthropicXmlWrap
+# ----------------------------------------------------------------------
+def fixture_prompts() -> dict:
+    srv = _import_server()
+
+    # Build a long body for the XML-wrap path (≥ 600 chars).
+    long_body = ("Plan the auth migration step by step. "
+                 "List risks. Propose a rollback. ") * 12
+
+    # ---- stripReasoningPreamble standalone cases ----
+    strip_inputs = [
+        # (input messages, label)
+        ([], "empty"),
+        ([{"role": "user", "content": "hello world"}], "no-match"),
+        (
+            [{"role": "system", "content": "You are helpful. Let's think step by step before answering."}],
+            "system-preamble",
+        ),
+        (
+            [{"role": "user", "content": "Think out loud about this."}],
+            "user-preamble",
+        ),
+        (
+            [
+                {"role": "system", "content": "Think step-by-step carefully."},
+                {"role": "user",   "content": "Please think aloud first responding"},
+            ],
+            "multi-message",
+        ),
+        (
+            [{"role": "user", "content": "Think step by step.\n\n\n\nThen think out loud."}],
+            "multi-match-collapse-newlines",
+        ),
+        (
+            # Non-dict pass-through
+            ["not-a-dict", {"role": "user", "content": "Let's think carefully."}],
+            "non-dict-passthrough",
+        ),
+        (
+            [{"role": "user", "content": 42}],   # non-string content
+            "non-string-content",
+        ),
+    ]
+    strip_cases = []
+    for msgs, label in strip_inputs:
+        new_msgs, edits = srv._strip_reasoning_preamble(list(msgs))
+        strip_cases.append({
+            "label":    f"strip::{label}",
+            "messages": list(msgs),
+            "expected": {"messages": new_msgs, "edits": edits},
+        })
+
+    # ---- anthropicXmlWrap standalone cases ----
+    wrap_inputs = [
+        ([], "empty"),
+        ([{"role": "system", "content": "hi"}], "no-user-msg"),
+        (
+            [
+                {"role": "system", "content": "You are an architect."},
+                {"role": "user",   "content": "short body"},
+            ],
+            "user-too-short",
+        ),
+        (
+            [
+                {"role": "system", "content": "You are an architect."},
+                {"role": "user",   "content": long_body},
+            ],
+            "wrap-with-system",
+        ),
+        (
+            [{"role": "user", "content": long_body}],
+            "wrap-no-system",
+        ),
+        (
+            [
+                {"role": "system", "content": "x"},
+                {"role": "user", "content": f"<task>already</task>{long_body}"},
+            ],
+            "already-tagged",
+        ),
+        (
+            [
+                {"role": "system", "content": "x"},
+                {"role": "user", "content": f"This has <CONTEXT> in caps {long_body}"},
+            ],
+            "already-tagged-uppercase",
+        ),
+        (
+            [
+                {"role": "user", "content": "first user, short"},
+                {"role": "user", "content": long_body},
+            ],
+            "wrap-last-user",
+        ),
+    ]
+    wrap_cases = []
+    for msgs, label in wrap_inputs:
+        new_msgs, edits = srv._anthropic_xml_wrap(list(msgs))
+        wrap_cases.append({
+            "label":    f"wrap::{label}",
+            "messages": list(msgs),
+            "expected": {"messages": new_msgs, "edits": edits},
+        })
+
+    # ---- adaptMessages end-to-end cases ----
+    # Force adapters on for the duration.
+    saved_cfg = srv.CFG.get("prompt_adapters")
+    srv.CFG = dict(srv.CFG)
+    srv.CFG["prompt_adapters"] = {"enabled": True}
+    try:
+        adapt_inputs = [
+            # (provider, model, purpose, messages, label)
+            ("openai", "gpt-test", "worker",
+             [{"role": "user", "content": "Let's think step by step."}],
+             "no-op-non-reasoning"),
+            ("openai", "gpt-5", "worker",
+             [{"role": "user", "content": "Let's think step by step about this."}],
+             "openai-reasoning-strip"),
+            ("anthropic", "claude-opus-4-7", "worker",
+             [
+                 {"role": "system", "content": "Think step by step before responding."},
+                 {"role": "user",   "content": long_body},
+             ],
+             "anthropic-reasoning-strip-and-wrap"),
+            ("anthropic", "claude-test", "worker",
+             [
+                 {"role": "system", "content": "be helpful"},
+                 {"role": "user",   "content": long_body},
+             ],
+             "anthropic-non-reasoning-wrap-only"),
+            ("gemini", "gemini-2.5-pro", "worker",
+             [{"role": "user", "content": "Think aloud carefully."}],
+             "gemini-reasoning-strip"),
+            ("xai", "grok-4-latest", "worker",
+             [{"role": "user", "content": "Let's think step by step please."}],
+             "xai-no-op"),
+        ]
+        adapt_cases = []
+        for prov, model, purpose, msgs, label in adapt_inputs:
+            new_msgs, info = srv._adapt_messages(prov, model, purpose, list(msgs))
+            adapt_cases.append({
+                "label":    f"adapt::{label}",
+                "provider": prov,
+                "model":    model,
+                "purpose":  purpose,
+                "messages": list(msgs),
+                "expected": {"messages": new_msgs, "applied": info["applied"]},
+            })
+
+        # Disabled toggle case
+        srv.CFG["prompt_adapters"] = {"enabled": False}
+        msgs_disabled = [{"role": "user", "content": "Let's think step by step."}]
+        out_d, info_d = srv._adapt_messages("openai", "gpt-5", "worker",
+                                              list(msgs_disabled))
+        adapt_cases.append({
+            "label":    "adapt::disabled-noop",
+            "provider": "openai",
+            "model":    "gpt-5",
+            "purpose":  "worker",
+            "config":   {"prompt_adapters": {"enabled": False}},
+            "messages": list(msgs_disabled),
+            "expected": {"messages": out_d, "applied": info_d["applied"]},
+        })
+    finally:
+        if saved_cfg is None:
+            srv.CFG.pop("prompt_adapters", None)
+        else:
+            srv.CFG["prompt_adapters"] = saved_cfg
+
+    return {
+        "module":       "prompts",
+        "description":  "stripReasoningPreamble + anthropicXmlWrap + adaptMessages parity",
+        "case_count":   len(strip_cases) + len(wrap_cases) + len(adapt_cases),
+        "strip_cases":  strip_cases,
+        "wrap_cases":   wrap_cases,
+        "adapt_cases":  adapt_cases,
+    }
+
+
+# ----------------------------------------------------------------------
 # Wiring
 # ----------------------------------------------------------------------
 BUILDERS = {
@@ -545,6 +726,7 @@ BUILDERS = {
     "injection": fixture_injection,
     "canary":    fixture_canary,
     "redact":    fixture_redact,
+    "prompts":   fixture_prompts,
 }
 
 

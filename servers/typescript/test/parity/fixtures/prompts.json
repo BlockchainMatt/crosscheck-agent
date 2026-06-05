@@ -1,0 +1,506 @@
+{
+  "module": "prompts",
+  "description": "stripReasoningPreamble + anthropicXmlWrap + adaptMessages parity",
+  "case_count": 23,
+  "strip_cases": [
+    {
+      "label": "strip::empty",
+      "messages": [],
+      "expected": {
+        "messages": [],
+        "edits": 0
+      }
+    },
+    {
+      "label": "strip::no-match",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello world"
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "hello world"
+          }
+        ],
+        "edits": 0
+      }
+    },
+    {
+      "label": "strip::system-preamble",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are helpful. Let's think step by step before answering."
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are helpful."
+          }
+        ],
+        "edits": 1
+      }
+    },
+    {
+      "label": "strip::user-preamble",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Think out loud about this."
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "about this."
+          }
+        ],
+        "edits": 1
+      }
+    },
+    {
+      "label": "strip::multi-message",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Think step-by-step carefully."
+        },
+        {
+          "role": "user",
+          "content": "Please think aloud first responding"
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "carefully."
+          },
+          {
+            "role": "user",
+            "content": ""
+          }
+        ],
+        "edits": 2
+      }
+    },
+    {
+      "label": "strip::multi-match-collapse-newlines",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Think step by step.\n\n\n\nThen think out loud."
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Then"
+          }
+        ],
+        "edits": 2
+      }
+    },
+    {
+      "label": "strip::non-dict-passthrough",
+      "messages": [
+        "not-a-dict",
+        {
+          "role": "user",
+          "content": "Let's think carefully."
+        }
+      ],
+      "expected": {
+        "messages": [
+          "not-a-dict",
+          {
+            "role": "user",
+            "content": ""
+          }
+        ],
+        "edits": 1
+      }
+    },
+    {
+      "label": "strip::non-string-content",
+      "messages": [
+        {
+          "role": "user",
+          "content": 42
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "user",
+            "content": 42
+          }
+        ],
+        "edits": 0
+      }
+    }
+  ],
+  "wrap_cases": [
+    {
+      "label": "wrap::empty",
+      "messages": [],
+      "expected": {
+        "messages": [],
+        "edits": 0
+      }
+    },
+    {
+      "label": "wrap::no-user-msg",
+      "messages": [
+        {
+          "role": "system",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "hi"
+          }
+        ],
+        "edits": 0
+      }
+    },
+    {
+      "label": "wrap::user-too-short",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are an architect."
+        },
+        {
+          "role": "user",
+          "content": "short body"
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are an architect."
+          },
+          {
+            "role": "user",
+            "content": "short body"
+          }
+        ],
+        "edits": 0
+      }
+    },
+    {
+      "label": "wrap::wrap-with-system",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are an architect."
+        },
+        {
+          "role": "user",
+          "content": "Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. "
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are an architect."
+          },
+          {
+            "role": "user",
+            "content": "<instructions>\nYou are an architect.\n</instructions>\n\n<task>\nPlan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback.\n</task>"
+          }
+        ],
+        "edits": 1
+      }
+    },
+    {
+      "label": "wrap::wrap-no-system",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. "
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "<task>\nPlan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback.\n</task>"
+          }
+        ],
+        "edits": 1
+      }
+    },
+    {
+      "label": "wrap::already-tagged",
+      "messages": [
+        {
+          "role": "system",
+          "content": "x"
+        },
+        {
+          "role": "user",
+          "content": "<task>already</task>Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. "
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "x"
+          },
+          {
+            "role": "user",
+            "content": "<task>already</task>Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. "
+          }
+        ],
+        "edits": 0
+      }
+    },
+    {
+      "label": "wrap::already-tagged-uppercase",
+      "messages": [
+        {
+          "role": "system",
+          "content": "x"
+        },
+        {
+          "role": "user",
+          "content": "This has <CONTEXT> in caps Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. "
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "x"
+          },
+          {
+            "role": "user",
+            "content": "This has <CONTEXT> in caps Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. "
+          }
+        ],
+        "edits": 0
+      }
+    },
+    {
+      "label": "wrap::wrap-last-user",
+      "messages": [
+        {
+          "role": "user",
+          "content": "first user, short"
+        },
+        {
+          "role": "user",
+          "content": "Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. "
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "first user, short"
+          },
+          {
+            "role": "user",
+            "content": "<task>\nPlan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback.\n</task>"
+          }
+        ],
+        "edits": 1
+      }
+    }
+  ],
+  "adapt_cases": [
+    {
+      "label": "adapt::no-op-non-reasoning",
+      "provider": "openai",
+      "model": "gpt-test",
+      "purpose": "worker",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Let's think step by step."
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Let's think step by step."
+          }
+        ],
+        "applied": []
+      }
+    },
+    {
+      "label": "adapt::openai-reasoning-strip",
+      "provider": "openai",
+      "model": "gpt-5",
+      "purpose": "worker",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Let's think step by step about this."
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "about this."
+          }
+        ],
+        "applied": [
+          "reasoning_preamble_strip:1"
+        ]
+      }
+    },
+    {
+      "label": "adapt::anthropic-reasoning-strip-and-wrap",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "purpose": "worker",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Think step by step before responding."
+        },
+        {
+          "role": "user",
+          "content": "Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. "
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "system",
+            "content": ""
+          },
+          {
+            "role": "user",
+            "content": "<task>\nPlan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback.\n</task>"
+          }
+        ],
+        "applied": [
+          "reasoning_preamble_strip:1",
+          "anthropic_xml_wrap"
+        ]
+      }
+    },
+    {
+      "label": "adapt::anthropic-non-reasoning-wrap-only",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "purpose": "worker",
+      "messages": [
+        {
+          "role": "system",
+          "content": "be helpful"
+        },
+        {
+          "role": "user",
+          "content": "Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. "
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "be helpful"
+          },
+          {
+            "role": "user",
+            "content": "<instructions>\nbe helpful\n</instructions>\n\n<task>\nPlan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback. Plan the auth migration step by step. List risks. Propose a rollback.\n</task>"
+          }
+        ],
+        "applied": [
+          "anthropic_xml_wrap"
+        ]
+      }
+    },
+    {
+      "label": "adapt::gemini-reasoning-strip",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "purpose": "worker",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Think aloud carefully."
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "carefully."
+          }
+        ],
+        "applied": [
+          "reasoning_preamble_strip:1"
+        ]
+      }
+    },
+    {
+      "label": "adapt::xai-no-op",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "purpose": "worker",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Let's think step by step please."
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Let's think step by step please."
+          }
+        ],
+        "applied": []
+      }
+    },
+    {
+      "label": "adapt::disabled-noop",
+      "provider": "openai",
+      "model": "gpt-5",
+      "purpose": "worker",
+      "config": {
+        "prompt_adapters": {
+          "enabled": false
+        }
+      },
+      "messages": [
+        {
+          "role": "user",
+          "content": "Let's think step by step."
+        }
+      ],
+      "expected": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Let's think step by step."
+          }
+        ],
+        "applied": []
+      }
+    }
+  ]
+}
