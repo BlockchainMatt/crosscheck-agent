@@ -23,6 +23,7 @@ import { runPick } from "./pick.js";
 import { runPlan } from "./plan.js";
 import { runRecall } from "./recall.js";
 import { runReview } from "./review.js";
+import { runSessionMemory } from "./session-memory.js";
 import { runTriangulate } from "./triangulate.js";
 import { runVerify } from "./verify.js";
 
@@ -145,9 +146,47 @@ export function registerCoreTools(
     reviewTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
     listProvidersTool(o.providers ?? {}, o.activeProviders ?? null, o.moderatorDefault ?? "anthropic"),
     recallTool(o.storage, o.bridge),
+    sessionMemoryTool(o.storage, o.bridge),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `session_memory` — native port of Python's tool_session_memory.
+ *  CRUD over the per-session working memory ledger. Requires Storage. */
+function sessionMemoryTool(
+  storage: Storage | undefined,
+  bridge: BridgeHandle | undefined,
+): Tool {
+  return {
+    name: "session_memory",
+    description:
+      "CRUD over the per-session working memory ledger. Actions: list, " +
+      "add, mark_stale, clear. Requires a wired Storage adapter; falls " +
+      "back to the Python bridge when not available.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        action:        { type: "string", enum: ["list", "add", "mark_stale", "clear"] },
+        session_id:    { type: "string" },
+        kinds:         { type: "array", items: { type: "string" } },
+        include_stale: { type: "boolean" },
+        limit:         { type: "integer", minimum: 1 },
+        kind:          { type: "string", enum: ["fact", "open_question", "decision"] },
+        content:       { type: "string" },
+        source_tool:   { type: "string" },
+        confidence:    { type: "number" },
+        ids:           { type: "array", items: { type: "integer" } },
+        reason:        { type: "string" },
+      },
+      required: ["action", "session_id"],
+    },
+    handler: (args) => runSessionMemory(args, {
+      ...(storage ? { storage } : {}),
+      ...(bridge  ? { bridge  } : {}),
+    }),
+  };
 }
 
 /** `recall` — native port of Python's tool_recall. FTS5 search over
