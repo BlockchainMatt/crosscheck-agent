@@ -1,0 +1,813 @@
+{
+  "module": "pricing",
+  "description": "calculateCost parity across provider/model/usage permutations",
+  "pricing_doc": {
+    "openai": {
+      "gpt-5": {
+        "prompt_per_1k": 0.001,
+        "completion_per_1k": 0.003,
+        "cached_per_1k": 0.0005
+      },
+      "gpt-test": {
+        "prompt_per_1k": 0.0001,
+        "completion_per_1k": 0.0003,
+        "cached_per_1k": 5e-05
+      },
+      "weird": {
+        "prompt_per_1k": 0.0,
+        "completion_per_1k": 0.0,
+        "cached_per_1k": 0.0
+      }
+    },
+    "anthropic": {
+      "claude-test": {
+        "prompt_per_1k": 0.003,
+        "completion_per_1k": 0.015,
+        "cached_per_1k": 0.0003
+      },
+      "claude-opus-4-7": {
+        "prompt_per_1k": 0.015,
+        "completion_per_1k": 0.075,
+        "cached_per_1k": 0.0015
+      }
+    },
+    "gemini": {
+      "gemini-2.5-pro": {
+        "prompt_per_1k": 0.0025,
+        "completion_per_1k": 0.01,
+        "cached_per_1k": 0.0005
+      }
+    }
+  },
+  "case_count": 64,
+  "cases": [
+    {
+      "label": "openai::gpt-5::p0-c0-cd0",
+      "provider": "openai",
+      "model": "gpt-5",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cached_tokens": 0,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::gpt-5::p100-c50-cd0",
+      "provider": "openai",
+      "model": "gpt-5",
+      "prompt_tokens": 100,
+      "completion_tokens": 50,
+      "cached_tokens": 0,
+      "expected": {
+        "cost_usd": 0.00025,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::gpt-5::p1000-c500-cd200",
+      "provider": "openai",
+      "model": "gpt-5",
+      "prompt_tokens": 1000,
+      "completion_tokens": 500,
+      "cached_tokens": 200,
+      "expected": {
+        "cost_usd": 0.0024,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::gpt-5::p300-c100-cd300",
+      "provider": "openai",
+      "model": "gpt-5",
+      "prompt_tokens": 300,
+      "completion_tokens": 100,
+      "cached_tokens": 300,
+      "expected": {
+        "cost_usd": 0.00045,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::gpt-5::p1-c1-cd1",
+      "provider": "openai",
+      "model": "gpt-5",
+      "prompt_tokens": 1,
+      "completion_tokens": 1,
+      "cached_tokens": 1,
+      "expected": {
+        "cost_usd": 3.5e-06,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::gpt-5::p50000-c20000-cd5000",
+      "provider": "openai",
+      "model": "gpt-5",
+      "prompt_tokens": 50000,
+      "completion_tokens": 20000,
+      "cached_tokens": 5000,
+      "expected": {
+        "cost_usd": 0.1075,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::gpt-5::p-5-c-10-cd-3",
+      "provider": "openai",
+      "model": "gpt-5",
+      "prompt_tokens": -5,
+      "completion_tokens": -10,
+      "cached_tokens": -3,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::gpt-5::p123-c456-cd789",
+      "provider": "openai",
+      "model": "gpt-5",
+      "prompt_tokens": 123,
+      "completion_tokens": 456,
+      "cached_tokens": 789,
+      "expected": {
+        "cost_usd": 0.0017625,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::gpt-test::p0-c0-cd0",
+      "provider": "openai",
+      "model": "gpt-test",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cached_tokens": 0,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::gpt-test::p100-c50-cd0",
+      "provider": "openai",
+      "model": "gpt-test",
+      "prompt_tokens": 100,
+      "completion_tokens": 50,
+      "cached_tokens": 0,
+      "expected": {
+        "cost_usd": 2.5e-05,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::gpt-test::p1000-c500-cd200",
+      "provider": "openai",
+      "model": "gpt-test",
+      "prompt_tokens": 1000,
+      "completion_tokens": 500,
+      "cached_tokens": 200,
+      "expected": {
+        "cost_usd": 0.00024,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::gpt-test::p300-c100-cd300",
+      "provider": "openai",
+      "model": "gpt-test",
+      "prompt_tokens": 300,
+      "completion_tokens": 100,
+      "cached_tokens": 300,
+      "expected": {
+        "cost_usd": 4.5e-05,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::gpt-test::p1-c1-cd1",
+      "provider": "openai",
+      "model": "gpt-test",
+      "prompt_tokens": 1,
+      "completion_tokens": 1,
+      "cached_tokens": 1,
+      "expected": {
+        "cost_usd": 3.5e-07,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::gpt-test::p50000-c20000-cd5000",
+      "provider": "openai",
+      "model": "gpt-test",
+      "prompt_tokens": 50000,
+      "completion_tokens": 20000,
+      "cached_tokens": 5000,
+      "expected": {
+        "cost_usd": 0.01075,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::gpt-test::p-5-c-10-cd-3",
+      "provider": "openai",
+      "model": "gpt-test",
+      "prompt_tokens": -5,
+      "completion_tokens": -10,
+      "cached_tokens": -3,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::gpt-test::p123-c456-cd789",
+      "provider": "openai",
+      "model": "gpt-test",
+      "prompt_tokens": 123,
+      "completion_tokens": 456,
+      "cached_tokens": 789,
+      "expected": {
+        "cost_usd": 0.00017625,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::weird::p0-c0-cd0",
+      "provider": "openai",
+      "model": "weird",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cached_tokens": 0,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::weird::p100-c50-cd0",
+      "provider": "openai",
+      "model": "weird",
+      "prompt_tokens": 100,
+      "completion_tokens": 50,
+      "cached_tokens": 0,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::weird::p1000-c500-cd200",
+      "provider": "openai",
+      "model": "weird",
+      "prompt_tokens": 1000,
+      "completion_tokens": 500,
+      "cached_tokens": 200,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::weird::p300-c100-cd300",
+      "provider": "openai",
+      "model": "weird",
+      "prompt_tokens": 300,
+      "completion_tokens": 100,
+      "cached_tokens": 300,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::weird::p1-c1-cd1",
+      "provider": "openai",
+      "model": "weird",
+      "prompt_tokens": 1,
+      "completion_tokens": 1,
+      "cached_tokens": 1,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::weird::p50000-c20000-cd5000",
+      "provider": "openai",
+      "model": "weird",
+      "prompt_tokens": 50000,
+      "completion_tokens": 20000,
+      "cached_tokens": 5000,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::weird::p-5-c-10-cd-3",
+      "provider": "openai",
+      "model": "weird",
+      "prompt_tokens": -5,
+      "completion_tokens": -10,
+      "cached_tokens": -3,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::weird::p123-c456-cd789",
+      "provider": "openai",
+      "model": "weird",
+      "prompt_tokens": 123,
+      "completion_tokens": 456,
+      "cached_tokens": 789,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "openai::missing-model::p0-c0-cd0",
+      "provider": "openai",
+      "model": "missing-model",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cached_tokens": 0,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": true
+      }
+    },
+    {
+      "label": "openai::missing-model::p100-c50-cd0",
+      "provider": "openai",
+      "model": "missing-model",
+      "prompt_tokens": 100,
+      "completion_tokens": 50,
+      "cached_tokens": 0,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": true
+      }
+    },
+    {
+      "label": "openai::missing-model::p1000-c500-cd200",
+      "provider": "openai",
+      "model": "missing-model",
+      "prompt_tokens": 1000,
+      "completion_tokens": 500,
+      "cached_tokens": 200,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": true
+      }
+    },
+    {
+      "label": "openai::missing-model::p300-c100-cd300",
+      "provider": "openai",
+      "model": "missing-model",
+      "prompt_tokens": 300,
+      "completion_tokens": 100,
+      "cached_tokens": 300,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": true
+      }
+    },
+    {
+      "label": "openai::missing-model::p1-c1-cd1",
+      "provider": "openai",
+      "model": "missing-model",
+      "prompt_tokens": 1,
+      "completion_tokens": 1,
+      "cached_tokens": 1,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": true
+      }
+    },
+    {
+      "label": "openai::missing-model::p50000-c20000-cd5000",
+      "provider": "openai",
+      "model": "missing-model",
+      "prompt_tokens": 50000,
+      "completion_tokens": 20000,
+      "cached_tokens": 5000,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": true
+      }
+    },
+    {
+      "label": "openai::missing-model::p-5-c-10-cd-3",
+      "provider": "openai",
+      "model": "missing-model",
+      "prompt_tokens": -5,
+      "completion_tokens": -10,
+      "cached_tokens": -3,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": true
+      }
+    },
+    {
+      "label": "openai::missing-model::p123-c456-cd789",
+      "provider": "openai",
+      "model": "missing-model",
+      "prompt_tokens": 123,
+      "completion_tokens": 456,
+      "cached_tokens": 789,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": true
+      }
+    },
+    {
+      "label": "anthropic::claude-test::p0-c0-cd0",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cached_tokens": 0,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "anthropic::claude-test::p100-c50-cd0",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "prompt_tokens": 100,
+      "completion_tokens": 50,
+      "cached_tokens": 0,
+      "expected": {
+        "cost_usd": 0.00105,
+        "estimated": false
+      }
+    },
+    {
+      "label": "anthropic::claude-test::p1000-c500-cd200",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "prompt_tokens": 1000,
+      "completion_tokens": 500,
+      "cached_tokens": 200,
+      "expected": {
+        "cost_usd": 0.00996,
+        "estimated": false
+      }
+    },
+    {
+      "label": "anthropic::claude-test::p300-c100-cd300",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "prompt_tokens": 300,
+      "completion_tokens": 100,
+      "cached_tokens": 300,
+      "expected": {
+        "cost_usd": 0.00159,
+        "estimated": false
+      }
+    },
+    {
+      "label": "anthropic::claude-test::p1-c1-cd1",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "prompt_tokens": 1,
+      "completion_tokens": 1,
+      "cached_tokens": 1,
+      "expected": {
+        "cost_usd": 1.53e-05,
+        "estimated": false
+      }
+    },
+    {
+      "label": "anthropic::claude-test::p50000-c20000-cd5000",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "prompt_tokens": 50000,
+      "completion_tokens": 20000,
+      "cached_tokens": 5000,
+      "expected": {
+        "cost_usd": 0.4365,
+        "estimated": false
+      }
+    },
+    {
+      "label": "anthropic::claude-test::p-5-c-10-cd-3",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "prompt_tokens": -5,
+      "completion_tokens": -10,
+      "cached_tokens": -3,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "anthropic::claude-test::p123-c456-cd789",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "prompt_tokens": 123,
+      "completion_tokens": 456,
+      "cached_tokens": 789,
+      "expected": {
+        "cost_usd": 0.0070767,
+        "estimated": false
+      }
+    },
+    {
+      "label": "anthropic::claude-opus-4-7::p0-c0-cd0",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cached_tokens": 0,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "anthropic::claude-opus-4-7::p100-c50-cd0",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "prompt_tokens": 100,
+      "completion_tokens": 50,
+      "cached_tokens": 0,
+      "expected": {
+        "cost_usd": 0.00525,
+        "estimated": false
+      }
+    },
+    {
+      "label": "anthropic::claude-opus-4-7::p1000-c500-cd200",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "prompt_tokens": 1000,
+      "completion_tokens": 500,
+      "cached_tokens": 200,
+      "expected": {
+        "cost_usd": 0.0498,
+        "estimated": false
+      }
+    },
+    {
+      "label": "anthropic::claude-opus-4-7::p300-c100-cd300",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "prompt_tokens": 300,
+      "completion_tokens": 100,
+      "cached_tokens": 300,
+      "expected": {
+        "cost_usd": 0.00795,
+        "estimated": false
+      }
+    },
+    {
+      "label": "anthropic::claude-opus-4-7::p1-c1-cd1",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "prompt_tokens": 1,
+      "completion_tokens": 1,
+      "cached_tokens": 1,
+      "expected": {
+        "cost_usd": 7.65e-05,
+        "estimated": false
+      }
+    },
+    {
+      "label": "anthropic::claude-opus-4-7::p50000-c20000-cd5000",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "prompt_tokens": 50000,
+      "completion_tokens": 20000,
+      "cached_tokens": 5000,
+      "expected": {
+        "cost_usd": 2.1825,
+        "estimated": false
+      }
+    },
+    {
+      "label": "anthropic::claude-opus-4-7::p-5-c-10-cd-3",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "prompt_tokens": -5,
+      "completion_tokens": -10,
+      "cached_tokens": -3,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "anthropic::claude-opus-4-7::p123-c456-cd789",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "prompt_tokens": 123,
+      "completion_tokens": 456,
+      "cached_tokens": 789,
+      "expected": {
+        "cost_usd": 0.0353835,
+        "estimated": false
+      }
+    },
+    {
+      "label": "gemini::gemini-2.5-pro::p0-c0-cd0",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cached_tokens": 0,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "gemini::gemini-2.5-pro::p100-c50-cd0",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "prompt_tokens": 100,
+      "completion_tokens": 50,
+      "cached_tokens": 0,
+      "expected": {
+        "cost_usd": 0.00075,
+        "estimated": false
+      }
+    },
+    {
+      "label": "gemini::gemini-2.5-pro::p1000-c500-cd200",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "prompt_tokens": 1000,
+      "completion_tokens": 500,
+      "cached_tokens": 200,
+      "expected": {
+        "cost_usd": 0.0071,
+        "estimated": false
+      }
+    },
+    {
+      "label": "gemini::gemini-2.5-pro::p300-c100-cd300",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "prompt_tokens": 300,
+      "completion_tokens": 100,
+      "cached_tokens": 300,
+      "expected": {
+        "cost_usd": 0.00115,
+        "estimated": false
+      }
+    },
+    {
+      "label": "gemini::gemini-2.5-pro::p1-c1-cd1",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "prompt_tokens": 1,
+      "completion_tokens": 1,
+      "cached_tokens": 1,
+      "expected": {
+        "cost_usd": 1.05e-05,
+        "estimated": false
+      }
+    },
+    {
+      "label": "gemini::gemini-2.5-pro::p50000-c20000-cd5000",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "prompt_tokens": 50000,
+      "completion_tokens": 20000,
+      "cached_tokens": 5000,
+      "expected": {
+        "cost_usd": 0.315,
+        "estimated": false
+      }
+    },
+    {
+      "label": "gemini::gemini-2.5-pro::p-5-c-10-cd-3",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "prompt_tokens": -5,
+      "completion_tokens": -10,
+      "cached_tokens": -3,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": false
+      }
+    },
+    {
+      "label": "gemini::gemini-2.5-pro::p123-c456-cd789",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "prompt_tokens": 123,
+      "completion_tokens": 456,
+      "cached_tokens": 789,
+      "expected": {
+        "cost_usd": 0.0049545,
+        "estimated": false
+      }
+    },
+    {
+      "label": "missing-provider::anything::p0-c0-cd0",
+      "provider": "missing-provider",
+      "model": "anything",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cached_tokens": 0,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": true
+      }
+    },
+    {
+      "label": "missing-provider::anything::p100-c50-cd0",
+      "provider": "missing-provider",
+      "model": "anything",
+      "prompt_tokens": 100,
+      "completion_tokens": 50,
+      "cached_tokens": 0,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": true
+      }
+    },
+    {
+      "label": "missing-provider::anything::p1000-c500-cd200",
+      "provider": "missing-provider",
+      "model": "anything",
+      "prompt_tokens": 1000,
+      "completion_tokens": 500,
+      "cached_tokens": 200,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": true
+      }
+    },
+    {
+      "label": "missing-provider::anything::p300-c100-cd300",
+      "provider": "missing-provider",
+      "model": "anything",
+      "prompt_tokens": 300,
+      "completion_tokens": 100,
+      "cached_tokens": 300,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": true
+      }
+    },
+    {
+      "label": "missing-provider::anything::p1-c1-cd1",
+      "provider": "missing-provider",
+      "model": "anything",
+      "prompt_tokens": 1,
+      "completion_tokens": 1,
+      "cached_tokens": 1,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": true
+      }
+    },
+    {
+      "label": "missing-provider::anything::p50000-c20000-cd5000",
+      "provider": "missing-provider",
+      "model": "anything",
+      "prompt_tokens": 50000,
+      "completion_tokens": 20000,
+      "cached_tokens": 5000,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": true
+      }
+    },
+    {
+      "label": "missing-provider::anything::p-5-c-10-cd-3",
+      "provider": "missing-provider",
+      "model": "anything",
+      "prompt_tokens": -5,
+      "completion_tokens": -10,
+      "cached_tokens": -3,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": true
+      }
+    },
+    {
+      "label": "missing-provider::anything::p123-c456-cd789",
+      "provider": "missing-provider",
+      "model": "anything",
+      "prompt_tokens": 123,
+      "completion_tokens": 456,
+      "cached_tokens": 789,
+      "expected": {
+        "cost_usd": 0.0,
+        "estimated": true
+      }
+    }
+  ]
+}

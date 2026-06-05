@@ -1,0 +1,1859 @@
+{
+  "module": "budgets",
+  "description": "budgetForPurpose + isReasoningModel parity",
+  "case_count": 141,
+  "cases": [
+    {
+      "label": "default::audit::openai::gpt-5",
+      "purpose": "audit",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::audit::openai::gpt-test",
+      "purpose": "audit",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {},
+      "expected": {
+        "budget": 768,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::audit::anthropic::claude-opus-4-7",
+      "purpose": "audit",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::audit::anthropic::claude-test",
+      "purpose": "audit",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "cfg": {},
+      "expected": {
+        "budget": 768,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::audit::xai::grok-4-latest",
+      "purpose": "audit",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "cfg": {},
+      "expected": {
+        "budget": 768,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::audit::gemini::gemini-2.5-pro",
+      "purpose": "audit",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::audit::gemini::gemini-1.5-flash",
+      "purpose": "audit",
+      "provider": "gemini",
+      "model": "gemini-1.5-flash",
+      "cfg": {},
+      "expected": {
+        "budget": 768,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::audit::groq::llama-3.3-70b",
+      "purpose": "audit",
+      "provider": "groq",
+      "model": "llama-3.3-70b",
+      "cfg": {},
+      "expected": {
+        "budget": 768,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "no-provider::audit",
+      "purpose": "audit",
+      "provider": null,
+      "model": null,
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": null
+      }
+    },
+    {
+      "label": "default::confer::openai::gpt-5",
+      "purpose": "confer",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {},
+      "expected": {
+        "budget": 6144,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::confer::openai::gpt-test",
+      "purpose": "confer",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {},
+      "expected": {
+        "budget": 6144,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::confer::anthropic::claude-opus-4-7",
+      "purpose": "confer",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::confer::anthropic::claude-test",
+      "purpose": "confer",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::confer::xai::grok-4-latest",
+      "purpose": "confer",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::confer::gemini::gemini-2.5-pro",
+      "purpose": "confer",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "cfg": {},
+      "expected": {
+        "budget": 6144,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::confer::gemini::gemini-1.5-flash",
+      "purpose": "confer",
+      "provider": "gemini",
+      "model": "gemini-1.5-flash",
+      "cfg": {},
+      "expected": {
+        "budget": 6144,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::confer::groq::llama-3.3-70b",
+      "purpose": "confer",
+      "provider": "groq",
+      "model": "llama-3.3-70b",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "no-provider::confer",
+      "purpose": "confer",
+      "provider": null,
+      "model": null,
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": null
+      }
+    },
+    {
+      "label": "default::coordinate::openai::gpt-5",
+      "purpose": "coordinate",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::coordinate::openai::gpt-test",
+      "purpose": "coordinate",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::coordinate::anthropic::claude-opus-4-7",
+      "purpose": "coordinate",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::coordinate::anthropic::claude-test",
+      "purpose": "coordinate",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::coordinate::xai::grok-4-latest",
+      "purpose": "coordinate",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::coordinate::gemini::gemini-2.5-pro",
+      "purpose": "coordinate",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::coordinate::gemini::gemini-1.5-flash",
+      "purpose": "coordinate",
+      "provider": "gemini",
+      "model": "gemini-1.5-flash",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::coordinate::groq::llama-3.3-70b",
+      "purpose": "coordinate",
+      "provider": "groq",
+      "model": "llama-3.3-70b",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "no-provider::coordinate",
+      "purpose": "coordinate",
+      "provider": null,
+      "model": null,
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": null
+      }
+    },
+    {
+      "label": "default::debate::openai::gpt-5",
+      "purpose": "debate",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {},
+      "expected": {
+        "budget": 6144,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::debate::openai::gpt-test",
+      "purpose": "debate",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {},
+      "expected": {
+        "budget": 6144,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::debate::anthropic::claude-opus-4-7",
+      "purpose": "debate",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::debate::anthropic::claude-test",
+      "purpose": "debate",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::debate::xai::grok-4-latest",
+      "purpose": "debate",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::debate::gemini::gemini-2.5-pro",
+      "purpose": "debate",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::debate::gemini::gemini-1.5-flash",
+      "purpose": "debate",
+      "provider": "gemini",
+      "model": "gemini-1.5-flash",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::debate::groq::llama-3.3-70b",
+      "purpose": "debate",
+      "provider": "groq",
+      "model": "llama-3.3-70b",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "no-provider::debate",
+      "purpose": "debate",
+      "provider": null,
+      "model": null,
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": null
+      }
+    },
+    {
+      "label": "default::moderator::openai::gpt-5",
+      "purpose": "moderator",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::moderator::openai::gpt-test",
+      "purpose": "moderator",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {},
+      "expected": {
+        "budget": 1024,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::moderator::anthropic::claude-opus-4-7",
+      "purpose": "moderator",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::moderator::anthropic::claude-test",
+      "purpose": "moderator",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "cfg": {},
+      "expected": {
+        "budget": 1024,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::moderator::xai::grok-4-latest",
+      "purpose": "moderator",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "cfg": {},
+      "expected": {
+        "budget": 1024,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::moderator::gemini::gemini-2.5-pro",
+      "purpose": "moderator",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::moderator::gemini::gemini-1.5-flash",
+      "purpose": "moderator",
+      "provider": "gemini",
+      "model": "gemini-1.5-flash",
+      "cfg": {},
+      "expected": {
+        "budget": 1024,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::moderator::groq::llama-3.3-70b",
+      "purpose": "moderator",
+      "provider": "groq",
+      "model": "llama-3.3-70b",
+      "cfg": {},
+      "expected": {
+        "budget": 1024,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "no-provider::moderator",
+      "purpose": "moderator",
+      "provider": null,
+      "model": null,
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": null
+      }
+    },
+    {
+      "label": "default::orchestrate::openai::gpt-5",
+      "purpose": "orchestrate",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::orchestrate::openai::gpt-test",
+      "purpose": "orchestrate",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::orchestrate::anthropic::claude-opus-4-7",
+      "purpose": "orchestrate",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::orchestrate::anthropic::claude-test",
+      "purpose": "orchestrate",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::orchestrate::xai::grok-4-latest",
+      "purpose": "orchestrate",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::orchestrate::gemini::gemini-2.5-pro",
+      "purpose": "orchestrate",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::orchestrate::gemini::gemini-1.5-flash",
+      "purpose": "orchestrate",
+      "provider": "gemini",
+      "model": "gemini-1.5-flash",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::orchestrate::groq::llama-3.3-70b",
+      "purpose": "orchestrate",
+      "provider": "groq",
+      "model": "llama-3.3-70b",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "no-provider::orchestrate",
+      "purpose": "orchestrate",
+      "provider": null,
+      "model": null,
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": null
+      }
+    },
+    {
+      "label": "default::plan::openai::gpt-5",
+      "purpose": "plan",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::plan::openai::gpt-test",
+      "purpose": "plan",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::plan::anthropic::claude-opus-4-7",
+      "purpose": "plan",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::plan::anthropic::claude-test",
+      "purpose": "plan",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::plan::xai::grok-4-latest",
+      "purpose": "plan",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::plan::gemini::gemini-2.5-pro",
+      "purpose": "plan",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::plan::gemini::gemini-1.5-flash",
+      "purpose": "plan",
+      "provider": "gemini",
+      "model": "gemini-1.5-flash",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::plan::groq::llama-3.3-70b",
+      "purpose": "plan",
+      "provider": "groq",
+      "model": "llama-3.3-70b",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "no-provider::plan",
+      "purpose": "plan",
+      "provider": null,
+      "model": null,
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": null
+      }
+    },
+    {
+      "label": "default::review::openai::gpt-5",
+      "purpose": "review",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::review::openai::gpt-test",
+      "purpose": "review",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::review::anthropic::claude-opus-4-7",
+      "purpose": "review",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::review::anthropic::claude-test",
+      "purpose": "review",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::review::xai::grok-4-latest",
+      "purpose": "review",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::review::gemini::gemini-2.5-pro",
+      "purpose": "review",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::review::gemini::gemini-1.5-flash",
+      "purpose": "review",
+      "provider": "gemini",
+      "model": "gemini-1.5-flash",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::review::groq::llama-3.3-70b",
+      "purpose": "review",
+      "provider": "groq",
+      "model": "llama-3.3-70b",
+      "cfg": {},
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "no-provider::review",
+      "purpose": "review",
+      "provider": null,
+      "model": null,
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": null
+      }
+    },
+    {
+      "label": "default::solve::openai::gpt-5",
+      "purpose": "solve",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::solve::openai::gpt-test",
+      "purpose": "solve",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::solve::anthropic::claude-opus-4-7",
+      "purpose": "solve",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::solve::anthropic::claude-test",
+      "purpose": "solve",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::solve::xai::grok-4-latest",
+      "purpose": "solve",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::solve::gemini::gemini-2.5-pro",
+      "purpose": "solve",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::solve::gemini::gemini-1.5-flash",
+      "purpose": "solve",
+      "provider": "gemini",
+      "model": "gemini-1.5-flash",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::solve::groq::llama-3.3-70b",
+      "purpose": "solve",
+      "provider": "groq",
+      "model": "llama-3.3-70b",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "no-provider::solve",
+      "purpose": "solve",
+      "provider": null,
+      "model": null,
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": null
+      }
+    },
+    {
+      "label": "default::synth::openai::gpt-5",
+      "purpose": "synth",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::synth::openai::gpt-test",
+      "purpose": "synth",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {},
+      "expected": {
+        "budget": 1024,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::synth::anthropic::claude-opus-4-7",
+      "purpose": "synth",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::synth::anthropic::claude-test",
+      "purpose": "synth",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "cfg": {},
+      "expected": {
+        "budget": 1024,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::synth::xai::grok-4-latest",
+      "purpose": "synth",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "cfg": {},
+      "expected": {
+        "budget": 1024,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::synth::gemini::gemini-2.5-pro",
+      "purpose": "synth",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::synth::gemini::gemini-1.5-flash",
+      "purpose": "synth",
+      "provider": "gemini",
+      "model": "gemini-1.5-flash",
+      "cfg": {},
+      "expected": {
+        "budget": 1024,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::synth::groq::llama-3.3-70b",
+      "purpose": "synth",
+      "provider": "groq",
+      "model": "llama-3.3-70b",
+      "cfg": {},
+      "expected": {
+        "budget": 1024,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "no-provider::synth",
+      "purpose": "synth",
+      "provider": null,
+      "model": null,
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": null
+      }
+    },
+    {
+      "label": "default::worker::openai::gpt-5",
+      "purpose": "worker",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::worker::openai::gpt-test",
+      "purpose": "worker",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::worker::anthropic::claude-opus-4-7",
+      "purpose": "worker",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::worker::anthropic::claude-test",
+      "purpose": "worker",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::worker::xai::grok-4-latest",
+      "purpose": "worker",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::worker::gemini::gemini-2.5-pro",
+      "purpose": "worker",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::worker::gemini::gemini-1.5-flash",
+      "purpose": "worker",
+      "provider": "gemini",
+      "model": "gemini-1.5-flash",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::worker::groq::llama-3.3-70b",
+      "purpose": "worker",
+      "provider": "groq",
+      "model": "llama-3.3-70b",
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "no-provider::worker",
+      "purpose": "worker",
+      "provider": null,
+      "model": null,
+      "cfg": {},
+      "expected": {
+        "budget": 2048,
+        "reasoning": null
+      }
+    },
+    {
+      "label": "default::nope-unknown-purpose::openai::gpt-5",
+      "purpose": "nope-unknown-purpose",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {},
+      "expected": {
+        "budget": null,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::nope-unknown-purpose::openai::gpt-test",
+      "purpose": "nope-unknown-purpose",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {},
+      "expected": {
+        "budget": null,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::nope-unknown-purpose::anthropic::claude-opus-4-7",
+      "purpose": "nope-unknown-purpose",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {},
+      "expected": {
+        "budget": null,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::nope-unknown-purpose::anthropic::claude-test",
+      "purpose": "nope-unknown-purpose",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "cfg": {},
+      "expected": {
+        "budget": null,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::nope-unknown-purpose::xai::grok-4-latest",
+      "purpose": "nope-unknown-purpose",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "cfg": {},
+      "expected": {
+        "budget": null,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::nope-unknown-purpose::gemini::gemini-2.5-pro",
+      "purpose": "nope-unknown-purpose",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "cfg": {},
+      "expected": {
+        "budget": null,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "default::nope-unknown-purpose::gemini::gemini-1.5-flash",
+      "purpose": "nope-unknown-purpose",
+      "provider": "gemini",
+      "model": "gemini-1.5-flash",
+      "cfg": {},
+      "expected": {
+        "budget": null,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "default::nope-unknown-purpose::groq::llama-3.3-70b",
+      "purpose": "nope-unknown-purpose",
+      "provider": "groq",
+      "model": "llama-3.3-70b",
+      "cfg": {},
+      "expected": {
+        "budget": null,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "no-provider::nope-unknown-purpose",
+      "purpose": "nope-unknown-purpose",
+      "provider": null,
+      "model": null,
+      "cfg": {},
+      "expected": {
+        "budget": null,
+        "reasoning": null
+      }
+    },
+    {
+      "label": "global-override::confer::openai",
+      "purpose": "confer",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {
+        "token_budgets": {
+          "confer": 300,
+          "audit": 0,
+          "synth": -1
+        }
+      },
+      "expected": {
+        "budget": 300,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "global-override::confer::openai",
+      "purpose": "confer",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {
+        "token_budgets": {
+          "confer": 300,
+          "audit": 0,
+          "synth": -1
+        }
+      },
+      "expected": {
+        "budget": 300,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "global-override::confer::anthropic",
+      "purpose": "confer",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {
+        "token_budgets": {
+          "confer": 300,
+          "audit": 0,
+          "synth": -1
+        }
+      },
+      "expected": {
+        "budget": 300,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "global-override::audit::openai",
+      "purpose": "audit",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {
+        "token_budgets": {
+          "confer": 300,
+          "audit": 0,
+          "synth": -1
+        }
+      },
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "global-override::audit::openai",
+      "purpose": "audit",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {
+        "token_budgets": {
+          "confer": 300,
+          "audit": 0,
+          "synth": -1
+        }
+      },
+      "expected": {
+        "budget": 768,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "global-override::audit::anthropic",
+      "purpose": "audit",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {
+        "token_budgets": {
+          "confer": 300,
+          "audit": 0,
+          "synth": -1
+        }
+      },
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "global-override::synth::openai",
+      "purpose": "synth",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {
+        "token_budgets": {
+          "confer": 300,
+          "audit": 0,
+          "synth": -1
+        }
+      },
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "global-override::synth::openai",
+      "purpose": "synth",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {
+        "token_budgets": {
+          "confer": 300,
+          "audit": 0,
+          "synth": -1
+        }
+      },
+      "expected": {
+        "budget": 1024,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "global-override::synth::anthropic",
+      "purpose": "synth",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {
+        "token_budgets": {
+          "confer": 300,
+          "audit": 0,
+          "synth": -1
+        }
+      },
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "global-override::debate::openai",
+      "purpose": "debate",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {
+        "token_budgets": {
+          "confer": 300,
+          "audit": 0,
+          "synth": -1
+        }
+      },
+      "expected": {
+        "budget": 6144,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "global-override::debate::openai",
+      "purpose": "debate",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {
+        "token_budgets": {
+          "confer": 300,
+          "audit": 0,
+          "synth": -1
+        }
+      },
+      "expected": {
+        "budget": 6144,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "global-override::debate::anthropic",
+      "purpose": "debate",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {
+        "token_budgets": {
+          "confer": 300,
+          "audit": 0,
+          "synth": -1
+        }
+      },
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "provider-override::confer::openai",
+      "purpose": "confer",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 8192,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "provider-override::confer::openai",
+      "purpose": "confer",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 8192,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "provider-override::confer::anthropic",
+      "purpose": "confer",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "provider-override::confer::anthropic",
+      "purpose": "confer",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "provider-override::confer::xai",
+      "purpose": "confer",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "provider-override::audit::openai",
+      "purpose": "audit",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "provider-override::audit::openai",
+      "purpose": "audit",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 768,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "provider-override::audit::anthropic",
+      "purpose": "audit",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "provider-override::audit::anthropic",
+      "purpose": "audit",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 768,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "provider-override::audit::xai",
+      "purpose": "audit",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 768,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "provider-override::synth::openai",
+      "purpose": "synth",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "provider-override::synth::openai",
+      "purpose": "synth",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 1024,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "provider-override::synth::anthropic",
+      "purpose": "synth",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 2048,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "provider-override::synth::anthropic",
+      "purpose": "synth",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 1024,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "provider-override::synth::xai",
+      "purpose": "synth",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 1024,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "provider-override::debate::openai",
+      "purpose": "debate",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 6144,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "provider-override::debate::openai",
+      "purpose": "debate",
+      "provider": "openai",
+      "model": "gpt-test",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 6144,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "provider-override::debate::anthropic",
+      "purpose": "debate",
+      "provider": "anthropic",
+      "model": "claude-opus-4-7",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 4096,
+        "reasoning": true
+      }
+    },
+    {
+      "label": "provider-override::debate::anthropic",
+      "purpose": "debate",
+      "provider": "anthropic",
+      "model": "claude-test",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 4096,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "provider-override::debate::xai",
+      "purpose": "debate",
+      "provider": "xai",
+      "model": "grok-4-latest",
+      "cfg": {
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 8192,
+            "audit": 0,
+            "synth": -10
+          },
+          "anthropic": {
+            "debate": 4096
+          }
+        }
+      },
+      "expected": {
+        "budget": 1500,
+        "reasoning": false
+      }
+    },
+    {
+      "label": "tier1-beats-tier2",
+      "purpose": "confer",
+      "provider": "openai",
+      "model": "gpt-5",
+      "cfg": {
+        "token_budgets": {
+          "confer": 500
+        },
+        "token_budgets_by_provider": {
+          "openai": {
+            "confer": 9999
+          }
+        }
+      },
+      "expected": {
+        "budget": 500,
+        "reasoning": true
+      }
+    }
+  ]
+}
