@@ -18,6 +18,7 @@ import { runConfer } from "./confer.js";
 import { runCoordinate } from "./coordinate.js";
 import { runDebate } from "./debate.js";
 import { runPick } from "./pick.js";
+import { runPlan } from "./plan.js";
 import { runTriangulate } from "./triangulate.js";
 import { runVerify } from "./verify.js";
 
@@ -122,9 +123,47 @@ export function registerCoreTools(
     debateTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
     coordinateTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
     triangulateTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
+    planTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `plan` — native port of Python's tool_plan. Thin wrapper over
+ *  debate that builds a "step-by-step plan + risks + alternatives"
+ *  prompt. Output envelope is debate's (tool: "debate") — matches
+ *  Python which doesn't rename. */
+function planTool(
+  providers: Readonly<Record<string, Provider>>,
+  allowlist: readonly string[] | null,
+  bridge: BridgeHandle | undefined,
+): Tool {
+  return {
+    name: "plan",
+    description:
+      "Have an LLM panel debate a step-by-step plan for the stated goal " +
+      "under the given constraints. Returns the debate envelope with a " +
+      "moderator-synthesised plan. Use `structured: true` (bridge) for " +
+      "schema-validated synthesis.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        goal:        { type: "string" },
+        constraints: { type: "string" },
+        context:     { type: "string" },
+        providers:   { type: "array", items: { type: "string" } },
+        moderator:   { type: "string" },
+        session_id:  { type: "string" },
+        structured:  { type: "boolean" },
+      },
+      required: ["goal"],
+    },
+    handler: (args) => runPlan(args, {
+      providers, allowlist,
+      ...(bridge ? { bridge } : {}),
+    }),
+  };
 }
 
 /** `triangulate` — native port of Python's tool_triangulate. Thin

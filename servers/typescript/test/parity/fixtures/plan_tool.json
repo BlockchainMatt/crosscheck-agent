@@ -1,0 +1,320 @@
+{
+  "module": "plan_tool",
+  "description": "Native tool_plan parity — confirms the GOAL / CONSTRAINTS prompt makes it through to debate and the debate envelope flows back byte-equal.",
+  "case_count": 2,
+  "cases": [
+    {
+      "label": "goal-and-constraints",
+      "args": {
+        "goal": "Migrate the API from REST to gRPC.",
+        "constraints": "Zero downtime; 2-week budget; 4 engineers.",
+        "moderator": "anthropic",
+        "providers": [
+          "anthropic",
+          "openai"
+        ]
+      },
+      "canned": {
+        "anthropic": [
+          "1. Inventory endpoints\n2. Stand up gRPC layer.",
+          "Round 2: refine dual-write phase.",
+          "Round 3: cutover plan.",
+          "SYNTHESIS: phased migration over 2 weeks."
+        ],
+        "openai": [
+          "1. Audit existing\n2. Build adapter.",
+          "Round 2: discuss schema drift risks.",
+          "Round 3: rollout checklist."
+        ]
+      },
+      "expected": {
+        "tool": "debate",
+        "topic": "We need a step-by-step plan to achieve this goal.\n\nGOAL: Migrate the API from REST to gRPC.\n\nCONSTRAINTS: Zero downtime; 2-week budget; 4 engineers.\n\nReturn: (1) the plan as numbered steps, (2) risks, (3) alternatives considered.",
+        "rounds_completed": 3,
+        "transcript": [
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "response": "1. Inventory endpoints\n2. Stand up gRPC layer.",
+            "attempts": 1,
+            "usage": {
+              "provider": "anthropic",
+              "model": "claude-opus-4-7",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 1
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "1. Audit existing\n2. Build adapter.",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 1
+          },
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "response": "Round 2: refine dual-write phase.",
+            "attempts": 1,
+            "usage": {
+              "provider": "anthropic",
+              "model": "claude-opus-4-7",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 2
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "Round 2: discuss schema drift risks.",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 2
+          },
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "response": "Round 3: cutover plan.",
+            "attempts": 1,
+            "usage": {
+              "provider": "anthropic",
+              "model": "claude-opus-4-7",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 3
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "Round 3: rollout checklist.",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 3
+          }
+        ],
+        "synthesis": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-7",
+          "response": "SYNTHESIS: phased migration over 2 weeks.",
+          "attempts": 1,
+          "usage": {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "purpose": "synth",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "estimated": false
+          }
+        }
+      }
+    },
+    {
+      "label": "goal-no-constraints",
+      "args": {
+        "goal": "Reduce p99 latency below 50ms.",
+        "moderator": "anthropic",
+        "providers": [
+          "anthropic",
+          "openai"
+        ]
+      },
+      "canned": {
+        "anthropic": [
+          "1. Profile hot paths.",
+          "Round 2: cache strategy.",
+          "Round 3: async I/O review.",
+          "SYNTHESIS: profile then cache."
+        ],
+        "openai": [
+          "1. Trace + benchmark.",
+          "Round 2: indexing.",
+          "Round 3: connection pooling."
+        ]
+      },
+      "expected": {
+        "tool": "debate",
+        "topic": "We need a step-by-step plan to achieve this goal.\n\nGOAL: Reduce p99 latency below 50ms.\n\nCONSTRAINTS: (none stated)\n\nReturn: (1) the plan as numbered steps, (2) risks, (3) alternatives considered.",
+        "rounds_completed": 3,
+        "transcript": [
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "response": "1. Profile hot paths.",
+            "attempts": 1,
+            "usage": {
+              "provider": "anthropic",
+              "model": "claude-opus-4-7",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 1
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "1. Trace + benchmark.",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 1
+          },
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "response": "Round 2: cache strategy.",
+            "attempts": 1,
+            "usage": {
+              "provider": "anthropic",
+              "model": "claude-opus-4-7",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 2
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "Round 2: indexing.",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 2
+          },
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "response": "Round 3: async I/O review.",
+            "attempts": 1,
+            "usage": {
+              "provider": "anthropic",
+              "model": "claude-opus-4-7",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 3
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "Round 3: connection pooling.",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 3
+          }
+        ],
+        "synthesis": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-7",
+          "response": "SYNTHESIS: profile then cache.",
+          "attempts": 1,
+          "usage": {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "purpose": "synth",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "estimated": false
+          }
+        }
+      }
+    }
+  ]
+}

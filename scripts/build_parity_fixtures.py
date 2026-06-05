@@ -3005,6 +3005,147 @@ def fixture_triangulate_tool() -> dict:
     }
 
 
+def fixture_plan_tool() -> dict:
+    """plan_tool.json — Phase 5 part 10 parity gate.
+
+    Plan is a thin wrapper over debate, so the cassette pattern is
+    identical. We just confirm that the topic-prompt construction
+    (the GOAL / CONSTRAINTS f-string) makes it through to the
+    underlying debate flow.
+    """
+    srv = _import_server()
+    cases = []
+
+    saved_ask_one        = srv._ask_one
+    saved_session_load   = srv._session_load
+    saved_log_usage      = srv.log_usage
+    saved_write          = srv.write_transcript
+    saved_session_record = srv._session_record
+    saved_session_save   = srv._session_save
+    saved_claim_add      = getattr(srv, "_claim_add", None)
+    saved_cfg_max_rounds = srv.CFG.get("max_rounds")
+
+    srv._session_load    = lambda _sid: None
+    srv.log_usage        = lambda *a, **kw: None
+    srv.write_transcript = lambda *a, **kw: ""
+    srv._session_record  = lambda *a, **kw: None
+    srv._session_save    = lambda *a, **kw: None
+    srv._claim_add       = lambda *a, **kw: None
+    # Force CFG.max_rounds to match the TS default of 3 — plan doesn't
+    # forward max_rounds to debate, so both sides must use the same
+    # fallback. (TS runDebate defaults to 3.)
+    srv.CFG["max_rounds"] = 3
+
+    def sanitize(out: dict) -> dict:
+        copy = dict(out)
+        for k in ("budget", "session", "usage", "timing", "run_summary",
+                  "transcript_path", "claims", "agreement_check",
+                  "early_stopped", "early_stopped_round", "rounds_skipped",
+                  "synthesis_structured", "synthesis_errors",
+                  "_suppress_run_summary"):
+            copy.pop(k, None)
+        for e in (copy.get("transcript") or []):
+            if isinstance(e, dict):
+                for k in ("elapsed_ms", "cpu_ms", "cache_hit", "timing"):
+                    e.pop(k, None)
+        s = copy.get("synthesis")
+        if isinstance(s, dict):
+            for k in ("elapsed_ms", "cpu_ms", "cache_hit", "timing"):
+                s.pop(k, None)
+        return copy
+
+    def make_fake_ask_one(canned: dict[str, list[str]]):
+        cursors = {name: 0 for name in canned}
+        def fake(p, messages, deadline, max_tokens, purpose="worker"):
+            i = cursors.get(p.name, 0)
+            seq = canned.get(p.name, [])
+            text = seq[i] if i < len(seq) else ""
+            cursors[p.name] = i + 1
+            return {
+                "provider": p.name, "model": p.model,
+                "response": text,
+                "cache_hit": False, "elapsed_ms": 0, "cpu_ms": 0,
+                "attempts": 1,
+                "usage": {
+                    "provider": p.name, "model": p.model, "purpose": purpose,
+                    "prompt_tokens": 100, "completion_tokens": 50,
+                    "total_tokens": 150, "cached_tokens": 0,
+                    "cost_usd": 0.0, "estimated": False,
+                },
+                "timing": {"wall_ms": 0, "cpu_ms": 0},
+            }
+        return fake
+
+    def add(label, args, canned):
+        srv._ask_one = make_fake_ask_one(canned)
+        invoke_args = {**args, "providers": list(canned.keys())}
+        out = srv.tool_plan(invoke_args)
+        cases.append({
+            "label":   label,
+            "args":    invoke_args,
+            "canned":  canned,
+            "expected": sanitize(out),
+        })
+
+    # Note: tool_plan in Python does NOT forward max_rounds to debate,
+    # so each round consumes one canned response per panelist. With
+    # CFG.max_rounds=3 we need 3 canned entries per panelist + 1 for
+    # the synthesizer.
+    try:
+        add(
+            "goal-and-constraints",
+            {"goal": "Migrate the API from REST to gRPC.",
+             "constraints": "Zero downtime; 2-week budget; 4 engineers.",
+             "moderator": "anthropic"},
+            {
+                "anthropic": ["1. Inventory endpoints\n2. Stand up gRPC layer.",
+                              "Round 2: refine dual-write phase.",
+                              "Round 3: cutover plan.",
+                              "SYNTHESIS: phased migration over 2 weeks."],
+                "openai":    ["1. Audit existing\n2. Build adapter.",
+                              "Round 2: discuss schema drift risks.",
+                              "Round 3: rollout checklist."],
+            },
+        )
+
+        add(
+            "goal-no-constraints",
+            {"goal": "Reduce p99 latency below 50ms.",
+             "moderator": "anthropic"},
+            {
+                "anthropic": ["1. Profile hot paths.",
+                              "Round 2: cache strategy.",
+                              "Round 3: async I/O review.",
+                              "SYNTHESIS: profile then cache."],
+                "openai":    ["1. Trace + benchmark.",
+                              "Round 2: indexing.",
+                              "Round 3: connection pooling."],
+            },
+        )
+    finally:
+        srv._ask_one = saved_ask_one
+        srv._session_load = saved_session_load
+        srv.log_usage = saved_log_usage
+        srv.write_transcript = saved_write
+        srv._session_record = saved_session_record
+        srv._session_save = saved_session_save
+        if saved_claim_add is not None:
+            srv._claim_add = saved_claim_add
+        if saved_cfg_max_rounds is not None:
+            srv.CFG["max_rounds"] = saved_cfg_max_rounds
+        else:
+            srv.CFG.pop("max_rounds", None)
+
+    return {
+        "module":      "plan_tool",
+        "description": "Native tool_plan parity — confirms the GOAL / "
+                       "CONSTRAINTS prompt makes it through to debate "
+                       "and the debate envelope flows back byte-equal.",
+        "case_count":  len(cases),
+        "cases":       cases,
+    }
+
+
 BUILDERS = {
     "budgets":      fixture_budgets,
     "pricing":      fixture_pricing,
@@ -3028,6 +3169,7 @@ BUILDERS = {
     "debate_tool":  fixture_debate_tool,
     "coordinate_tool":  fixture_coordinate_tool,
     "triangulate_tool": fixture_triangulate_tool,
+    "plan_tool":        fixture_plan_tool,
 }
 
 
