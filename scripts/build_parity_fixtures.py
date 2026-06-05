@@ -3294,6 +3294,108 @@ def fixture_critique_tool() -> dict:
     }
 
 
+def fixture_review_tool() -> dict:
+    """review_tool.json — Phase 5 part 12 parity gate.
+
+    Review delegates to confer with a prompt that includes
+    INTENT + SNIPPET. The cassette pattern is identical to confer's.
+
+    Stripped on both sides: budget, session, usage rollup, timing
+    rollup, run_summary, transcript_path, per-answer timing fields.
+    """
+    srv = _import_server()
+    cases = []
+
+    saved_ask_one        = srv._ask_one
+    saved_session_load   = srv._session_load
+    saved_log_usage      = srv.log_usage
+    saved_write          = srv.write_transcript
+
+    srv._session_load    = lambda _sid: None
+    srv.log_usage        = lambda *a, **kw: None
+    srv.write_transcript = lambda *a, **kw: ""
+
+    def sanitize(out: dict) -> dict:
+        copy = dict(out)
+        for k in ("budget", "session", "usage", "timing", "run_summary",
+                  "transcript_path", "transcript", "_suppress_run_summary"):
+            copy.pop(k, None)
+        ans = copy.get("answers") or []
+        new_ans = []
+        for a in ans:
+            if isinstance(a, dict):
+                b = dict(a)
+                for k in ("elapsed_ms", "cpu_ms", "cache_hit", "timing"):
+                    b.pop(k, None)
+                new_ans.append(b)
+            else:
+                new_ans.append(a)
+        copy["answers"] = new_ans
+        return copy
+
+    def make_fake_ask_one(canned: dict[str, str]):
+        def fake(p, messages, deadline, max_tokens, purpose="worker"):
+            text = canned.get(p.name, "")
+            return {
+                "provider": p.name, "model": p.model,
+                "response": text,
+                "cache_hit": False, "elapsed_ms": 0, "cpu_ms": 0,
+                "attempts": 1,
+                "usage": {
+                    "provider": p.name, "model": p.model, "purpose": purpose,
+                    "prompt_tokens": 100, "completion_tokens": 50,
+                    "total_tokens": 150, "cached_tokens": 0,
+                    "cost_usd": 0.0, "estimated": False,
+                },
+                "timing": {"wall_ms": 0, "cpu_ms": 0},
+            }
+        return fake
+
+    def add(label, args, canned):
+        srv._ask_one = make_fake_ask_one(canned)
+        invoke_args = {**args, "providers": list(canned.keys())}
+        out = srv.tool_review(invoke_args)
+        cases.append({
+            "label":   label,
+            "args":    invoke_args,
+            "canned":  canned,
+            "expected": sanitize(out),
+        })
+
+    try:
+        add(
+            "snippet-with-intent",
+            {"snippet": "function add(a, b) { return a + b }",
+             "intent":  "Sum two numbers safely."},
+            {
+                "anthropic": "No type checks; will coerce strings.",
+                "openai":    "Add isFinite guard; document for non-number inputs.",
+            },
+        )
+        add(
+            "snippet-without-intent",
+            {"snippet": "SELECT * FROM users WHERE name = ?"},
+            {
+                "anthropic": "Prefer explicit columns. No LIMIT.",
+                "openai":    "Use parameterized binding; index check.",
+            },
+        )
+    finally:
+        srv._ask_one = saved_ask_one
+        srv._session_load = saved_session_load
+        srv.log_usage = saved_log_usage
+        srv.write_transcript = saved_write
+
+    return {
+        "module":      "review_tool",
+        "description": "Native tool_review parity — INTENT + SNIPPET "
+                       "prompt threaded through confer; output is the "
+                       "confer envelope.",
+        "case_count":  len(cases),
+        "cases":       cases,
+    }
+
+
 BUILDERS = {
     "budgets":      fixture_budgets,
     "pricing":      fixture_pricing,
@@ -3319,6 +3421,7 @@ BUILDERS = {
     "triangulate_tool": fixture_triangulate_tool,
     "plan_tool":        fixture_plan_tool,
     "critique_tool":    fixture_critique_tool,
+    "review_tool":      fixture_review_tool,
 }
 
 

@@ -20,6 +20,7 @@ import { runCritique } from "./critique.js";
 import { runDebate } from "./debate.js";
 import { runPick } from "./pick.js";
 import { runPlan } from "./plan.js";
+import { runReview } from "./review.js";
 import { runTriangulate } from "./triangulate.js";
 import { runVerify } from "./verify.js";
 
@@ -126,9 +127,42 @@ export function registerCoreTools(
     triangulateTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
     planTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
     critiqueTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
+    reviewTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `review` — native port of Python's tool_review. Tiny wrapper over
+ *  confer that asks the panel to peer-review a code/proposal snippet.
+ *  Output IS a confer envelope (tool: "confer") — matches Python. */
+function reviewTool(
+  providers: Readonly<Record<string, Provider>>,
+  allowlist: readonly string[] | null,
+  bridge: BridgeHandle | undefined,
+): Tool {
+  return {
+    name: "review",
+    description:
+      "Have an LLM panel peer-review a code or proposal snippet. " +
+      "Returns the confer envelope (one answer per provider).",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        snippet:    { type: "string" },
+        intent:     { type: "string" },
+        providers:  { type: "array", items: { type: "string" } },
+        session_id: { type: "string" },
+        untrusted_input: { type: "boolean" },
+      },
+      required: ["snippet"],
+    },
+    handler: (args) => runReview(args, {
+      providers, allowlist,
+      ...(bridge ? { bridge } : {}),
+    }),
+  };
 }
 
 /** `critique` — native port of Python's tool_critique. Each panelist

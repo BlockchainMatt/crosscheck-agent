@@ -1,0 +1,116 @@
+{
+  "module": "review_tool",
+  "description": "Native tool_review parity — INTENT + SNIPPET prompt threaded through confer; output is the confer envelope.",
+  "case_count": 2,
+  "cases": [
+    {
+      "label": "snippet-with-intent",
+      "args": {
+        "snippet": "function add(a, b) { return a + b }",
+        "intent": "Sum two numbers safely.",
+        "providers": [
+          "anthropic",
+          "openai"
+        ]
+      },
+      "canned": {
+        "anthropic": "No type checks; will coerce strings.",
+        "openai": "Add isFinite guard; document for non-number inputs."
+      },
+      "expected": {
+        "tool": "confer",
+        "question": "Review the following code/proposal as peers. Call out bugs, smells, missed edge cases, and suggest concrete changes.\n\nINTENT: Sum two numbers safely.\n\nSNIPPET:\n```\nfunction add(a, b) { return a + b }\n```",
+        "answers": [
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "response": "No type checks; will coerce strings.",
+            "attempts": 1,
+            "usage": {
+              "provider": "anthropic",
+              "model": "claude-opus-4-7",
+              "purpose": "confer",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            }
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "Add isFinite guard; document for non-number inputs.",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "confer",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "snippet-without-intent",
+      "args": {
+        "snippet": "SELECT * FROM users WHERE name = ?",
+        "providers": [
+          "anthropic",
+          "openai"
+        ]
+      },
+      "canned": {
+        "anthropic": "Prefer explicit columns. No LIMIT.",
+        "openai": "Use parameterized binding; index check."
+      },
+      "expected": {
+        "tool": "confer",
+        "question": "Review the following code/proposal as peers. Call out bugs, smells, missed edge cases, and suggest concrete changes.\n\nINTENT: (not stated)\n\nSNIPPET:\n```\nSELECT * FROM users WHERE name = ?\n```",
+        "answers": [
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "response": "Prefer explicit columns. No LIMIT.",
+            "attempts": 1,
+            "usage": {
+              "provider": "anthropic",
+              "model": "claude-opus-4-7",
+              "purpose": "confer",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            }
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "Use parameterized binding; index check.",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "confer",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
