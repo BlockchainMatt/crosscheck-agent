@@ -1,0 +1,1821 @@
+{
+  "module": "audit",
+  "description": "DEFAULT_AUDIT_RUBRICS + coercePass + coalesceAuditItems parity",
+  "case_count": 37,
+  "rubric_expected": [
+    {
+      "id": "factual_grounding",
+      "description": "Claims are grounded in evidence, sources, or stated assumptions; no hallucinated facts or APIs.",
+      "severity": "high"
+    },
+    {
+      "id": "constraint_adherence",
+      "description": "Output respects all stated user constraints (scope, language, format, budget).",
+      "severity": "high"
+    },
+    {
+      "id": "no_pii_leak",
+      "description": "Output does not echo or leak emails, secrets, API keys, IPs, or other personally identifying data.",
+      "severity": "high"
+    },
+    {
+      "id": "internally_consistent",
+      "description": "Output is internally consistent; later statements do not contradict earlier ones.",
+      "severity": "med"
+    },
+    {
+      "id": "covers_open_questions",
+      "description": "Identifies and surfaces open questions or unresolved trade-offs instead of papering over them.",
+      "severity": "med"
+    },
+    {
+      "id": "actionability",
+      "description": "Output is concrete and actionable for the stated audience; not vague hand-waving.",
+      "severity": "low"
+    }
+  ],
+  "coerce_cases": [
+    {
+      "label": "coerce::00::bool",
+      "input": true,
+      "expected": true
+    },
+    {
+      "label": "coerce::01::bool",
+      "input": false,
+      "expected": false
+    },
+    {
+      "label": "coerce::02::int",
+      "input": 1,
+      "expected": true
+    },
+    {
+      "label": "coerce::03::int",
+      "input": 0,
+      "expected": false
+    },
+    {
+      "label": "coerce::04::float",
+      "input": 0.5,
+      "expected": true
+    },
+    {
+      "label": "coerce::05::int",
+      "input": -1,
+      "expected": true
+    },
+    {
+      "label": "coerce::06::float",
+      "input": 0.0,
+      "expected": false
+    },
+    {
+      "label": "coerce::07::str",
+      "input": "true",
+      "expected": true
+    },
+    {
+      "label": "coerce::08::str",
+      "input": "false",
+      "expected": false
+    },
+    {
+      "label": "coerce::09::str",
+      "input": "TRUE",
+      "expected": true
+    },
+    {
+      "label": "coerce::10::str",
+      "input": "False",
+      "expected": false
+    },
+    {
+      "label": "coerce::11::str",
+      "input": "yes",
+      "expected": true
+    },
+    {
+      "label": "coerce::12::str",
+      "input": "NO",
+      "expected": false
+    },
+    {
+      "label": "coerce::13::str",
+      "input": "y",
+      "expected": true
+    },
+    {
+      "label": "coerce::14::str",
+      "input": "n",
+      "expected": false
+    },
+    {
+      "label": "coerce::15::str",
+      "input": "1",
+      "expected": true
+    },
+    {
+      "label": "coerce::16::str",
+      "input": "0",
+      "expected": false
+    },
+    {
+      "label": "coerce::17::str",
+      "input": "",
+      "expected": false
+    },
+    {
+      "label": "coerce::18::str",
+      "input": "  yes  ",
+      "expected": true
+    },
+    {
+      "label": "coerce::19::str",
+      "input": "TrUe",
+      "expected": true
+    },
+    {
+      "label": "coerce::20::str",
+      "input": "maybe",
+      "expected": null
+    },
+    {
+      "label": "coerce::21::str",
+      "input": "tbd",
+      "expected": null
+    },
+    {
+      "label": "coerce::22::str",
+      "input": "1.5",
+      "expected": null
+    },
+    {
+      "label": "coerce::23::NoneType",
+      "input": null,
+      "expected": null
+    },
+    {
+      "label": "coerce::24::list",
+      "input": [],
+      "expected": null
+    },
+    {
+      "label": "coerce::25::dict",
+      "input": {},
+      "expected": null
+    }
+  ],
+  "coalesce_cases": [
+    {
+      "label": "coalesce::all-agree-pass",
+      "rubric": [
+        {
+          "id": "alpha",
+          "description": "alpha desc",
+          "severity": "high"
+        },
+        {
+          "id": "beta",
+          "description": "beta desc",
+          "severity": "med"
+        },
+        {
+          "id": "gamma",
+          "description": "gamma desc",
+          "severity": "low"
+        }
+      ],
+      "per_judge_obj": [
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.95,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "beta",
+              "score": 0.85,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "gamma",
+              "score": 0.75,
+              "pass": true,
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        },
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.9,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "beta",
+              "score": 0.8,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "gamma",
+              "score": 0.7,
+              "pass": true,
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        },
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.92,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "beta",
+              "score": 0.82,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "gamma",
+              "score": 0.72,
+              "pass": true,
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        }
+      ],
+      "per_judge_meta": [
+        {
+          "provider": "openai",
+          "model": "m",
+          "status": "ok"
+        },
+        {
+          "provider": "anthropic",
+          "model": "m",
+          "status": "ok"
+        },
+        {
+          "provider": "xai",
+          "model": "m",
+          "status": "ok"
+        }
+      ],
+      "strict_mode": false,
+      "expected": {
+        "items": [
+          {
+            "id": "alpha",
+            "description": "alpha desc",
+            "severity": "high",
+            "score": 0.92,
+            "pass": true,
+            "stddev": 0.0205,
+            "disagreement_score": 0.05,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 3,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.95,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.9,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "xai",
+                "model": "m",
+                "score": 0.92,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          },
+          {
+            "id": "beta",
+            "description": "beta desc",
+            "severity": "med",
+            "score": 0.82,
+            "pass": true,
+            "stddev": 0.0205,
+            "disagreement_score": 0.05,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 3,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.85,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.8,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "xai",
+                "model": "m",
+                "score": 0.82,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          },
+          {
+            "id": "gamma",
+            "description": "gamma desc",
+            "severity": "low",
+            "score": 0.72,
+            "pass": true,
+            "stddev": 0.0205,
+            "disagreement_score": 0.05,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 3,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.75,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.7,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "xai",
+                "model": "m",
+                "score": 0.72,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          }
+        ],
+        "flags": {
+          "obvious_failures": [],
+          "disagreements": [],
+          "audit_process_failure": false,
+          "judges_stats": {
+            "total": 3,
+            "valid": 3,
+            "parse_errors": 0,
+            "refusals": 0
+          }
+        }
+      }
+    },
+    {
+      "label": "coalesce::obvious-failures",
+      "rubric": [
+        {
+          "id": "alpha",
+          "description": "alpha desc",
+          "severity": "high"
+        },
+        {
+          "id": "beta",
+          "description": "beta desc",
+          "severity": "med"
+        },
+        {
+          "id": "gamma",
+          "description": "gamma desc",
+          "severity": "low"
+        }
+      ],
+      "per_judge_obj": [
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.1,
+              "pass": false,
+              "rationale": "no"
+            },
+            {
+              "id": "beta",
+              "score": 0.5,
+              "pass": false,
+              "rationale": "weak"
+            },
+            {
+              "id": "gamma",
+              "score": 0.2,
+              "pass": false,
+              "rationale": "x"
+            }
+          ],
+          "overall_score": 0.5
+        },
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.8,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "beta",
+              "score": 0.1,
+              "pass": false,
+              "rationale": "no"
+            },
+            {
+              "id": "gamma",
+              "score": 0.4,
+              "pass": true,
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        }
+      ],
+      "per_judge_meta": [
+        {
+          "provider": "openai",
+          "model": "m",
+          "status": "ok"
+        },
+        {
+          "provider": "anthropic",
+          "model": "m",
+          "status": "ok"
+        }
+      ],
+      "strict_mode": false,
+      "expected": {
+        "items": [
+          {
+            "id": "alpha",
+            "description": "alpha desc",
+            "severity": "high",
+            "score": 0.45,
+            "pass": false,
+            "stddev": null,
+            "disagreement_score": 0.7,
+            "disputed": true,
+            "flags": [
+              "obvious_failure",
+              "disputed"
+            ],
+            "obvious_failure_judges": [
+              "openai"
+            ],
+            "valid_judges": 2,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.1,
+                "pass": false,
+                "rationale": "no"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.8,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          },
+          {
+            "id": "beta",
+            "description": "beta desc",
+            "severity": "med",
+            "score": 0.3,
+            "pass": false,
+            "stddev": null,
+            "disagreement_score": 0.4,
+            "disputed": false,
+            "flags": [
+              "obvious_failure"
+            ],
+            "obvious_failure_judges": [
+              "anthropic"
+            ],
+            "valid_judges": 2,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.5,
+                "pass": false,
+                "rationale": "weak"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.1,
+                "pass": false,
+                "rationale": "no"
+              }
+            ]
+          },
+          {
+            "id": "gamma",
+            "description": "gamma desc",
+            "severity": "low",
+            "score": 0.3,
+            "pass": false,
+            "stddev": null,
+            "disagreement_score": 0.2,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 2,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.2,
+                "pass": false,
+                "rationale": "x"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.4,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          }
+        ],
+        "flags": {
+          "obvious_failures": [
+            "alpha",
+            "beta"
+          ],
+          "disagreements": [
+            "alpha"
+          ],
+          "audit_process_failure": false,
+          "judges_stats": {
+            "total": 2,
+            "valid": 2,
+            "parse_errors": 0,
+            "refusals": 0
+          }
+        }
+      }
+    },
+    {
+      "label": "coalesce::disputed-stddev",
+      "rubric": [
+        {
+          "id": "alpha",
+          "description": "alpha desc",
+          "severity": "high"
+        },
+        {
+          "id": "beta",
+          "description": "beta desc",
+          "severity": "med"
+        },
+        {
+          "id": "gamma",
+          "description": "gamma desc",
+          "severity": "low"
+        }
+      ],
+      "per_judge_obj": [
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.95,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "beta",
+              "score": 0.5,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "gamma",
+              "score": 0.5,
+              "pass": true,
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        },
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.5,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "beta",
+              "score": 0.5,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "gamma",
+              "score": 0.5,
+              "pass": true,
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        },
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.1,
+              "pass": false,
+              "rationale": "no"
+            },
+            {
+              "id": "beta",
+              "score": 0.5,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "gamma",
+              "score": 0.5,
+              "pass": true,
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        }
+      ],
+      "per_judge_meta": [
+        {
+          "provider": "openai",
+          "model": "m",
+          "status": "ok"
+        },
+        {
+          "provider": "anthropic",
+          "model": "m",
+          "status": "ok"
+        },
+        {
+          "provider": "xai",
+          "model": "m",
+          "status": "ok"
+        }
+      ],
+      "strict_mode": false,
+      "expected": {
+        "items": [
+          {
+            "id": "alpha",
+            "description": "alpha desc",
+            "severity": "high",
+            "score": 0.5,
+            "pass": true,
+            "stddev": 0.3472,
+            "disagreement_score": 0.85,
+            "disputed": true,
+            "flags": [
+              "obvious_failure",
+              "disputed"
+            ],
+            "obvious_failure_judges": [
+              "xai"
+            ],
+            "valid_judges": 3,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.95,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.5,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "xai",
+                "model": "m",
+                "score": 0.1,
+                "pass": false,
+                "rationale": "no"
+              }
+            ]
+          },
+          {
+            "id": "beta",
+            "description": "beta desc",
+            "severity": "med",
+            "score": 0.5,
+            "pass": true,
+            "stddev": 0.0,
+            "disagreement_score": 0.0,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 3,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.5,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.5,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "xai",
+                "model": "m",
+                "score": 0.5,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          },
+          {
+            "id": "gamma",
+            "description": "gamma desc",
+            "severity": "low",
+            "score": 0.5,
+            "pass": true,
+            "stddev": 0.0,
+            "disagreement_score": 0.0,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 3,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.5,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.5,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "xai",
+                "model": "m",
+                "score": 0.5,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          }
+        ],
+        "flags": {
+          "obvious_failures": [
+            "alpha"
+          ],
+          "disagreements": [
+            "alpha"
+          ],
+          "audit_process_failure": false,
+          "judges_stats": {
+            "total": 3,
+            "valid": 3,
+            "parse_errors": 0,
+            "refusals": 0
+          }
+        }
+      }
+    },
+    {
+      "label": "coalesce::disputed-range-n2",
+      "rubric": [
+        {
+          "id": "alpha",
+          "description": "alpha desc",
+          "severity": "high"
+        },
+        {
+          "id": "beta",
+          "description": "beta desc",
+          "severity": "med"
+        },
+        {
+          "id": "gamma",
+          "description": "gamma desc",
+          "severity": "low"
+        }
+      ],
+      "per_judge_obj": [
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.95,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "beta",
+              "score": 0.5,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "gamma",
+              "score": 0.5,
+              "pass": true,
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        },
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.4,
+              "pass": false,
+              "rationale": "no"
+            },
+            {
+              "id": "beta",
+              "score": 0.5,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "gamma",
+              "score": 0.5,
+              "pass": true,
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        }
+      ],
+      "per_judge_meta": [
+        {
+          "provider": "openai",
+          "model": "m",
+          "status": "ok"
+        },
+        {
+          "provider": "anthropic",
+          "model": "m",
+          "status": "ok"
+        }
+      ],
+      "strict_mode": false,
+      "expected": {
+        "items": [
+          {
+            "id": "alpha",
+            "description": "alpha desc",
+            "severity": "high",
+            "score": 0.675,
+            "pass": false,
+            "stddev": null,
+            "disagreement_score": 0.55,
+            "disputed": true,
+            "flags": [
+              "disputed"
+            ],
+            "obvious_failure_judges": [],
+            "valid_judges": 2,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.95,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.4,
+                "pass": false,
+                "rationale": "no"
+              }
+            ]
+          },
+          {
+            "id": "beta",
+            "description": "beta desc",
+            "severity": "med",
+            "score": 0.5,
+            "pass": true,
+            "stddev": null,
+            "disagreement_score": 0.0,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 2,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.5,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.5,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          },
+          {
+            "id": "gamma",
+            "description": "gamma desc",
+            "severity": "low",
+            "score": 0.5,
+            "pass": true,
+            "stddev": null,
+            "disagreement_score": 0.0,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 2,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.5,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.5,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          }
+        ],
+        "flags": {
+          "obvious_failures": [],
+          "disagreements": [
+            "alpha"
+          ],
+          "audit_process_failure": false,
+          "judges_stats": {
+            "total": 2,
+            "valid": 2,
+            "parse_errors": 0,
+            "refusals": 0
+          }
+        }
+      }
+    },
+    {
+      "label": "coalesce::tie-broken-by-median",
+      "rubric": [
+        {
+          "id": "alpha",
+          "description": "alpha desc",
+          "severity": "high"
+        }
+      ],
+      "per_judge_obj": [
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.8,
+              "pass": true,
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        },
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.6,
+              "pass": false,
+              "rationale": "no"
+            }
+          ],
+          "overall_score": 0.5
+        }
+      ],
+      "per_judge_meta": [
+        {
+          "provider": "openai",
+          "model": "m",
+          "status": "ok"
+        },
+        {
+          "provider": "anthropic",
+          "model": "m",
+          "status": "ok"
+        }
+      ],
+      "strict_mode": false,
+      "expected": {
+        "items": [
+          {
+            "id": "alpha",
+            "description": "alpha desc",
+            "severity": "high",
+            "score": 0.7,
+            "pass": true,
+            "stddev": null,
+            "disagreement_score": 0.2,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 2,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.8,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.6,
+                "pass": false,
+                "rationale": "no"
+              }
+            ]
+          }
+        ],
+        "flags": {
+          "obvious_failures": [],
+          "disagreements": [],
+          "audit_process_failure": false,
+          "judges_stats": {
+            "total": 2,
+            "valid": 2,
+            "parse_errors": 0,
+            "refusals": 0
+          }
+        }
+      }
+    },
+    {
+      "label": "coalesce::strict-mode",
+      "rubric": [
+        {
+          "id": "alpha",
+          "description": "alpha desc",
+          "severity": "high"
+        }
+      ],
+      "per_judge_obj": [
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.95,
+              "pass": true,
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        },
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.9,
+              "pass": true,
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        },
+        null
+      ],
+      "per_judge_meta": [
+        {
+          "provider": "openai",
+          "model": "m",
+          "status": "ok"
+        },
+        {
+          "provider": "anthropic",
+          "model": "m",
+          "status": "ok"
+        },
+        {
+          "provider": "xai",
+          "model": "m",
+          "status": "parse_error"
+        }
+      ],
+      "strict_mode": true,
+      "expected": {
+        "items": [
+          {
+            "id": "alpha",
+            "description": "alpha desc",
+            "severity": "high",
+            "score": 0.925,
+            "pass": false,
+            "stddev": null,
+            "disagreement_score": 0.05,
+            "disputed": false,
+            "flags": [
+              "partial_judges"
+            ],
+            "obvious_failure_judges": [],
+            "valid_judges": 2,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.95,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.9,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "xai",
+                "model": "m",
+                "status": "parse_error"
+              }
+            ]
+          }
+        ],
+        "flags": {
+          "obvious_failures": [],
+          "disagreements": [],
+          "audit_process_failure": false,
+          "judges_stats": {
+            "total": 3,
+            "valid": 2,
+            "parse_errors": 1,
+            "refusals": 0
+          }
+        }
+      }
+    },
+    {
+      "label": "coalesce::parse-errors",
+      "rubric": [
+        {
+          "id": "alpha",
+          "description": "alpha desc",
+          "severity": "high"
+        },
+        {
+          "id": "beta",
+          "description": "beta desc",
+          "severity": "med"
+        }
+      ],
+      "per_judge_obj": [
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": "not-a-number",
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "beta",
+              "score": 0.5,
+              "pass": "maybe",
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        },
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.8,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "beta",
+              "score": 0.6,
+              "pass": true,
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        }
+      ],
+      "per_judge_meta": [
+        {
+          "provider": "openai",
+          "model": "m",
+          "status": "ok"
+        },
+        {
+          "provider": "anthropic",
+          "model": "m",
+          "status": "ok"
+        }
+      ],
+      "strict_mode": false,
+      "expected": {
+        "items": [
+          {
+            "id": "alpha",
+            "description": "alpha desc",
+            "severity": "high",
+            "score": 0.8,
+            "pass": true,
+            "stddev": null,
+            "disagreement_score": 0.0,
+            "disputed": false,
+            "flags": [
+              "partial_judges"
+            ],
+            "obvious_failure_judges": [],
+            "valid_judges": 1,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "status": "score_parse_error",
+                "raw_score": "not-a-number"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.8,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          },
+          {
+            "id": "beta",
+            "description": "beta desc",
+            "severity": "med",
+            "score": 0.6,
+            "pass": true,
+            "stddev": null,
+            "disagreement_score": 0.0,
+            "disputed": false,
+            "flags": [
+              "partial_judges"
+            ],
+            "obvious_failure_judges": [],
+            "valid_judges": 1,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "status": "pass_parse_error",
+                "raw_pass": "maybe"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.6,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          }
+        ],
+        "flags": {
+          "obvious_failures": [],
+          "disagreements": [],
+          "audit_process_failure": false,
+          "judges_stats": {
+            "total": 2,
+            "valid": 2,
+            "parse_errors": 0,
+            "refusals": 0
+          }
+        }
+      }
+    },
+    {
+      "label": "coalesce::process-failure",
+      "rubric": [
+        {
+          "id": "alpha",
+          "description": "alpha desc",
+          "severity": "high"
+        }
+      ],
+      "per_judge_obj": [
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.9,
+              "pass": true,
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        },
+        null,
+        null
+      ],
+      "per_judge_meta": [
+        {
+          "provider": "openai",
+          "model": "m",
+          "status": "ok"
+        },
+        {
+          "provider": "anthropic",
+          "model": "m",
+          "status": "parse_error"
+        },
+        {
+          "provider": "xai",
+          "model": "m",
+          "status": "refusal"
+        }
+      ],
+      "strict_mode": false,
+      "expected": {
+        "items": [
+          {
+            "id": "alpha",
+            "description": "alpha desc",
+            "severity": "high",
+            "score": 0.9,
+            "pass": true,
+            "stddev": null,
+            "disagreement_score": 0.0,
+            "disputed": false,
+            "flags": [
+              "partial_judges"
+            ],
+            "obvious_failure_judges": [],
+            "valid_judges": 1,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.9,
+                "pass": true,
+                "rationale": "ok"
+              },
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "status": "parse_error"
+              },
+              {
+                "provider": "xai",
+                "model": "m",
+                "status": "refusal"
+              }
+            ]
+          }
+        ],
+        "flags": {
+          "obvious_failures": [],
+          "disagreements": [],
+          "audit_process_failure": true,
+          "judges_stats": {
+            "total": 3,
+            "valid": 1,
+            "parse_errors": 1,
+            "refusals": 1
+          }
+        }
+      }
+    },
+    {
+      "label": "coalesce::single-judge",
+      "rubric": [
+        {
+          "id": "alpha",
+          "description": "alpha desc",
+          "severity": "high"
+        },
+        {
+          "id": "beta",
+          "description": "beta desc",
+          "severity": "med"
+        },
+        {
+          "id": "gamma",
+          "description": "gamma desc",
+          "severity": "low"
+        }
+      ],
+      "per_judge_obj": [
+        {
+          "items": [
+            {
+              "id": "alpha",
+              "score": 0.5,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "beta",
+              "score": 0.5,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "gamma",
+              "score": 0.5,
+              "pass": true,
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        }
+      ],
+      "per_judge_meta": [
+        {
+          "provider": "openai",
+          "model": "m",
+          "status": "ok"
+        }
+      ],
+      "strict_mode": false,
+      "expected": {
+        "items": [
+          {
+            "id": "alpha",
+            "description": "alpha desc",
+            "severity": "high",
+            "score": 0.5,
+            "pass": true,
+            "stddev": null,
+            "disagreement_score": 0.0,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 1,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.5,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          },
+          {
+            "id": "beta",
+            "description": "beta desc",
+            "severity": "med",
+            "score": 0.5,
+            "pass": true,
+            "stddev": null,
+            "disagreement_score": 0.0,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 1,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.5,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          },
+          {
+            "id": "gamma",
+            "description": "gamma desc",
+            "severity": "low",
+            "score": 0.5,
+            "pass": true,
+            "stddev": null,
+            "disagreement_score": 0.0,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 1,
+            "per_judge": [
+              {
+                "provider": "openai",
+                "model": "m",
+                "score": 0.5,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          }
+        ],
+        "flags": {
+          "obvious_failures": [],
+          "disagreements": [],
+          "audit_process_failure": false,
+          "judges_stats": {
+            "total": 1,
+            "valid": 1,
+            "parse_errors": 0,
+            "refusals": 0
+          }
+        }
+      }
+    },
+    {
+      "label": "coalesce::default-rubric",
+      "rubric": [
+        {
+          "id": "factual_grounding",
+          "description": "Claims are grounded in evidence, sources, or stated assumptions; no hallucinated facts or APIs.",
+          "severity": "high"
+        },
+        {
+          "id": "constraint_adherence",
+          "description": "Output respects all stated user constraints (scope, language, format, budget).",
+          "severity": "high"
+        },
+        {
+          "id": "no_pii_leak",
+          "description": "Output does not echo or leak emails, secrets, API keys, IPs, or other personally identifying data.",
+          "severity": "high"
+        },
+        {
+          "id": "internally_consistent",
+          "description": "Output is internally consistent; later statements do not contradict earlier ones.",
+          "severity": "med"
+        },
+        {
+          "id": "covers_open_questions",
+          "description": "Identifies and surfaces open questions or unresolved trade-offs instead of papering over them.",
+          "severity": "med"
+        },
+        {
+          "id": "actionability",
+          "description": "Output is concrete and actionable for the stated audience; not vague hand-waving.",
+          "severity": "low"
+        }
+      ],
+      "per_judge_obj": [
+        {
+          "items": [
+            {
+              "id": "factual_grounding",
+              "score": 0.9,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "constraint_adherence",
+              "score": 0.85,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "no_pii_leak",
+              "score": 1.0,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "internally_consistent",
+              "score": 0.8,
+              "pass": true,
+              "rationale": "ok"
+            },
+            {
+              "id": "covers_open_questions",
+              "score": 0.6,
+              "pass": false,
+              "rationale": "weak"
+            },
+            {
+              "id": "actionability",
+              "score": 0.7,
+              "pass": true,
+              "rationale": "ok"
+            }
+          ],
+          "overall_score": 0.5
+        }
+      ],
+      "per_judge_meta": [
+        {
+          "provider": "anthropic",
+          "model": "m",
+          "status": "ok"
+        }
+      ],
+      "strict_mode": false,
+      "expected": {
+        "items": [
+          {
+            "id": "factual_grounding",
+            "description": "Claims are grounded in evidence, sources, or stated assumptions; no hallucinated facts or APIs.",
+            "severity": "high",
+            "score": 0.9,
+            "pass": true,
+            "stddev": null,
+            "disagreement_score": 0.0,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 1,
+            "per_judge": [
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.9,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          },
+          {
+            "id": "constraint_adherence",
+            "description": "Output respects all stated user constraints (scope, language, format, budget).",
+            "severity": "high",
+            "score": 0.85,
+            "pass": true,
+            "stddev": null,
+            "disagreement_score": 0.0,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 1,
+            "per_judge": [
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.85,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          },
+          {
+            "id": "no_pii_leak",
+            "description": "Output does not echo or leak emails, secrets, API keys, IPs, or other personally identifying data.",
+            "severity": "high",
+            "score": 1.0,
+            "pass": true,
+            "stddev": null,
+            "disagreement_score": 0.0,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 1,
+            "per_judge": [
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 1.0,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          },
+          {
+            "id": "internally_consistent",
+            "description": "Output is internally consistent; later statements do not contradict earlier ones.",
+            "severity": "med",
+            "score": 0.8,
+            "pass": true,
+            "stddev": null,
+            "disagreement_score": 0.0,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 1,
+            "per_judge": [
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.8,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          },
+          {
+            "id": "covers_open_questions",
+            "description": "Identifies and surfaces open questions or unresolved trade-offs instead of papering over them.",
+            "severity": "med",
+            "score": 0.6,
+            "pass": false,
+            "stddev": null,
+            "disagreement_score": 0.0,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 1,
+            "per_judge": [
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.6,
+                "pass": false,
+                "rationale": "weak"
+              }
+            ]
+          },
+          {
+            "id": "actionability",
+            "description": "Output is concrete and actionable for the stated audience; not vague hand-waving.",
+            "severity": "low",
+            "score": 0.7,
+            "pass": true,
+            "stddev": null,
+            "disagreement_score": 0.0,
+            "disputed": false,
+            "flags": [],
+            "obvious_failure_judges": [],
+            "valid_judges": 1,
+            "per_judge": [
+              {
+                "provider": "anthropic",
+                "model": "m",
+                "score": 0.7,
+                "pass": true,
+                "rationale": "ok"
+              }
+            ]
+          }
+        ],
+        "flags": {
+          "obvious_failures": [],
+          "disagreements": [],
+          "audit_process_failure": false,
+          "judges_stats": {
+            "total": 1,
+            "valid": 1,
+            "parse_errors": 0,
+            "refusals": 0
+          }
+        }
+      }
+    }
+  ]
+}

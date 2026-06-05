@@ -1101,6 +1101,205 @@ def fixture_tiers() -> dict:
 
 
 # ----------------------------------------------------------------------
+# audit.json — DEFAULT_AUDIT_RUBRICS + coercePass + coalesceAuditItems
+# ----------------------------------------------------------------------
+def fixture_audit() -> dict:
+    srv = _import_server()
+
+    # ---- DEFAULT_AUDIT_RUBRICS golden ----
+    rubric_expected = list(srv.DEFAULT_AUDIT_RUBRICS)
+
+    # ---- coercePass cases ----
+    coerce_inputs = [
+        True, False,
+        1, 0, 0.5, -1, 0.0,
+        "true", "false", "TRUE", "False", "yes", "NO", "y", "n", "1", "0", "",
+        "  yes  ", "TrUe",
+        # Invalid / None
+        "maybe", "tbd", "1.5", None, [], {},
+    ]
+    coerce_cases = [
+        {
+            "label":    f"coerce::{i:02d}::{type(v).__name__}",
+            "input":    v,
+            "expected": srv._coerce_pass(v),
+        }
+        for i, v in enumerate(coerce_inputs)
+    ]
+
+    # ---- coalesceAuditItems cases ----
+    # Use a small custom rubric to keep the fixture compact, plus one
+    # case with the real DEFAULT_AUDIT_RUBRICS.
+    small_rubric = [
+        {"id": "alpha", "description": "alpha desc", "severity": "high"},
+        {"id": "beta",  "description": "beta desc",  "severity": "med"},
+        {"id": "gamma", "description": "gamma desc", "severity": "low"},
+    ]
+
+    judge_meta = lambda provider, model="m", status="ok": {
+        "provider": provider, "model": model, "status": status,
+    }
+
+    # Build per-judge bodies that target the small_rubric ids.
+    def judge(items: list[dict]) -> dict:
+        return {"items": items, "overall_score": 0.5}
+
+    coalesce_inputs = [
+        # (label, rubric, per_judge_obj, per_judge_meta, strict_mode)
+
+        # 1. All three judges agree, all pass.
+        (
+            "all-agree-pass",
+            small_rubric,
+            [judge([{"id": "alpha", "score": 0.95, "pass": True,  "rationale": "ok"},
+                    {"id": "beta",  "score": 0.85, "pass": True,  "rationale": "ok"},
+                    {"id": "gamma", "score": 0.75, "pass": True,  "rationale": "ok"}]),
+             judge([{"id": "alpha", "score": 0.90, "pass": True,  "rationale": "ok"},
+                    {"id": "beta",  "score": 0.80, "pass": True,  "rationale": "ok"},
+                    {"id": "gamma", "score": 0.70, "pass": True,  "rationale": "ok"}]),
+             judge([{"id": "alpha", "score": 0.92, "pass": True,  "rationale": "ok"},
+                    {"id": "beta",  "score": 0.82, "pass": True,  "rationale": "ok"},
+                    {"id": "gamma", "score": 0.72, "pass": True,  "rationale": "ok"}])],
+            [judge_meta("openai"), judge_meta("anthropic"), judge_meta("xai")],
+            False,
+        ),
+        # 2. Obvious failures: judge 1 dings alpha (high) below 0.3;
+        #    judge 2 dings beta (med) below 0.2.
+        (
+            "obvious-failures",
+            small_rubric,
+            [judge([{"id": "alpha", "score": 0.10, "pass": False, "rationale": "no"},
+                    {"id": "beta",  "score": 0.50, "pass": False, "rationale": "weak"},
+                    {"id": "gamma", "score": 0.20, "pass": False, "rationale": "x"}]),
+             judge([{"id": "alpha", "score": 0.80, "pass": True,  "rationale": "ok"},
+                    {"id": "beta",  "score": 0.10, "pass": False, "rationale": "no"},
+                    {"id": "gamma", "score": 0.40, "pass": True,  "rationale": "ok"}])],
+            [judge_meta("openai"), judge_meta("anthropic")],
+            False,
+        ),
+        # 3. Disputed item via stddev with N=3.
+        (
+            "disputed-stddev",
+            small_rubric,
+            [judge([{"id": "alpha", "score": 0.95, "pass": True,  "rationale": "ok"},
+                    {"id": "beta",  "score": 0.5,  "pass": True,  "rationale": "ok"},
+                    {"id": "gamma", "score": 0.5,  "pass": True,  "rationale": "ok"}]),
+             judge([{"id": "alpha", "score": 0.5,  "pass": True,  "rationale": "ok"},
+                    {"id": "beta",  "score": 0.5,  "pass": True,  "rationale": "ok"},
+                    {"id": "gamma", "score": 0.5,  "pass": True,  "rationale": "ok"}]),
+             judge([{"id": "alpha", "score": 0.1,  "pass": False, "rationale": "no"},
+                    {"id": "beta",  "score": 0.5,  "pass": True,  "rationale": "ok"},
+                    {"id": "gamma", "score": 0.5,  "pass": True,  "rationale": "ok"}])],
+            [judge_meta("openai"), judge_meta("anthropic"), judge_meta("xai")],
+            False,
+        ),
+        # 4. Disputed via range with N=2.
+        (
+            "disputed-range-n2",
+            small_rubric,
+            [judge([{"id": "alpha", "score": 0.95, "pass": True,  "rationale": "ok"},
+                    {"id": "beta",  "score": 0.5,  "pass": True,  "rationale": "ok"},
+                    {"id": "gamma", "score": 0.5,  "pass": True,  "rationale": "ok"}]),
+             judge([{"id": "alpha", "score": 0.40, "pass": False, "rationale": "no"},
+                    {"id": "beta",  "score": 0.5,  "pass": True,  "rationale": "ok"},
+                    {"id": "gamma", "score": 0.5,  "pass": True,  "rationale": "ok"}])],
+            [judge_meta("openai"), judge_meta("anthropic")],
+            False,
+        ),
+        # 5. Pass-count tie -> tie-break by median >= 0.7.
+        (
+            "tie-broken-by-median",
+            small_rubric[:1],  # just alpha
+            [judge([{"id": "alpha", "score": 0.80, "pass": True,  "rationale": "ok"}]),
+             judge([{"id": "alpha", "score": 0.60, "pass": False, "rationale": "no"}])],
+            [judge_meta("openai"), judge_meta("anthropic")],
+            False,
+        ),
+        # 6. Strict mode: every judge must pass, partial responses fail item.
+        (
+            "strict-mode",
+            small_rubric[:1],
+            [judge([{"id": "alpha", "score": 0.95, "pass": True,  "rationale": "ok"}]),
+             judge([{"id": "alpha", "score": 0.90, "pass": True,  "rationale": "ok"}]),
+             # Third judge: invalid object (audit_process_failure denominator stays 3).
+             None],
+            [judge_meta("openai"), judge_meta("anthropic"),
+             judge_meta("xai", status="parse_error")],
+            True,
+        ),
+        # 7. Score / pass parse errors.
+        (
+            "parse-errors",
+            small_rubric[:2],
+            [judge([{"id": "alpha", "score": "not-a-number", "pass": True,  "rationale": "ok"},
+                    {"id": "beta",  "score": 0.5, "pass": "maybe", "rationale": "ok"}]),
+             judge([{"id": "alpha", "score": 0.8, "pass": True,  "rationale": "ok"},
+                    {"id": "beta",  "score": 0.6, "pass": True,  "rationale": "ok"}])],
+            [judge_meta("openai"), judge_meta("anthropic")],
+            False,
+        ),
+        # 8. Audit process failure: 2 of 3 judges invalid.
+        (
+            "process-failure",
+            small_rubric[:1],
+            [judge([{"id": "alpha", "score": 0.9, "pass": True, "rationale": "ok"}]),
+             None,
+             None],
+            [judge_meta("openai"),
+             judge_meta("anthropic", status="parse_error"),
+             judge_meta("xai", status="refusal")],
+            False,
+        ),
+        # 9. Single judge.
+        (
+            "single-judge",
+            small_rubric,
+            [judge([{"id": "alpha", "score": 0.5, "pass": True, "rationale": "ok"},
+                    {"id": "beta",  "score": 0.5, "pass": True, "rationale": "ok"},
+                    {"id": "gamma", "score": 0.5, "pass": True, "rationale": "ok"}])],
+            [judge_meta("openai")],
+            False,
+        ),
+        # 10. Default rubric — sanity check shape against real-world fields.
+        (
+            "default-rubric",
+            list(srv.DEFAULT_AUDIT_RUBRICS),
+            [judge([
+                {"id": "factual_grounding",    "score": 0.9, "pass": True,  "rationale": "ok"},
+                {"id": "constraint_adherence", "score": 0.85, "pass": True, "rationale": "ok"},
+                {"id": "no_pii_leak",          "score": 1.0, "pass": True,  "rationale": "ok"},
+                {"id": "internally_consistent","score": 0.8, "pass": True,  "rationale": "ok"},
+                {"id": "covers_open_questions","score": 0.6, "pass": False, "rationale": "weak"},
+                {"id": "actionability",        "score": 0.7, "pass": True,  "rationale": "ok"},
+            ])],
+            [judge_meta("anthropic")],
+            False,
+        ),
+    ]
+
+    coalesce_cases = []
+    for label, rubric, per_obj, per_meta, strict in coalesce_inputs:
+        items, flags = srv._coalesce_audit_items(rubric, per_obj, per_meta, strict)
+        coalesce_cases.append({
+            "label":          f"coalesce::{label}",
+            "rubric":         rubric,
+            "per_judge_obj":  per_obj,
+            "per_judge_meta": per_meta,
+            "strict_mode":    strict,
+            "expected":       {"items": items, "flags": flags},
+        })
+
+    return {
+        "module":          "audit",
+        "description":     "DEFAULT_AUDIT_RUBRICS + coercePass + coalesceAuditItems parity",
+        "case_count":      1 + len(coerce_cases) + len(coalesce_cases),
+        "rubric_expected": rubric_expected,
+        "coerce_cases":    coerce_cases,
+        "coalesce_cases":  coalesce_cases,
+    }
+
+
+# ----------------------------------------------------------------------
 # Wiring
 # ----------------------------------------------------------------------
 BUILDERS = {
@@ -1114,6 +1313,7 @@ BUILDERS = {
     "usage":     fixture_usage,
     "router":    fixture_router,
     "tiers":     fixture_tiers,
+    "audit":     fixture_audit,
 }
 
 
