@@ -16,6 +16,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
+import type { Storage } from "./adapters/storage/interface.js";
 import { type BridgeHandle, buildPythonProxies } from "./bridge/index.js";
 import type { Provider } from "./providers/types.js";
 import { registerCoreTools, type Tool } from "./tools/index.js";
@@ -37,6 +38,11 @@ export interface CreateServerOptions {
   providers?: Readonly<Record<string, Provider>>;
   /** Optional provider allowlist. */
   providerAllowlist?: readonly string[] | null;
+  /** SQLite-backed storage adapter. Threaded into recall / scoreboard /
+   *  session_memory / explain via the tool registry. */
+  storage?: Storage;
+  /** Directory holding transcript JSON files (used by `explain`). */
+  transcriptsDir?: string;
 }
 
 /**
@@ -105,6 +111,8 @@ function buildToolRegistry(opts: CreateServerOptions): Map<string, Tool> {
   if (opts.providers)         registerOpts.providers         = opts.providers;
   if (opts.providerAllowlist !== undefined)
     registerOpts.providerAllowlist = opts.providerAllowlist;
+  if (opts.storage)           registerOpts.storage           = opts.storage;
+  if (opts.transcriptsDir)    registerOpts.transcriptsDir    = opts.transcriptsDir;
   const tools = registerCoreTools(registerOpts);
   if (!opts.bridge) return tools;
   const proxies = buildPythonProxies(opts.bridge);

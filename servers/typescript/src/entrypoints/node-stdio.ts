@@ -13,11 +13,12 @@
 // bridge.close() before exiting. Without this, a host crash leaks an
 // orphan Python process per session.
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
+import { openBetterSqliteStorage } from "../adapters/storage/better-sqlite3.js";
 import { spawnPythonBridge, type BridgeHandle } from "../bridge/index.js";
 import { loadPricing } from "../core/pricing.js";
 import { buildProviders } from "../providers/registry.js";
@@ -62,9 +63,40 @@ async function main(): Promise<void> {
     );
   }
 
+  // Storage: opt-in via env.
+  //   CROSSCHECK_DB_PATH      → use this exact path
+  //   (else) existing .crosscheck/db.sqlite in repo ancestry → use it
+  //   (else) skip — storage tools defer to bridge or error
+  //   CROSSCHECK_DB_DISABLED=1 → force-skip
+  let storage: ReturnType<typeof openBetterSqliteStorage> | undefined;
+  if (process.env["CROSSCHECK_DB_DISABLED"] !== "1") {
+    const dbPath = process.env["CROSSCHECK_DB_PATH"]
+      ?? resolveRepoFile(".crosscheck/db.sqlite");
+    if (dbPath) {
+      try {
+        mkdirSync(path.dirname(dbPath), { recursive: true });
+        storage = openBetterSqliteStorage({ path: dbPath });
+        await storage.migrate();
+        process.stderr.write(
+          `crosscheck-agent: storage wired at ${dbPath}\n`,
+        );
+      } catch (e) {
+        process.stderr.write(
+          `crosscheck-agent: storage init failed (${(e as Error).message}); storage tools will defer to bridge\n`,
+        );
+        storage = undefined;
+      }
+    }
+  }
+
+  const transcriptsDir = process.env["CROSSCHECK_TRANSCRIPTS_DIR"]
+    ?? resolveRepoFile(".crosscheck/transcripts");
+
   const transport = new StdioServerTransport();
   const serverOpts: Parameters<typeof connectAndServe>[1] = { providers };
-  if (bridge) serverOpts.bridge = bridge;
+  if (bridge)         serverOpts.bridge         = bridge;
+  if (storage)        serverOpts.storage        = storage;
+  if (transcriptsDir) serverOpts.transcriptsDir = transcriptsDir;
   await connectAndServe(transport, serverOpts);
   // The server holds the process alive via the stdio streams. We don't
   // exit until the parent closes stdin (handled below).
