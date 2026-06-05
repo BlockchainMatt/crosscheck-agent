@@ -15,6 +15,7 @@ import type { Provider } from "../providers/types.js";
 import { SERVER_NAME, SERVER_VERSION } from "../server.js";
 import { runAudit } from "./audit.js";
 import { runConfer } from "./confer.js";
+import { runDebate } from "./debate.js";
 import { runPick } from "./pick.js";
 import { runVerify } from "./verify.js";
 
@@ -116,9 +117,55 @@ export function registerCoreTools(
     pickTool(o.providers ?? {}, o.providerAllowlist ?? null),
     auditTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
     conferTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
+    debateTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `debate` — native port of Python's tool_debate. v1 covers the
+ *  plain N-round + plain moderator synthesis path; opts (auto_panel,
+ *  structured, extract_claims, early_stop, inject_session_memory,
+ *  worker_tools) defer to the bridge when supplied. */
+function debateTool(
+  providers: Readonly<Record<string, Provider>>,
+  allowlist: readonly string[] | null,
+  bridge: BridgeHandle | undefined,
+): Tool {
+  return {
+    name: "debate",
+    description:
+      "Run a multi-round debate between LLM providers and synthesise the " +
+      "result via a moderator. v1 native covers plain rounds + plain " +
+      "synthesis; advanced opts (structured synthesis, early_stop, etc.) " +
+      "require the Python bridge.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        topic:        { type: "string" },
+        context:      { type: "string" },
+        max_rounds:   { type: "integer", minimum: 1 },
+        providers:    { type: "array", items: { type: "string" } },
+        moderator:    { type: "string" },
+        session_id:   { type: "string" },
+        structured:           { type: "boolean" },
+        extract_claims:       { type: "boolean" },
+        early_stop:           { type: "boolean" },
+        early_stop_threshold: { type: "number" },
+        auto_panel:           { type: "boolean" },
+        auto_panel_n:         { type: "integer" },
+        inject_session_memory: { type: "boolean" },
+        worker_tools:         { type: "array", items: { type: "string" } },
+      },
+      required: ["topic"],
+    },
+    handler: (args) => runDebate(args, {
+      providers,
+      allowlist,
+      ...(bridge ? { bridge } : {}),
+    }),
+  };
 }
 
 /** `confer` — native port of Python's tool_confer. v1 covers the

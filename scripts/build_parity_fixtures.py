@@ -2491,6 +2491,166 @@ def fixture_confer_tool() -> dict:
     }
 
 
+def fixture_debate_tool() -> dict:
+    """debate_tool.json — Phase 5 part 7 parity gate.
+
+    Same cassette pattern as confer/audit/pick. Each case records
+    (args, canned, expected). Canned is keyed by provider name and
+    each value is a LIST of round responses — round 1 returns
+    canned[name][0], round 2 returns canned[name][1], etc. Synthesis
+    consumes the next available entry from the moderator's list.
+
+    Stripped on both sides: budget/session/usage rollup/timing rollup/
+    run_summary/transcript_path/claims/agreement_check/early_stopped*/
+    synthesis_structured/synthesis_errors, plus per-call timing fields
+    on transcript entries and synthesis.
+    """
+    srv = _import_server()
+    cases = []
+
+    saved_ask_one        = srv._ask_one
+    saved_session_load   = srv._session_load
+    saved_log_usage      = srv.log_usage
+    saved_write          = srv.write_transcript
+    saved_session_record = srv._session_record
+    saved_session_save   = srv._session_save
+    saved_claim_add      = getattr(srv, "_claim_add", None)
+
+    srv._session_load    = lambda _sid: None
+    srv.log_usage        = lambda *a, **kw: None
+    srv.write_transcript = lambda *a, **kw: ""
+    srv._session_record  = lambda *a, **kw: None
+    srv._session_save    = lambda *a, **kw: None
+    srv._claim_add       = lambda *a, **kw: None
+
+    def sanitize(out: dict) -> dict:
+        copy = dict(out)
+        for k in ("budget", "session", "usage", "timing", "run_summary",
+                  "transcript_path", "claims", "agreement_check",
+                  "early_stopped", "early_stopped_round", "rounds_skipped",
+                  "synthesis_structured", "synthesis_errors",
+                  "_suppress_run_summary"):
+            copy.pop(k, None)
+        # Sanitize per-transcript-entry timing.
+        for e in (copy.get("transcript") or []):
+            if isinstance(e, dict):
+                for k in ("elapsed_ms", "cpu_ms", "cache_hit", "timing"):
+                    e.pop(k, None)
+        s = copy.get("synthesis")
+        if isinstance(s, dict):
+            for k in ("elapsed_ms", "cpu_ms", "cache_hit", "timing"):
+                s.pop(k, None)
+        return copy
+
+    def make_fake_ask_one(canned: dict[str, list[str]]):
+        cursors = {name: 0 for name in canned}
+        def fake(p, messages, deadline, max_tokens, purpose="worker"):
+            i = cursors.get(p.name, 0)
+            seq = canned.get(p.name, [])
+            text = seq[i] if i < len(seq) else ""
+            cursors[p.name] = i + 1
+            return {
+                "provider": p.name, "model": p.model,
+                "response": text,
+                "cache_hit": False, "elapsed_ms": 0, "cpu_ms": 0,
+                "attempts": 1,
+                "usage": {
+                    "provider": p.name, "model": p.model, "purpose": purpose,
+                    "prompt_tokens": 100, "completion_tokens": 50,
+                    "total_tokens": 150, "cached_tokens": 0,
+                    "cost_usd": 0.0, "estimated": False,
+                },
+                "timing": {"wall_ms": 0, "cpu_ms": 0},
+            }
+        return fake
+
+    def add(label, args, canned):
+        srv._ask_one = make_fake_ask_one(canned)
+        invoke_args = {**args, "providers": list(canned.keys())}
+        out = srv.tool_debate(invoke_args)
+        cases.append({
+            "label":   label,
+            "args":    invoke_args,
+            "canned":  canned,
+            "expected": sanitize(out),
+        })
+
+    try:
+        # Two providers, two rounds (default panel size when moderator
+        # is in the panel: moderator (anthropic) gets max_rounds + 1
+        # entries when it's also a panelist).
+        add(
+            "two-providers-two-rounds",
+            {"topic": "Choose Rust or Go for the new service.",
+             "max_rounds": 2,
+             "moderator": "anthropic"},
+            {
+                "anthropic": [
+                    "Round 1: Go for ops simplicity.",
+                    "Round 2: Concede on performance but stand by ops.",
+                    "SYNTHESIS: Go wins on team velocity; Rust where perf is critical.",
+                ],
+                "openai": [
+                    "Round 1: Rust for memory safety + perf.",
+                    "Round 2: Acknowledge ops cost; still Rust for hot paths.",
+                ],
+            },
+        )
+
+        # Three providers, one round, with context block.
+        add(
+            "three-providers-one-round-with-context",
+            {"topic": "Best caching strategy?",
+             "context": "10k QPS, p99 < 50ms requirement.",
+             "max_rounds": 1,
+             "moderator": "anthropic"},
+            {
+                "anthropic": ["Round 1: Redis with read-through.",
+                              "SYNTHESIS: Redis read-through with CDN edge for static."],
+                "openai":    ["Round 1: CDN edge + origin cache layer."],
+                "xai":       ["Round 1: Application-level caching with TTL ladder."],
+            },
+        )
+
+        # Moderator NOT in panel — first selected becomes the synthesizer.
+        add(
+            "moderator-outside-panel",
+            {"topic": "Buy or build CMS?",
+             "max_rounds": 1,
+             "moderator": "gemini"},                # not in canned
+            {
+                "anthropic": ["Round 1: Buy — focus on differentiator.",
+                              "SYNTHESIS (anthropic fallback): Buy if mature; build if differentiator."],
+                "openai":    ["Round 1: Build if CMS is the differentiator."],
+            },
+        )
+
+        # NOTE: "fewer than 2 providers" is intentionally NOT in the
+        # parity fixture — Python's response includes `available_now`
+        # populated from the env's ALL_PROVIDERS, which is non-portable
+        # across recording boxes. Covered by the native unit test
+        # instead.
+
+    finally:
+        srv._ask_one = saved_ask_one
+        srv._session_load = saved_session_load
+        srv.log_usage = saved_log_usage
+        srv.write_transcript = saved_write
+        srv._session_record = saved_session_record
+        srv._session_save = saved_session_save
+        if saved_claim_add is not None:
+            srv._claim_add = saved_claim_add
+
+    return {
+        "module":      "debate_tool",
+        "description": "Native tool_debate v1 parity (plain N-round + plain "
+                       "moderator synthesis; opts defer to bridge; tail "
+                       "fields stripped on both sides).",
+        "case_count":  len(cases),
+        "cases":       cases,
+    }
+
+
 BUILDERS = {
     "budgets":      fixture_budgets,
     "pricing":      fixture_pricing,
@@ -2511,6 +2671,7 @@ BUILDERS = {
     "pick":         fixture_pick,
     "audit_tool":   fixture_audit_tool,
     "confer_tool":  fixture_confer_tool,
+    "debate_tool":  fixture_debate_tool,
 }
 
 

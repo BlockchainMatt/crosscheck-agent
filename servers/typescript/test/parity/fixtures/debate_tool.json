@@ -1,0 +1,311 @@
+{
+  "module": "debate_tool",
+  "description": "Native tool_debate v1 parity (plain N-round + plain moderator synthesis; opts defer to bridge; tail fields stripped on both sides).",
+  "case_count": 3,
+  "cases": [
+    {
+      "label": "two-providers-two-rounds",
+      "args": {
+        "topic": "Choose Rust or Go for the new service.",
+        "max_rounds": 2,
+        "moderator": "anthropic",
+        "providers": [
+          "anthropic",
+          "openai"
+        ]
+      },
+      "canned": {
+        "anthropic": [
+          "Round 1: Go for ops simplicity.",
+          "Round 2: Concede on performance but stand by ops.",
+          "SYNTHESIS: Go wins on team velocity; Rust where perf is critical."
+        ],
+        "openai": [
+          "Round 1: Rust for memory safety + perf.",
+          "Round 2: Acknowledge ops cost; still Rust for hot paths."
+        ]
+      },
+      "expected": {
+        "tool": "debate",
+        "topic": "Choose Rust or Go for the new service.",
+        "rounds_completed": 2,
+        "transcript": [
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "response": "Round 1: Go for ops simplicity.",
+            "attempts": 1,
+            "usage": {
+              "provider": "anthropic",
+              "model": "claude-opus-4-7",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 1
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "Round 1: Rust for memory safety + perf.",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 1
+          },
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "response": "Round 2: Concede on performance but stand by ops.",
+            "attempts": 1,
+            "usage": {
+              "provider": "anthropic",
+              "model": "claude-opus-4-7",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 2
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "Round 2: Acknowledge ops cost; still Rust for hot paths.",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 2
+          }
+        ],
+        "synthesis": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-7",
+          "response": "SYNTHESIS: Go wins on team velocity; Rust where perf is critical.",
+          "attempts": 1,
+          "usage": {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "purpose": "synth",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "estimated": false
+          }
+        }
+      }
+    },
+    {
+      "label": "three-providers-one-round-with-context",
+      "args": {
+        "topic": "Best caching strategy?",
+        "context": "10k QPS, p99 < 50ms requirement.",
+        "max_rounds": 1,
+        "moderator": "anthropic",
+        "providers": [
+          "anthropic",
+          "openai",
+          "xai"
+        ]
+      },
+      "canned": {
+        "anthropic": [
+          "Round 1: Redis with read-through.",
+          "SYNTHESIS: Redis read-through with CDN edge for static."
+        ],
+        "openai": [
+          "Round 1: CDN edge + origin cache layer."
+        ],
+        "xai": [
+          "Round 1: Application-level caching with TTL ladder."
+        ]
+      },
+      "expected": {
+        "tool": "debate",
+        "topic": "Best caching strategy?",
+        "rounds_completed": 1,
+        "transcript": [
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "response": "Round 1: Redis with read-through.",
+            "attempts": 1,
+            "usage": {
+              "provider": "anthropic",
+              "model": "claude-opus-4-7",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 1
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "Round 1: CDN edge + origin cache layer.",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 1
+          },
+          {
+            "provider": "xai",
+            "model": "grok-4-latest",
+            "response": "Round 1: Application-level caching with TTL ladder.",
+            "attempts": 1,
+            "usage": {
+              "provider": "xai",
+              "model": "grok-4-latest",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 1
+          }
+        ],
+        "synthesis": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-7",
+          "response": "SYNTHESIS: Redis read-through with CDN edge for static.",
+          "attempts": 1,
+          "usage": {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "purpose": "synth",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "estimated": false
+          }
+        }
+      }
+    },
+    {
+      "label": "moderator-outside-panel",
+      "args": {
+        "topic": "Buy or build CMS?",
+        "max_rounds": 1,
+        "moderator": "gemini",
+        "providers": [
+          "anthropic",
+          "openai"
+        ]
+      },
+      "canned": {
+        "anthropic": [
+          "Round 1: Buy — focus on differentiator.",
+          "SYNTHESIS (anthropic fallback): Buy if mature; build if differentiator."
+        ],
+        "openai": [
+          "Round 1: Build if CMS is the differentiator."
+        ]
+      },
+      "expected": {
+        "tool": "debate",
+        "topic": "Buy or build CMS?",
+        "rounds_completed": 1,
+        "transcript": [
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "response": "Round 1: Buy — focus on differentiator.",
+            "attempts": 1,
+            "usage": {
+              "provider": "anthropic",
+              "model": "claude-opus-4-7",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 1
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "response": "Round 1: Build if CMS is the differentiator.",
+            "attempts": 1,
+            "usage": {
+              "provider": "openai",
+              "model": "gpt-5",
+              "purpose": "debate",
+              "prompt_tokens": 100,
+              "completion_tokens": 50,
+              "total_tokens": 150,
+              "cached_tokens": 0,
+              "cost_usd": 0.0,
+              "estimated": false
+            },
+            "round": 1
+          }
+        ],
+        "synthesis": {
+          "provider": "gemini",
+          "model": "gemini-2.5-pro",
+          "response": "",
+          "attempts": 1,
+          "usage": {
+            "provider": "gemini",
+            "model": "gemini-2.5-pro",
+            "purpose": "synth",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "estimated": false
+          }
+        }
+      }
+    }
+  ]
+}
