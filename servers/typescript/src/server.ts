@@ -43,6 +43,9 @@ export interface CreateServerOptions {
   storage?: Storage;
   /** Directory holding transcript JSON files (used by `explain`). */
   transcriptsDir?: string;
+  /** Repo root path (`.git/` ancestor). Used by update_crosscheck for
+   *  git ops + cache writes, and by `fetch` for evidence-dir resolution. */
+  repoRoot?: string;
 }
 
 /**
@@ -113,6 +116,7 @@ function buildToolRegistry(opts: CreateServerOptions): Map<string, Tool> {
     registerOpts.providerAllowlist = opts.providerAllowlist;
   if (opts.storage)           registerOpts.storage           = opts.storage;
   if (opts.transcriptsDir)    registerOpts.transcriptsDir    = opts.transcriptsDir;
+  if (opts.repoRoot)          registerOpts.repoRoot          = opts.repoRoot;
   const tools = registerCoreTools(registerOpts);
   if (!opts.bridge) return tools;
   const proxies = buildPythonProxies(opts.bridge);

@@ -92,11 +92,18 @@ async function main(): Promise<void> {
   const transcriptsDir = process.env["CROSSCHECK_TRANSCRIPTS_DIR"]
     ?? resolveRepoFile(".crosscheck/transcripts");
 
+  // Repo root — used by `update_crosscheck` for git ops + cache writes,
+  // and by `fetch` for evidence-dir resolution. Walk up to the first
+  // ancestor that contains a `.git/` directory.
+  const repoRoot = process.env["CROSSCHECK_REPO_ROOT"]
+    ?? findGitRoot(__dirname);
+
   const transport = new StdioServerTransport();
   const serverOpts: Parameters<typeof connectAndServe>[1] = { providers };
   if (bridge)         serverOpts.bridge         = bridge;
   if (storage)        serverOpts.storage        = storage;
   if (transcriptsDir) serverOpts.transcriptsDir = transcriptsDir;
+  if (repoRoot)       serverOpts.repoRoot       = repoRoot;
   await connectAndServe(transport, serverOpts);
   // The server holds the process alive via the stdio streams. We don't
   // exit until the parent closes stdin (handled below).
@@ -142,6 +149,18 @@ function resolveRepoFile(rel: string): string | undefined {
   for (let i = 0; i < 8; i++) {
     const candidate = path.join(dir, rel);
     if (existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}
+
+/** Walk up looking for the first ancestor containing a `.git` directory. */
+function findGitRoot(startDir: string): string | undefined {
+  let dir = startDir;
+  for (let i = 0; i < 12; i++) {
+    if (existsSync(path.join(dir, ".git"))) return dir;
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;

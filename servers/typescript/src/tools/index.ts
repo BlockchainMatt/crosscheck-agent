@@ -29,6 +29,7 @@ import { runRecommendPanel } from "./recommend-panel.js";
 import { runReview } from "./review.js";
 import { runScoreboard } from "./scoreboard.js";
 import { runSessionMemory } from "./session-memory.js";
+import { runUpdateCrosscheck } from "./update-crosscheck.js";
 import { runTriangulate } from "./triangulate.js";
 import { runVerify } from "./verify.js";
 
@@ -170,9 +171,47 @@ export function registerCoreTools(
                  o.storage, o.bridge, o.moderatorDefault ?? "anthropic"),
     fetchTool(o.storage, o.fetchConfig, o.repoRoot),
     recommendPanelTool(o.providers ?? {}, o.storage, o.bridge),
+    updateCrosscheckTool(o.repoRoot ?? null),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `update_crosscheck` — native port of Python's
+ *  tool_update_crosscheck. Compares local git HEAD to remote GitHub
+ *  `main` HEAD and reports the relationship. With apply=true,
+ *  fast-forwards via `git pull --ff-only`. Requires a wired repoRoot. */
+function updateCrosscheckTool(
+  repoRoot: string | null,
+): Tool {
+  return {
+    name: "update_crosscheck",
+    description:
+      "Compare local git HEAD to remote GitHub main HEAD and report the " +
+      "relationship (equal / ahead / behind / diverged / unknown). " +
+      "With apply=true, fast-forwards via git pull --ff-only when " +
+      "the local is strictly behind. Restart of the MCP connection is " +
+      "required after a successful update.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        apply: { type: "boolean" },
+      },
+    },
+    handler: async (args) => {
+      if (!repoRoot) {
+        return {
+          tool: "update_crosscheck", status: "error",
+          reason: "could not determine repo root; the entrypoint did not " +
+                  "supply a repoRoot. crosscheck-agent must be installed " +
+                  "as a git checkout for in-place updates.",
+          remote_url: "https://github.com/fxspeiser/crosscheck-agent",
+        };
+      }
+      return runUpdateCrosscheck(args, { repoRoot });
+    },
+  };
 }
 
 /** `recommend_panel` — native port of Python's tool_recommend_panel.
