@@ -73,6 +73,10 @@ export interface BridgeHandle {
   /** Names of the tools exposed by the Python child (from its
    *  `tools/list` response). */
   readonly toolNames: ReadonlySet<string>;
+  /** PID of the spawned Python child process, or `null` if the
+   *  transport hasn't started yet / has already closed. Useful for
+   *  shutdown verification and host-side diagnostics. */
+  readonly pid: number | null;
   /** Forward a `tools/call` to the Python child and return the result
    *  envelope verbatim. */
   callTool(name: string, args: Record<string, unknown>): Promise<{
@@ -82,7 +86,7 @@ export interface BridgeHandle {
   /** Re-fetch the tool list (in case the child surfaces new tools mid-
    *  session). Returns the new tool names. */
   refreshTools(): Promise<ReadonlySet<string>>;
-  /** Tear down the bridge cleanly. */
+  /** Tear down the bridge cleanly. Idempotent — repeat calls are no-ops. */
   close(): Promise<void>;
 }
 
@@ -124,9 +128,16 @@ export async function spawnPythonBridge(
   // Fetch the tool list once. We surface it as a Set for O(1) routing.
   let toolNames = await fetchToolNames(client, initDeadline);
 
+  let closed = false;
   return {
     get toolNames() {
       return toolNames;
+    },
+    get pid() {
+      // The StdioClientTransport exposes the child PID via `.pid`
+      // after .start(); it goes back to null on close.
+      const p = (transport as { pid?: number | null }).pid;
+      return typeof p === "number" ? p : null;
     },
     async callTool(name, callArgs) {
       const r = await client.callTool({ name, arguments: callArgs });
@@ -159,6 +170,8 @@ export async function spawnPythonBridge(
       return toolNames;
     },
     async close() {
+      if (closed) return;
+      closed = true;
       try {
         await client.close();
       } catch {
