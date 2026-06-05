@@ -20,6 +20,7 @@ import { runCritique } from "./critique.js";
 import { runDebate } from "./debate.js";
 import { runDelegate } from "./delegate.js";
 import { runExplain } from "./explain.js";
+import { runFetch, type FetchConfig } from "./fetch.js";
 import { runListProviders } from "./list-providers.js";
 import { runPick } from "./pick.js";
 import { runPlan } from "./plan.js";
@@ -125,6 +126,11 @@ export interface RegisterCoreToolsOptions {
    *  walk per-session transcripts). When unset, the transcripts
    *  list is empty (matches Python's "dir missing"). */
   transcriptsDir?: string;
+  /** Repo root for path-emission in `fetch`'s evidence + the
+   *  evidence dir resolver. When unset, paths are absolute. */
+  repoRoot?: string;
+  /** CFG.fetch config. */
+  fetchConfig?: FetchConfig;
 }
 
 /** Build the native tool surface. Returns a name -> Tool map.
@@ -161,9 +167,44 @@ export function registerCoreTools(
     explainTool(o.storage, o.bridge, o.transcriptsDir),
     delegateTool(o.providers ?? {}, o.providerAllowlist ?? null,
                  o.storage, o.bridge, o.moderatorDefault ?? "anthropic"),
+    fetchTool(o.storage, o.fetchConfig, o.repoRoot),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `fetch` — native port of Python's tool_fetch. HTTP retrieval with
+ *  allowlist gating, per-session egress budget, sha256-content-
+ *  addressed evidence storage. Storage is optional (caps degrade to
+ *  unlimited without it). */
+function fetchTool(
+  storage: Storage | undefined,
+  fetchConfig: FetchConfig | undefined,
+  repoRoot: string | undefined,
+): Tool {
+  return {
+    name: "fetch",
+    description:
+      "HTTP retrieval with url_allowlist + per-session egress caps + " +
+      "sha256-content-addressed evidence storage. Returns the cached " +
+      "meta when the URL has been fetched before (override with " +
+      "force_refresh=true).",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        url:           { type: "string" },
+        force_refresh: { type: "boolean" },
+        session_id:    { type: "string" },
+      },
+      required: ["url"],
+    },
+    handler: (args) => runFetch(args, {
+      ...(storage     ? { storage }     : {}),
+      ...(fetchConfig ? { config: fetchConfig } : {}),
+      ...(repoRoot    ? { repoRoot }    : {}),
+    }),
+  };
 }
 
 /** `delegate` — native port of Python's tool_delegate. Quota-gated

@@ -303,6 +303,10 @@ export interface StorageRead {
   getFetchEgressTotals(
     sessionId: string,
   ): Promise<{ total_bytes: number; unique_hosts: number }>;
+  /** True iff the (session_id, host) pair has been recorded before.
+   *  Used by fetch's unique-hosts cap to allow continued requests to
+   *  hosts already counted while rejecting new ones at the limit. */
+  hasFetchEgressHost(sessionId: string, host: string): Promise<boolean>;
 
   // transcripts_fts (encapsulated FTS5)
   recallSearch(

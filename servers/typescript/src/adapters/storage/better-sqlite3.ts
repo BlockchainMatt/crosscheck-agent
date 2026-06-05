@@ -732,6 +732,14 @@ class BetterSqliteStorage implements Storage {
     };
   }
 
+  async hasFetchEgressHost(sessionId: string, host: string): Promise<boolean> {
+    const r = this.cached(
+      "fetch-egress-has-host",
+      "SELECT 1 AS one FROM fetch_egress WHERE session_id = ? AND host = ? LIMIT 1",
+    ).get(sessionId, host) as { one: number } | undefined;
+    return r !== undefined;
+  }
+
   // ==================================================================
   // transcripts_fts — the encapsulated FTS5 surface.
   // ==================================================================
