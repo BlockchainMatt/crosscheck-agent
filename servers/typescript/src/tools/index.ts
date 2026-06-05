@@ -18,6 +18,7 @@ import { runConfer } from "./confer.js";
 import { runCoordinate } from "./coordinate.js";
 import { runCritique } from "./critique.js";
 import { runDebate } from "./debate.js";
+import { runDelegate } from "./delegate.js";
 import { runExplain } from "./explain.js";
 import { runListProviders } from "./list-providers.js";
 import { runPick } from "./pick.js";
@@ -158,9 +159,47 @@ export function registerCoreTools(
     sessionMemoryTool(o.storage, o.bridge),
     scoreboardTool(o.storage, o.bridge, o.eventsPath),
     explainTool(o.storage, o.bridge, o.transcriptsDir),
+    delegateTool(o.providers ?? {}, o.providerAllowlist ?? null,
+                 o.storage, o.bridge, o.moderatorDefault ?? "anthropic"),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `delegate` — native port of Python's tool_delegate. Quota-gated
+ *  single-provider dispatch to confer / review. Requires Storage. */
+function delegateTool(
+  providers: Readonly<Record<string, Provider>>,
+  allowlist: readonly string[] | null,
+  storage: Storage | undefined,
+  bridge: BridgeHandle | undefined,
+  moderator: string,
+): Tool {
+  return {
+    name: "delegate",
+    description:
+      "Run a delegable tool (confer | review) restricted to a single " +
+      "named provider, with explicit quota check. Records every attempt " +
+      "(accepted or refused) to the delegations table; quota in the " +
+      "response reflects counts AFTER the current call.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        tool_call:    { type: "string", enum: ["confer", "review"] },
+        via:          { type: "string" },
+        args:         { type: "object", additionalProperties: true },
+        requested_by: { type: "string" },
+        session_id:   { type: "string" },
+      },
+      required: ["tool_call", "via"],
+    },
+    handler: (args) => runDelegate(args, {
+      providers, allowlist, moderator,
+      ...(storage ? { storage } : {}),
+      ...(bridge  ? { bridge }  : {}),
+    }),
+  };
 }
 
 /** `explain` — native port of Python's tool_explain. Session replay

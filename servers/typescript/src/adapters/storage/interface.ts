@@ -269,6 +269,13 @@ export interface StorageRead {
     requester: string,
   ): Promise<number>;
   countDelegationsBySession(sessionId: string): Promise<number>;
+  /** Count accepted-only delegations for a session. Used by the
+   *  delegate tool's quota check (Python's
+   *  `WHERE session_id=? AND accepted=1`). */
+  countAcceptedDelegationsBySession(sessionId: string): Promise<number>;
+  /** Count accepted-only delegations for a requester. Used by the
+   *  delegate tool's quota check. */
+  countAcceptedDelegationsByRequester(requester: string): Promise<number>;
   /** Aggregate delegations grouped by (requester, accepted). Used by
    *  scoreboard to count per-requester acceptances vs refusals. */
   listDelegationAggregatesByRequester(): Promise<

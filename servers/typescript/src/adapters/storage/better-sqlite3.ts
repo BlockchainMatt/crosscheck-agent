@@ -566,6 +566,22 @@ class BetterSqliteStorage implements Storage {
     return Number(r.n);
   }
 
+  async countAcceptedDelegationsBySession(sessionId: string): Promise<number> {
+    const r = this.cached(
+      "delegation-count-accepted-session",
+      "SELECT COUNT(*) AS n FROM delegations WHERE session_id = ? AND accepted = 1",
+    ).get(sessionId) as { n: number };
+    return Number(r.n);
+  }
+
+  async countAcceptedDelegationsByRequester(requester: string): Promise<number> {
+    const r = this.cached(
+      "delegation-count-accepted-requester",
+      "SELECT COUNT(*) AS n FROM delegations WHERE requester = ? AND accepted = 1",
+    ).get(requester) as { n: number };
+    return Number(r.n);
+  }
+
   async listDelegationAggregatesByRequester(): Promise<
     readonly { requester: string; accepted: 0 | 1; count: number }[]
   > {
