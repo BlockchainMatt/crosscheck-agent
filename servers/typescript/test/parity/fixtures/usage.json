@@ -1,0 +1,656 @@
+{
+  "module": "usage",
+  "description": "aggregateUsage rollup parity",
+  "case_count": 9,
+  "cases": [
+    {
+      "label": "agg::empty",
+      "usages": [],
+      "expected": {
+        "by_call": [],
+        "by_provider": [],
+        "totals": {
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cached_tokens": 0,
+          "total_tokens": 0,
+          "cost_usd": 0.0,
+          "estimated": false,
+          "calls": 0
+        }
+      }
+    },
+    {
+      "label": "agg::single-call",
+      "usages": [
+        {
+          "provider": "openai",
+          "model": "gpt-5",
+          "prompt_tokens": 100,
+          "completion_tokens": 50,
+          "cached_tokens": 0,
+          "total_tokens": 150,
+          "cost_usd": 0.5,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      ],
+      "expected": {
+        "by_call": [
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "cached_tokens": 0,
+            "total_tokens": 150,
+            "cost_usd": 0.5,
+            "estimated": false,
+            "purpose": "worker"
+          }
+        ],
+        "by_provider": [
+          {
+            "provider": "openai",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "cached_tokens": 0,
+            "total_tokens": 150,
+            "cost_usd": 0.5,
+            "calls": 1,
+            "estimated": false
+          }
+        ],
+        "totals": {
+          "prompt_tokens": 100,
+          "completion_tokens": 50,
+          "cached_tokens": 0,
+          "total_tokens": 150,
+          "cost_usd": 0.5,
+          "estimated": false,
+          "calls": 1
+        }
+      }
+    },
+    {
+      "label": "agg::two-providers",
+      "usages": [
+        {
+          "provider": "openai",
+          "model": "gpt-5",
+          "prompt_tokens": 100,
+          "completion_tokens": 50,
+          "cached_tokens": 0,
+          "total_tokens": 150,
+          "cost_usd": 0.5,
+          "estimated": false,
+          "purpose": "worker"
+        },
+        {
+          "provider": "anthropic",
+          "model": "claude",
+          "prompt_tokens": 200,
+          "completion_tokens": 100,
+          "cached_tokens": 0,
+          "total_tokens": 300,
+          "cost_usd": 0.8,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      ],
+      "expected": {
+        "by_call": [
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "cached_tokens": 0,
+            "total_tokens": 150,
+            "cost_usd": 0.5,
+            "estimated": false,
+            "purpose": "worker"
+          },
+          {
+            "provider": "anthropic",
+            "model": "claude",
+            "prompt_tokens": 200,
+            "completion_tokens": 100,
+            "cached_tokens": 0,
+            "total_tokens": 300,
+            "cost_usd": 0.8,
+            "estimated": false,
+            "purpose": "worker"
+          }
+        ],
+        "by_provider": [
+          {
+            "provider": "openai",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "cached_tokens": 0,
+            "total_tokens": 150,
+            "cost_usd": 0.5,
+            "calls": 1,
+            "estimated": false
+          },
+          {
+            "provider": "anthropic",
+            "prompt_tokens": 200,
+            "completion_tokens": 100,
+            "cached_tokens": 0,
+            "total_tokens": 300,
+            "cost_usd": 0.8,
+            "calls": 1,
+            "estimated": false
+          }
+        ],
+        "totals": {
+          "prompt_tokens": 300,
+          "completion_tokens": 150,
+          "cached_tokens": 0,
+          "total_tokens": 450,
+          "cost_usd": 1.3,
+          "estimated": false,
+          "calls": 2
+        }
+      }
+    },
+    {
+      "label": "agg::same-provider-twice",
+      "usages": [
+        {
+          "provider": "openai",
+          "model": "gpt-5",
+          "prompt_tokens": 100,
+          "completion_tokens": 50,
+          "cached_tokens": 0,
+          "total_tokens": 150,
+          "cost_usd": 0.5,
+          "estimated": false,
+          "purpose": "worker"
+        },
+        {
+          "provider": "openai",
+          "model": "gpt-5-pro",
+          "prompt_tokens": 300,
+          "completion_tokens": 100,
+          "cached_tokens": 0,
+          "total_tokens": 400,
+          "cost_usd": 1.2,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      ],
+      "expected": {
+        "by_call": [
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "cached_tokens": 0,
+            "total_tokens": 150,
+            "cost_usd": 0.5,
+            "estimated": false,
+            "purpose": "worker"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5-pro",
+            "prompt_tokens": 300,
+            "completion_tokens": 100,
+            "cached_tokens": 0,
+            "total_tokens": 400,
+            "cost_usd": 1.2,
+            "estimated": false,
+            "purpose": "worker"
+          }
+        ],
+        "by_provider": [
+          {
+            "provider": "openai",
+            "prompt_tokens": 400,
+            "completion_tokens": 150,
+            "cached_tokens": 0,
+            "total_tokens": 550,
+            "cost_usd": 1.7,
+            "calls": 2,
+            "estimated": false
+          }
+        ],
+        "totals": {
+          "prompt_tokens": 400,
+          "completion_tokens": 150,
+          "cached_tokens": 0,
+          "total_tokens": 550,
+          "cost_usd": 1.7,
+          "estimated": false,
+          "calls": 2
+        }
+      }
+    },
+    {
+      "label": "agg::cached-tokens",
+      "usages": [
+        {
+          "provider": "openai",
+          "model": "gpt-5",
+          "prompt_tokens": 1000,
+          "completion_tokens": 200,
+          "cached_tokens": 500,
+          "total_tokens": 1200,
+          "cost_usd": 0.7,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      ],
+      "expected": {
+        "by_call": [
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "prompt_tokens": 1000,
+            "completion_tokens": 200,
+            "cached_tokens": 500,
+            "total_tokens": 1200,
+            "cost_usd": 0.7,
+            "estimated": false,
+            "purpose": "worker"
+          }
+        ],
+        "by_provider": [
+          {
+            "provider": "openai",
+            "prompt_tokens": 1000,
+            "completion_tokens": 200,
+            "cached_tokens": 500,
+            "total_tokens": 1200,
+            "cost_usd": 0.7,
+            "calls": 1,
+            "estimated": false
+          }
+        ],
+        "totals": {
+          "prompt_tokens": 1000,
+          "completion_tokens": 200,
+          "cached_tokens": 500,
+          "total_tokens": 1200,
+          "cost_usd": 0.7,
+          "estimated": false,
+          "calls": 1
+        }
+      }
+    },
+    {
+      "label": "agg::any-estimated",
+      "usages": [
+        {
+          "provider": "openai",
+          "model": "gpt-5",
+          "prompt_tokens": 100,
+          "completion_tokens": 50,
+          "cached_tokens": 0,
+          "total_tokens": 150,
+          "cost_usd": 0.5,
+          "estimated": false,
+          "purpose": "worker"
+        },
+        {
+          "provider": "xai",
+          "model": "grok",
+          "prompt_tokens": 100,
+          "completion_tokens": 50,
+          "cached_tokens": 0,
+          "total_tokens": 150,
+          "cost_usd": 0.0,
+          "estimated": true,
+          "purpose": "worker"
+        }
+      ],
+      "expected": {
+        "by_call": [
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "cached_tokens": 0,
+            "total_tokens": 150,
+            "cost_usd": 0.5,
+            "estimated": false,
+            "purpose": "worker"
+          },
+          {
+            "provider": "xai",
+            "model": "grok",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "cached_tokens": 0,
+            "total_tokens": 150,
+            "cost_usd": 0.0,
+            "estimated": true,
+            "purpose": "worker"
+          }
+        ],
+        "by_provider": [
+          {
+            "provider": "openai",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "cached_tokens": 0,
+            "total_tokens": 150,
+            "cost_usd": 0.5,
+            "calls": 1,
+            "estimated": false
+          },
+          {
+            "provider": "xai",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "cached_tokens": 0,
+            "total_tokens": 150,
+            "cost_usd": 0.0,
+            "calls": 1,
+            "estimated": true
+          }
+        ],
+        "totals": {
+          "prompt_tokens": 200,
+          "completion_tokens": 100,
+          "cached_tokens": 0,
+          "total_tokens": 300,
+          "cost_usd": 0.5,
+          "estimated": true,
+          "calls": 2
+        }
+      }
+    },
+    {
+      "label": "agg::rounding-edge",
+      "usages": [
+        {
+          "provider": "openai",
+          "model": "gpt-5",
+          "prompt_tokens": 33,
+          "completion_tokens": 22,
+          "cached_tokens": 0,
+          "total_tokens": 55,
+          "cost_usd": 0.123456789,
+          "estimated": false,
+          "purpose": "worker"
+        },
+        {
+          "provider": "openai",
+          "model": "gpt-5",
+          "prompt_tokens": 44,
+          "completion_tokens": 33,
+          "cached_tokens": 0,
+          "total_tokens": 77,
+          "cost_usd": 0.987654321,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      ],
+      "expected": {
+        "by_call": [
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "prompt_tokens": 33,
+            "completion_tokens": 22,
+            "cached_tokens": 0,
+            "total_tokens": 55,
+            "cost_usd": 0.123456789,
+            "estimated": false,
+            "purpose": "worker"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "prompt_tokens": 44,
+            "completion_tokens": 33,
+            "cached_tokens": 0,
+            "total_tokens": 77,
+            "cost_usd": 0.987654321,
+            "estimated": false,
+            "purpose": "worker"
+          }
+        ],
+        "by_provider": [
+          {
+            "provider": "openai",
+            "prompt_tokens": 77,
+            "completion_tokens": 55,
+            "cached_tokens": 0,
+            "total_tokens": 132,
+            "cost_usd": 1.11111111,
+            "calls": 2,
+            "estimated": false
+          }
+        ],
+        "totals": {
+          "prompt_tokens": 77,
+          "completion_tokens": 55,
+          "cached_tokens": 0,
+          "total_tokens": 132,
+          "cost_usd": 1.11111111,
+          "estimated": false,
+          "calls": 2
+        }
+      }
+    },
+    {
+      "label": "agg::zero-total-fills",
+      "usages": [
+        {
+          "provider": "openai",
+          "model": "gpt-5",
+          "prompt_tokens": 10,
+          "completion_tokens": 5,
+          "cached_tokens": 0,
+          "total_tokens": 15,
+          "cost_usd": 0.0,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      ],
+      "expected": {
+        "by_call": [
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "cached_tokens": 0,
+            "total_tokens": 15,
+            "cost_usd": 0.0,
+            "estimated": false,
+            "purpose": "worker"
+          }
+        ],
+        "by_provider": [
+          {
+            "provider": "openai",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "cached_tokens": 0,
+            "total_tokens": 15,
+            "cost_usd": 0.0,
+            "calls": 1,
+            "estimated": false
+          }
+        ],
+        "totals": {
+          "prompt_tokens": 10,
+          "completion_tokens": 5,
+          "cached_tokens": 0,
+          "total_tokens": 15,
+          "cost_usd": 0.0,
+          "estimated": false,
+          "calls": 1
+        }
+      }
+    },
+    {
+      "label": "agg::many-calls-three-providers",
+      "usages": [
+        {
+          "provider": "openai",
+          "model": "gpt-5",
+          "prompt_tokens": 10,
+          "completion_tokens": 5,
+          "cached_tokens": 0,
+          "total_tokens": 15,
+          "cost_usd": 0.01,
+          "estimated": false,
+          "purpose": "worker"
+        },
+        {
+          "provider": "anthropic",
+          "model": "claude",
+          "prompt_tokens": 20,
+          "completion_tokens": 10,
+          "cached_tokens": 0,
+          "total_tokens": 30,
+          "cost_usd": 0.02,
+          "estimated": false,
+          "purpose": "worker"
+        },
+        {
+          "provider": "xai",
+          "model": "grok",
+          "prompt_tokens": 30,
+          "completion_tokens": 15,
+          "cached_tokens": 0,
+          "total_tokens": 45,
+          "cost_usd": 0.03,
+          "estimated": false,
+          "purpose": "worker"
+        },
+        {
+          "provider": "openai",
+          "model": "gpt-5",
+          "prompt_tokens": 40,
+          "completion_tokens": 20,
+          "cached_tokens": 0,
+          "total_tokens": 60,
+          "cost_usd": 0.04,
+          "estimated": false,
+          "purpose": "worker"
+        },
+        {
+          "provider": "anthropic",
+          "model": "claude-opus",
+          "prompt_tokens": 50,
+          "completion_tokens": 25,
+          "cached_tokens": 0,
+          "total_tokens": 75,
+          "cost_usd": 0.05,
+          "estimated": false,
+          "purpose": "worker"
+        }
+      ],
+      "expected": {
+        "by_call": [
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "cached_tokens": 0,
+            "total_tokens": 15,
+            "cost_usd": 0.01,
+            "estimated": false,
+            "purpose": "worker"
+          },
+          {
+            "provider": "anthropic",
+            "model": "claude",
+            "prompt_tokens": 20,
+            "completion_tokens": 10,
+            "cached_tokens": 0,
+            "total_tokens": 30,
+            "cost_usd": 0.02,
+            "estimated": false,
+            "purpose": "worker"
+          },
+          {
+            "provider": "xai",
+            "model": "grok",
+            "prompt_tokens": 30,
+            "completion_tokens": 15,
+            "cached_tokens": 0,
+            "total_tokens": 45,
+            "cost_usd": 0.03,
+            "estimated": false,
+            "purpose": "worker"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "prompt_tokens": 40,
+            "completion_tokens": 20,
+            "cached_tokens": 0,
+            "total_tokens": 60,
+            "cost_usd": 0.04,
+            "estimated": false,
+            "purpose": "worker"
+          },
+          {
+            "provider": "anthropic",
+            "model": "claude-opus",
+            "prompt_tokens": 50,
+            "completion_tokens": 25,
+            "cached_tokens": 0,
+            "total_tokens": 75,
+            "cost_usd": 0.05,
+            "estimated": false,
+            "purpose": "worker"
+          }
+        ],
+        "by_provider": [
+          {
+            "provider": "openai",
+            "prompt_tokens": 50,
+            "completion_tokens": 25,
+            "cached_tokens": 0,
+            "total_tokens": 75,
+            "cost_usd": 0.05,
+            "calls": 2,
+            "estimated": false
+          },
+          {
+            "provider": "anthropic",
+            "prompt_tokens": 70,
+            "completion_tokens": 35,
+            "cached_tokens": 0,
+            "total_tokens": 105,
+            "cost_usd": 0.07,
+            "calls": 2,
+            "estimated": false
+          },
+          {
+            "provider": "xai",
+            "prompt_tokens": 30,
+            "completion_tokens": 15,
+            "cached_tokens": 0,
+            "total_tokens": 45,
+            "cost_usd": 0.03,
+            "calls": 1,
+            "estimated": false
+          }
+        ],
+        "totals": {
+          "prompt_tokens": 150,
+          "completion_tokens": 75,
+          "cached_tokens": 0,
+          "total_tokens": 225,
+          "cost_usd": 0.15,
+          "estimated": false,
+          "calls": 5
+        }
+      }
+    }
+  ]
+}

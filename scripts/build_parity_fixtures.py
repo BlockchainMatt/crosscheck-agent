@@ -718,6 +718,129 @@ def fixture_prompts() -> dict:
 
 
 # ----------------------------------------------------------------------
+# error.json
+# ----------------------------------------------------------------------
+def fixture_error() -> dict:
+    srv = _import_server()
+    cases = []
+
+    # Defaults: kind=client, hint="", transient=False
+    cases.append({
+        "label":    "defaults",
+        "code":     "TEST_BASIC",
+        "message":  "something broke",
+        "options":  {},
+        "expected": srv._error("TEST_BASIC", "something broke"),
+    })
+
+    # All knobs explicit
+    cases.append({
+        "label":    "all-knobs",
+        "code":     "RATE_LIMIT",
+        "message":  "throttled",
+        "options":  {"kind": "rate_limit", "hint": "wait + retry", "transient": True},
+        "expected": srv._error("RATE_LIMIT", "throttled",
+                                kind="rate_limit", hint="wait + retry", transient=True),
+    })
+
+    # Every error_kind
+    for kind in ("auth", "rate_limit", "server", "client", "timeout",
+                 "network", "parse", "other"):
+        cases.append({
+            "label":    f"kind::{kind}",
+            "code":     f"E_{kind.upper()}",
+            "message":  f"{kind} happened",
+            "options":  {"kind": kind},
+            "expected": srv._error(f"E_{kind.upper()}", f"{kind} happened", kind=kind),
+        })
+
+    # Extra fields splat
+    cases.append({
+        "label":    "with-extras",
+        "code":     "RECALL_QUERY_INVALID",
+        "message":  "bad fts5 query",
+        "options":  {"hint": "double-quote phrases",
+                     "extra": {"rows": [], "count": 0,
+                                "applied_filters": {"query": "x"}}},
+        "expected": srv._error("RECALL_QUERY_INVALID", "bad fts5 query",
+                                hint="double-quote phrases",
+                                rows=[], count=0,
+                                applied_filters={"query": "x"}),
+    })
+
+    # transient=False explicit
+    cases.append({
+        "label":    "transient-false-explicit",
+        "code":     "X",
+        "message":  "y",
+        "options":  {"transient": False},
+        "expected": srv._error("X", "y", transient=False),
+    })
+
+    return {
+        "module":      "error",
+        "description": "error envelope parity (kind, hint, transient, extras)",
+        "case_count":  len(cases),
+        "cases":       cases,
+    }
+
+
+# ----------------------------------------------------------------------
+# usage.json — aggregateUsage rollup parity
+# ----------------------------------------------------------------------
+def fixture_usage() -> dict:
+    srv = _import_server()
+    # We dynamically construct Usage objects via to_dict() then convert
+    # back to Python Usage via the same path the production code does
+    # in _attach_usage_block. This catches any divergence in totals math.
+
+    def U(provider, model, *, p=0, c=0, cached=0, total=0, cost=0.0,
+           estimated=False, purpose="worker"):
+        return srv.Usage(
+            provider=provider, model=model,
+            prompt_tokens=p, completion_tokens=c, cached_tokens=cached,
+            total_tokens=total, cost_usd=cost, estimated=estimated,
+            purpose=purpose,
+        )
+
+    fixtures = [
+        ("empty",                []),
+        ("single-call",          [U("openai", "gpt-5", p=100, c=50, total=150, cost=0.5)]),
+        ("two-providers",        [U("openai",    "gpt-5",   p=100, c=50, total=150, cost=0.5),
+                                   U("anthropic", "claude",  p=200, c=100, total=300, cost=0.8)]),
+        ("same-provider-twice",  [U("openai", "gpt-5",   p=100, c=50, total=150, cost=0.5),
+                                   U("openai", "gpt-5-pro", p=300, c=100, total=400, cost=1.2)]),
+        ("cached-tokens",        [U("openai", "gpt-5", p=1000, c=200, cached=500, total=1200, cost=0.7)]),
+        ("any-estimated",        [U("openai", "gpt-5",  p=100, c=50, total=150, cost=0.5, estimated=False),
+                                   U("xai",    "grok",   p=100, c=50, total=150, cost=0.0, estimated=True)]),
+        ("rounding-edge",        [U("openai", "gpt-5", p=33,  c=22, total=55, cost=0.123456789),
+                                   U("openai", "gpt-5", p=44,  c=33, total=77, cost=0.987654321)]),
+        ("zero-total-fills",     [U("openai", "gpt-5", p=10, c=5)]),
+        ("many-calls-three-providers",
+         [U("openai",    "gpt-5",       p=10,  c=5,   total=15,  cost=0.01),
+          U("anthropic", "claude",      p=20,  c=10,  total=30,  cost=0.02),
+          U("xai",       "grok",        p=30,  c=15,  total=45,  cost=0.03),
+          U("openai",    "gpt-5",       p=40,  c=20,  total=60,  cost=0.04),
+          U("anthropic", "claude-opus", p=50,  c=25,  total=75,  cost=0.05)]),
+    ]
+
+    cases = []
+    for label, usages in fixtures:
+        cases.append({
+            "label":    f"agg::{label}",
+            "usages":   [u.to_dict() for u in usages],
+            "expected": srv._aggregate_usage(usages),
+        })
+
+    return {
+        "module":      "usage",
+        "description": "aggregateUsage rollup parity",
+        "case_count":  len(cases),
+        "cases":       cases,
+    }
+
+
+# ----------------------------------------------------------------------
 # Wiring
 # ----------------------------------------------------------------------
 BUILDERS = {
@@ -727,6 +850,8 @@ BUILDERS = {
     "canary":    fixture_canary,
     "redact":    fixture_redact,
     "prompts":   fixture_prompts,
+    "error":     fixture_error,
+    "usage":     fixture_usage,
 }
 
 

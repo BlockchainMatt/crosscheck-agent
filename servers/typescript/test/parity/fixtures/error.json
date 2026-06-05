@@ -1,0 +1,199 @@
+{
+  "module": "error",
+  "description": "error envelope parity (kind, hint, transient, extras)",
+  "case_count": 12,
+  "cases": [
+    {
+      "label": "defaults",
+      "code": "TEST_BASIC",
+      "message": "something broke",
+      "options": {},
+      "expected": {
+        "error": "something broke",
+        "error_code": "TEST_BASIC",
+        "error_kind": "client",
+        "operator_hint": "",
+        "transient": false
+      }
+    },
+    {
+      "label": "all-knobs",
+      "code": "RATE_LIMIT",
+      "message": "throttled",
+      "options": {
+        "kind": "rate_limit",
+        "hint": "wait + retry",
+        "transient": true
+      },
+      "expected": {
+        "error": "throttled",
+        "error_code": "RATE_LIMIT",
+        "error_kind": "rate_limit",
+        "operator_hint": "wait + retry",
+        "transient": true
+      }
+    },
+    {
+      "label": "kind::auth",
+      "code": "E_AUTH",
+      "message": "auth happened",
+      "options": {
+        "kind": "auth"
+      },
+      "expected": {
+        "error": "auth happened",
+        "error_code": "E_AUTH",
+        "error_kind": "auth",
+        "operator_hint": "",
+        "transient": false
+      }
+    },
+    {
+      "label": "kind::rate_limit",
+      "code": "E_RATE_LIMIT",
+      "message": "rate_limit happened",
+      "options": {
+        "kind": "rate_limit"
+      },
+      "expected": {
+        "error": "rate_limit happened",
+        "error_code": "E_RATE_LIMIT",
+        "error_kind": "rate_limit",
+        "operator_hint": "",
+        "transient": false
+      }
+    },
+    {
+      "label": "kind::server",
+      "code": "E_SERVER",
+      "message": "server happened",
+      "options": {
+        "kind": "server"
+      },
+      "expected": {
+        "error": "server happened",
+        "error_code": "E_SERVER",
+        "error_kind": "server",
+        "operator_hint": "",
+        "transient": false
+      }
+    },
+    {
+      "label": "kind::client",
+      "code": "E_CLIENT",
+      "message": "client happened",
+      "options": {
+        "kind": "client"
+      },
+      "expected": {
+        "error": "client happened",
+        "error_code": "E_CLIENT",
+        "error_kind": "client",
+        "operator_hint": "",
+        "transient": false
+      }
+    },
+    {
+      "label": "kind::timeout",
+      "code": "E_TIMEOUT",
+      "message": "timeout happened",
+      "options": {
+        "kind": "timeout"
+      },
+      "expected": {
+        "error": "timeout happened",
+        "error_code": "E_TIMEOUT",
+        "error_kind": "timeout",
+        "operator_hint": "",
+        "transient": false
+      }
+    },
+    {
+      "label": "kind::network",
+      "code": "E_NETWORK",
+      "message": "network happened",
+      "options": {
+        "kind": "network"
+      },
+      "expected": {
+        "error": "network happened",
+        "error_code": "E_NETWORK",
+        "error_kind": "network",
+        "operator_hint": "",
+        "transient": false
+      }
+    },
+    {
+      "label": "kind::parse",
+      "code": "E_PARSE",
+      "message": "parse happened",
+      "options": {
+        "kind": "parse"
+      },
+      "expected": {
+        "error": "parse happened",
+        "error_code": "E_PARSE",
+        "error_kind": "parse",
+        "operator_hint": "",
+        "transient": false
+      }
+    },
+    {
+      "label": "kind::other",
+      "code": "E_OTHER",
+      "message": "other happened",
+      "options": {
+        "kind": "other"
+      },
+      "expected": {
+        "error": "other happened",
+        "error_code": "E_OTHER",
+        "error_kind": "other",
+        "operator_hint": "",
+        "transient": false
+      }
+    },
+    {
+      "label": "with-extras",
+      "code": "RECALL_QUERY_INVALID",
+      "message": "bad fts5 query",
+      "options": {
+        "hint": "double-quote phrases",
+        "extra": {
+          "rows": [],
+          "count": 0,
+          "applied_filters": {
+            "query": "x"
+          }
+        }
+      },
+      "expected": {
+        "error": "bad fts5 query",
+        "error_code": "RECALL_QUERY_INVALID",
+        "error_kind": "client",
+        "operator_hint": "double-quote phrases",
+        "transient": false,
+        "rows": [],
+        "count": 0,
+        "applied_filters": {
+          "query": "x"
+        }
+      }
+    },
+    {
+      "label": "transient-false-explicit",
+      "code": "X",
+      "message": "y",
+      "options": {
+        "transient": false
+      },
+      "expected": {
+        "error": "y",
+        "error_code": "X",
+        "error_kind": "client",
+        "operator_hint": "",
+        "transient": false
+      }
+    }
+  ]
+}
