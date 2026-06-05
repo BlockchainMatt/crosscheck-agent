@@ -13,6 +13,7 @@ import { z } from "zod";
 import type { BridgeHandle } from "../bridge/index.js";
 import type { Provider } from "../providers/types.js";
 import { SERVER_NAME, SERVER_VERSION } from "../server.js";
+import { runAudit } from "./audit.js";
 import { runPick } from "./pick.js";
 import { runVerify } from "./verify.js";
 
@@ -112,9 +113,49 @@ export function registerCoreTools(
     pingTool(),
     verifyTool(o.bridge),
     pickTool(o.providers ?? {}, o.providerAllowlist ?? null),
+    auditTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `audit` — native port of Python's tool_audit (single-mode).
+ *  Coalesce-mode + session-id-only input defer to the bridge when
+ *  available. */
+function auditTool(
+  providers: Readonly<Record<string, Provider>>,
+  allowlist: readonly string[] | null,
+  bridge: BridgeHandle | undefined,
+): Tool {
+  return {
+    name: "audit",
+    description:
+      "Score a piece of output against an audit rubric. Single-judge by " +
+      "default; coalesce-mode (multi-judge consensus) requires the Python " +
+      "bridge in v1.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        output_to_audit:    { type: "string" },
+        session_id:         { type: "string" },
+        auditor:            { type: "string" },
+        producing_panelists: { type: "array", items: { type: "string" } },
+        rubric:             { type: "array", items: { type: "object" } },
+        constraints:        { type: "string" },
+        cheap_mode:         { type: "boolean" },
+        allow_self_audit:   { type: "boolean" },
+        coalesce:           { type: "boolean" },
+        strict_mode:        { type: "boolean" },
+        max_judges:         { type: "integer", minimum: 1 },
+      },
+    },
+    handler: (args) => runAudit(args, {
+      providers,
+      allowlist,
+      ...(bridge ? { bridge } : {}),
+    }),
+  };
 }
 
 /** `pick` — native port of Python's tool_pick. Closes over the

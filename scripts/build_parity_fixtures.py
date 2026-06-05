@@ -2185,6 +2185,200 @@ def fixture_pick() -> dict:
     }
 
 
+def fixture_audit_tool() -> dict:
+    """audit_tool.json — Phase 5 part 4 parity gate.
+
+    Single-mode tool_audit (coalesce defers to bridge in TS v1). Same
+    cassette pattern as pick: patch _ask_one to return canned text per
+    provider, record (args, canned, expected). The TS test replays the
+    same canned text through synthetic Providers and asserts byte-equal
+    on the deterministic fields.
+
+    Tail fields stripped on BOTH sides:
+      budget, session, usage, timing, run_summary, transcript_path
+    """
+    srv = _import_server()
+    cases = []
+
+    saved_ask_one        = srv._ask_one
+    saved_session_load   = srv._session_load
+    saved_log_usage      = srv.log_usage
+    saved_write          = srv.write_transcript
+    saved_memory_stale   = getattr(srv, "_session_memory_mark_stale", None)
+
+    srv._session_load = lambda _sid: None
+    srv.log_usage     = lambda *a, **kw: None
+    srv.write_transcript = lambda *a, **kw: ""
+    srv._session_memory_mark_stale = lambda *a, **kw: 0
+
+    def sanitize(out: dict) -> dict:
+        copy = dict(out)
+        for k in ("budget", "session", "usage", "timing", "run_summary",
+                  "transcript_path", "_suppress_run_summary",
+                  "session_memory_marked_stale"):
+            copy.pop(k, None)
+        return copy
+
+    def make_fake_ask_one(canned: dict[str, str]):
+        def fake(p, messages, deadline, max_tokens, purpose="worker"):
+            text = canned.get(p.name, "")
+            return {
+                "provider": p.name, "model": p.model,
+                "response": text,
+                "cache_hit": False, "elapsed_ms": 0, "cpu_ms": 0,
+                "attempts": 1,
+                "usage": {
+                    "provider": p.name, "model": p.model, "purpose": purpose,
+                    "prompt_tokens": 100, "completion_tokens": 50,
+                    "total_tokens": 150, "cached_tokens": 0,
+                    "cost_usd": 0.0, "estimated": False,
+                },
+                "timing": {"wall_ms": 0, "cpu_ms": 0},
+            }
+        return fake
+
+    def add(label, args, canned):
+        srv._ask_one = make_fake_ask_one(canned)
+        out = srv.tool_audit(args)
+        cases.append({
+            "label":   label,
+            "args":    args,
+            "canned":  canned,
+            "expected": sanitize(out),
+        })
+
+    try:
+        # Default rubric, all items pass.
+        all_pass_text = (
+            '{"items": ['
+            + ", ".join(
+                f'{{"id":"{rid}","score":{score},"pass":true,'
+                f'"rationale":"looks good"}}'
+                for rid, score in [
+                    ("factual_grounding",      0.9),
+                    ("constraint_adherence",   0.85),
+                    ("no_pii_leak",            0.95),
+                    ("internally_consistent",  0.8),
+                    ("covers_open_questions",  0.75),
+                    ("actionability",          0.8),
+                ]
+            )
+            + '], "overall_score": 0.84}'
+        )
+        add(
+            "default-rubric-all-pass",
+            {"output_to_audit": "This is the content to audit. Clear, sourced, actionable.",
+             "auditor": "anthropic",
+             "cheap_mode": False},
+            {"anthropic": all_pass_text},
+        )
+
+        # Default rubric, two items fail.
+        partial_fail_text = (
+            '{"items": ['
+            '{"id":"factual_grounding",     "score":0.4,"pass":false,"rationale":"unsourced"},'
+            '{"id":"constraint_adherence",  "score":0.9,"pass":true, "rationale":"ok"},'
+            '{"id":"no_pii_leak",           "score":0.95,"pass":true,"rationale":"clean"},'
+            '{"id":"internally_consistent", "score":0.8,"pass":true, "rationale":"ok"},'
+            '{"id":"covers_open_questions", "score":0.5,"pass":false,"rationale":"glossed over"},'
+            '{"id":"actionability",         "score":0.8,"pass":true, "rationale":"actionable"}'
+            ']}'
+        )
+        add(
+            "default-rubric-partial-fail-omitted-overall",
+            {"output_to_audit": "Some output that has issues.",
+             "auditor": "anthropic",
+             "cheap_mode": False},
+            {"anthropic": partial_fail_text},
+        )
+
+        # Custom rubric override.
+        custom_text = (
+            '{"items": ['
+            '{"id":"tone",  "score":0.7,"pass":true, "rationale":"calm"},'
+            '{"id":"depth", "score":0.5,"pass":false,"rationale":"surface only"}'
+            '], "overall_score": 0.6}'
+        )
+        add(
+            "custom-rubric-mixed",
+            {"output_to_audit": "Custom output.",
+             "auditor": "anthropic",
+             "rubric": [{"id": "tone",  "description": "Calm and measured", "severity": "med"},
+                        {"id": "depth", "description": "Goes beyond surface", "severity": "med"}],
+             "cheap_mode": False},
+            {"anthropic": custom_text},
+        )
+
+        # Auditor returns only one item; missing rubric ids default to
+        # score=0.0 / pass=false / rationale="(no rationale)".
+        partial_text = (
+            '{"items": ['
+            '{"id":"factual_grounding","score":0.95,"pass":true,"rationale":"solid"}'
+            ']}'
+        )
+        add(
+            "model-returns-subset-of-rubric",
+            {"output_to_audit": "Spotty.",
+             "auditor": "anthropic",
+             "cheap_mode": False},
+            {"anthropic": partial_text},
+        )
+
+        # Malformed response → null obj → empty items + null overall.
+        add(
+            "malformed-response",
+            {"output_to_audit": "Anything.",
+             "auditor": "anthropic",
+             "cheap_mode": False},
+            {"anthropic": "not JSON at all"},
+        )
+
+        # Strict mode flag persists in the envelope.
+        strict_text = (
+            '{"items": ['
+            '{"id":"factual_grounding",     "score":0.9,"pass":true, "rationale":""},'
+            '{"id":"constraint_adherence",  "score":0.9,"pass":true, "rationale":""},'
+            '{"id":"no_pii_leak",           "score":0.9,"pass":true, "rationale":""},'
+            '{"id":"internally_consistent", "score":0.9,"pass":true, "rationale":""},'
+            '{"id":"covers_open_questions", "score":0.9,"pass":true, "rationale":""},'
+            '{"id":"actionability",         "score":0.9,"pass":true, "rationale":""}'
+            ']}'
+        )
+        add(
+            "strict-mode-all-pass",
+            {"output_to_audit": "Tight, sourced, actionable.",
+             "auditor": "anthropic",
+             "strict_mode": True,
+             "cheap_mode": False},
+            {"anthropic": strict_text},
+        )
+
+        # Missing input.
+        srv._ask_one = make_fake_ask_one({})
+        out = srv.tool_audit({"auditor": "anthropic"})
+        cases.append({"label": "missing-input",
+                      "args":  {"auditor": "anthropic"},
+                      "canned": {},
+                      "expected": sanitize(out)})
+
+    finally:
+        srv._ask_one = saved_ask_one
+        srv._session_load = saved_session_load
+        srv.log_usage = saved_log_usage
+        srv.write_transcript = saved_write
+        if saved_memory_stale is not None:
+            srv._session_memory_mark_stale = saved_memory_stale
+
+    return {
+        "module":      "audit_tool",
+        "description": "Native tool_audit single-mode parity (coalesce + "
+                       "session-id-only input defer to bridge in TS v1; "
+                       "budget/session/usage/timing/run_summary stripped).",
+        "case_count":  len(cases),
+        "cases":       cases,
+    }
+
+
 BUILDERS = {
     "budgets":      fixture_budgets,
     "pricing":      fixture_pricing,
@@ -2203,6 +2397,7 @@ BUILDERS = {
     "extract_json": fixture_extract_json,
     "json_schema":  fixture_json_schema,
     "pick":         fixture_pick,
+    "audit_tool":   fixture_audit_tool,
 }
 
 

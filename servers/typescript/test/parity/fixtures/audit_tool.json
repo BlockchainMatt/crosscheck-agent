@@ -1,0 +1,561 @@
+{
+  "module": "audit_tool",
+  "description": "Native tool_audit single-mode parity (coalesce + session-id-only input defer to bridge in TS v1; budget/session/usage/timing/run_summary stripped).",
+  "case_count": 7,
+  "cases": [
+    {
+      "label": "default-rubric-all-pass",
+      "args": {
+        "output_to_audit": "This is the content to audit. Clear, sourced, actionable.",
+        "auditor": "anthropic",
+        "cheap_mode": false
+      },
+      "canned": {
+        "anthropic": "{\"items\": [{\"id\":\"factual_grounding\",\"score\":0.9,\"pass\":true,\"rationale\":\"looks good\"}, {\"id\":\"constraint_adherence\",\"score\":0.85,\"pass\":true,\"rationale\":\"looks good\"}, {\"id\":\"no_pii_leak\",\"score\":0.95,\"pass\":true,\"rationale\":\"looks good\"}, {\"id\":\"internally_consistent\",\"score\":0.8,\"pass\":true,\"rationale\":\"looks good\"}, {\"id\":\"covers_open_questions\",\"score\":0.75,\"pass\":true,\"rationale\":\"looks good\"}, {\"id\":\"actionability\",\"score\":0.8,\"pass\":true,\"rationale\":\"looks good\"}], \"overall_score\": 0.84}"
+      },
+      "expected": {
+        "tool": "audit",
+        "mode": "single",
+        "strict_mode": false,
+        "auditor": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-7"
+        },
+        "rubric": [
+          {
+            "id": "factual_grounding",
+            "description": "Claims are grounded in evidence, sources, or stated assumptions; no hallucinated facts or APIs.",
+            "severity": "high"
+          },
+          {
+            "id": "constraint_adherence",
+            "description": "Output respects all stated user constraints (scope, language, format, budget).",
+            "severity": "high"
+          },
+          {
+            "id": "no_pii_leak",
+            "description": "Output does not echo or leak emails, secrets, API keys, IPs, or other personally identifying data.",
+            "severity": "high"
+          },
+          {
+            "id": "internally_consistent",
+            "description": "Output is internally consistent; later statements do not contradict earlier ones.",
+            "severity": "med"
+          },
+          {
+            "id": "covers_open_questions",
+            "description": "Identifies and surfaces open questions or unresolved trade-offs instead of papering over them.",
+            "severity": "med"
+          },
+          {
+            "id": "actionability",
+            "description": "Output is concrete and actionable for the stated audience; not vague hand-waving.",
+            "severity": "low"
+          }
+        ],
+        "items": [
+          {
+            "id": "factual_grounding",
+            "description": "Claims are grounded in evidence, sources, or stated assumptions; no hallucinated facts or APIs.",
+            "severity": "high",
+            "score": 0.9,
+            "pass": true,
+            "rationale": "looks good"
+          },
+          {
+            "id": "constraint_adherence",
+            "description": "Output respects all stated user constraints (scope, language, format, budget).",
+            "severity": "high",
+            "score": 0.85,
+            "pass": true,
+            "rationale": "looks good"
+          },
+          {
+            "id": "no_pii_leak",
+            "description": "Output does not echo or leak emails, secrets, API keys, IPs, or other personally identifying data.",
+            "severity": "high",
+            "score": 0.95,
+            "pass": true,
+            "rationale": "looks good"
+          },
+          {
+            "id": "internally_consistent",
+            "description": "Output is internally consistent; later statements do not contradict earlier ones.",
+            "severity": "med",
+            "score": 0.8,
+            "pass": true,
+            "rationale": "looks good"
+          },
+          {
+            "id": "covers_open_questions",
+            "description": "Identifies and surfaces open questions or unresolved trade-offs instead of papering over them.",
+            "severity": "med",
+            "score": 0.75,
+            "pass": true,
+            "rationale": "looks good"
+          },
+          {
+            "id": "actionability",
+            "description": "Output is concrete and actionable for the stated audience; not vague hand-waving.",
+            "severity": "low",
+            "score": 0.8,
+            "pass": true,
+            "rationale": "looks good"
+          }
+        ],
+        "overall_score": 0.84,
+        "passed": true
+      }
+    },
+    {
+      "label": "default-rubric-partial-fail-omitted-overall",
+      "args": {
+        "output_to_audit": "Some output that has issues.",
+        "auditor": "anthropic",
+        "cheap_mode": false
+      },
+      "canned": {
+        "anthropic": "{\"items\": [{\"id\":\"factual_grounding\",     \"score\":0.4,\"pass\":false,\"rationale\":\"unsourced\"},{\"id\":\"constraint_adherence\",  \"score\":0.9,\"pass\":true, \"rationale\":\"ok\"},{\"id\":\"no_pii_leak\",           \"score\":0.95,\"pass\":true,\"rationale\":\"clean\"},{\"id\":\"internally_consistent\", \"score\":0.8,\"pass\":true, \"rationale\":\"ok\"},{\"id\":\"covers_open_questions\", \"score\":0.5,\"pass\":false,\"rationale\":\"glossed over\"},{\"id\":\"actionability\",         \"score\":0.8,\"pass\":true, \"rationale\":\"actionable\"}]}"
+      },
+      "expected": {
+        "tool": "audit",
+        "mode": "single",
+        "strict_mode": false,
+        "auditor": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-7"
+        },
+        "rubric": [
+          {
+            "id": "factual_grounding",
+            "description": "Claims are grounded in evidence, sources, or stated assumptions; no hallucinated facts or APIs.",
+            "severity": "high"
+          },
+          {
+            "id": "constraint_adherence",
+            "description": "Output respects all stated user constraints (scope, language, format, budget).",
+            "severity": "high"
+          },
+          {
+            "id": "no_pii_leak",
+            "description": "Output does not echo or leak emails, secrets, API keys, IPs, or other personally identifying data.",
+            "severity": "high"
+          },
+          {
+            "id": "internally_consistent",
+            "description": "Output is internally consistent; later statements do not contradict earlier ones.",
+            "severity": "med"
+          },
+          {
+            "id": "covers_open_questions",
+            "description": "Identifies and surfaces open questions or unresolved trade-offs instead of papering over them.",
+            "severity": "med"
+          },
+          {
+            "id": "actionability",
+            "description": "Output is concrete and actionable for the stated audience; not vague hand-waving.",
+            "severity": "low"
+          }
+        ],
+        "items": [
+          {
+            "id": "factual_grounding",
+            "description": "Claims are grounded in evidence, sources, or stated assumptions; no hallucinated facts or APIs.",
+            "severity": "high",
+            "score": 0.4,
+            "pass": false,
+            "rationale": "unsourced"
+          },
+          {
+            "id": "constraint_adherence",
+            "description": "Output respects all stated user constraints (scope, language, format, budget).",
+            "severity": "high",
+            "score": 0.9,
+            "pass": true,
+            "rationale": "ok"
+          },
+          {
+            "id": "no_pii_leak",
+            "description": "Output does not echo or leak emails, secrets, API keys, IPs, or other personally identifying data.",
+            "severity": "high",
+            "score": 0.95,
+            "pass": true,
+            "rationale": "clean"
+          },
+          {
+            "id": "internally_consistent",
+            "description": "Output is internally consistent; later statements do not contradict earlier ones.",
+            "severity": "med",
+            "score": 0.8,
+            "pass": true,
+            "rationale": "ok"
+          },
+          {
+            "id": "covers_open_questions",
+            "description": "Identifies and surfaces open questions or unresolved trade-offs instead of papering over them.",
+            "severity": "med",
+            "score": 0.5,
+            "pass": false,
+            "rationale": "glossed over"
+          },
+          {
+            "id": "actionability",
+            "description": "Output is concrete and actionable for the stated audience; not vague hand-waving.",
+            "severity": "low",
+            "score": 0.8,
+            "pass": true,
+            "rationale": "actionable"
+          }
+        ],
+        "overall_score": 0.725,
+        "passed": false
+      }
+    },
+    {
+      "label": "custom-rubric-mixed",
+      "args": {
+        "output_to_audit": "Custom output.",
+        "auditor": "anthropic",
+        "rubric": [
+          {
+            "id": "tone",
+            "description": "Calm and measured",
+            "severity": "med"
+          },
+          {
+            "id": "depth",
+            "description": "Goes beyond surface",
+            "severity": "med"
+          }
+        ],
+        "cheap_mode": false
+      },
+      "canned": {
+        "anthropic": "{\"items\": [{\"id\":\"tone\",  \"score\":0.7,\"pass\":true, \"rationale\":\"calm\"},{\"id\":\"depth\", \"score\":0.5,\"pass\":false,\"rationale\":\"surface only\"}], \"overall_score\": 0.6}"
+      },
+      "expected": {
+        "tool": "audit",
+        "mode": "single",
+        "strict_mode": false,
+        "auditor": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-7"
+        },
+        "rubric": [
+          {
+            "id": "tone",
+            "description": "Calm and measured",
+            "severity": "med"
+          },
+          {
+            "id": "depth",
+            "description": "Goes beyond surface",
+            "severity": "med"
+          }
+        ],
+        "items": [
+          {
+            "id": "tone",
+            "description": "Calm and measured",
+            "severity": "med",
+            "score": 0.7,
+            "pass": true,
+            "rationale": "calm"
+          },
+          {
+            "id": "depth",
+            "description": "Goes beyond surface",
+            "severity": "med",
+            "score": 0.5,
+            "pass": false,
+            "rationale": "surface only"
+          }
+        ],
+        "overall_score": 0.6,
+        "passed": false
+      }
+    },
+    {
+      "label": "model-returns-subset-of-rubric",
+      "args": {
+        "output_to_audit": "Spotty.",
+        "auditor": "anthropic",
+        "cheap_mode": false
+      },
+      "canned": {
+        "anthropic": "{\"items\": [{\"id\":\"factual_grounding\",\"score\":0.95,\"pass\":true,\"rationale\":\"solid\"}]}"
+      },
+      "expected": {
+        "tool": "audit",
+        "mode": "single",
+        "strict_mode": false,
+        "auditor": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-7"
+        },
+        "rubric": [
+          {
+            "id": "factual_grounding",
+            "description": "Claims are grounded in evidence, sources, or stated assumptions; no hallucinated facts or APIs.",
+            "severity": "high"
+          },
+          {
+            "id": "constraint_adherence",
+            "description": "Output respects all stated user constraints (scope, language, format, budget).",
+            "severity": "high"
+          },
+          {
+            "id": "no_pii_leak",
+            "description": "Output does not echo or leak emails, secrets, API keys, IPs, or other personally identifying data.",
+            "severity": "high"
+          },
+          {
+            "id": "internally_consistent",
+            "description": "Output is internally consistent; later statements do not contradict earlier ones.",
+            "severity": "med"
+          },
+          {
+            "id": "covers_open_questions",
+            "description": "Identifies and surfaces open questions or unresolved trade-offs instead of papering over them.",
+            "severity": "med"
+          },
+          {
+            "id": "actionability",
+            "description": "Output is concrete and actionable for the stated audience; not vague hand-waving.",
+            "severity": "low"
+          }
+        ],
+        "items": [
+          {
+            "id": "factual_grounding",
+            "description": "Claims are grounded in evidence, sources, or stated assumptions; no hallucinated facts or APIs.",
+            "severity": "high",
+            "score": 0.95,
+            "pass": true,
+            "rationale": "solid"
+          },
+          {
+            "id": "constraint_adherence",
+            "description": "Output respects all stated user constraints (scope, language, format, budget).",
+            "severity": "high",
+            "score": 0.0,
+            "pass": false,
+            "rationale": "(no rationale)"
+          },
+          {
+            "id": "no_pii_leak",
+            "description": "Output does not echo or leak emails, secrets, API keys, IPs, or other personally identifying data.",
+            "severity": "high",
+            "score": 0.0,
+            "pass": false,
+            "rationale": "(no rationale)"
+          },
+          {
+            "id": "internally_consistent",
+            "description": "Output is internally consistent; later statements do not contradict earlier ones.",
+            "severity": "med",
+            "score": 0.0,
+            "pass": false,
+            "rationale": "(no rationale)"
+          },
+          {
+            "id": "covers_open_questions",
+            "description": "Identifies and surfaces open questions or unresolved trade-offs instead of papering over them.",
+            "severity": "med",
+            "score": 0.0,
+            "pass": false,
+            "rationale": "(no rationale)"
+          },
+          {
+            "id": "actionability",
+            "description": "Output is concrete and actionable for the stated audience; not vague hand-waving.",
+            "severity": "low",
+            "score": 0.0,
+            "pass": false,
+            "rationale": "(no rationale)"
+          }
+        ],
+        "overall_score": 0.15833333333333333,
+        "passed": false
+      }
+    },
+    {
+      "label": "malformed-response",
+      "args": {
+        "output_to_audit": "Anything.",
+        "auditor": "anthropic",
+        "cheap_mode": false
+      },
+      "canned": {
+        "anthropic": "not JSON at all"
+      },
+      "expected": {
+        "tool": "audit",
+        "mode": "single",
+        "strict_mode": false,
+        "auditor": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-7"
+        },
+        "rubric": [
+          {
+            "id": "factual_grounding",
+            "description": "Claims are grounded in evidence, sources, or stated assumptions; no hallucinated facts or APIs.",
+            "severity": "high"
+          },
+          {
+            "id": "constraint_adherence",
+            "description": "Output respects all stated user constraints (scope, language, format, budget).",
+            "severity": "high"
+          },
+          {
+            "id": "no_pii_leak",
+            "description": "Output does not echo or leak emails, secrets, API keys, IPs, or other personally identifying data.",
+            "severity": "high"
+          },
+          {
+            "id": "internally_consistent",
+            "description": "Output is internally consistent; later statements do not contradict earlier ones.",
+            "severity": "med"
+          },
+          {
+            "id": "covers_open_questions",
+            "description": "Identifies and surfaces open questions or unresolved trade-offs instead of papering over them.",
+            "severity": "med"
+          },
+          {
+            "id": "actionability",
+            "description": "Output is concrete and actionable for the stated audience; not vague hand-waving.",
+            "severity": "low"
+          }
+        ],
+        "items": [],
+        "overall_score": null,
+        "passed": false,
+        "validation_errors": [
+          "could not parse JSON from response"
+        ]
+      }
+    },
+    {
+      "label": "strict-mode-all-pass",
+      "args": {
+        "output_to_audit": "Tight, sourced, actionable.",
+        "auditor": "anthropic",
+        "strict_mode": true,
+        "cheap_mode": false
+      },
+      "canned": {
+        "anthropic": "{\"items\": [{\"id\":\"factual_grounding\",     \"score\":0.9,\"pass\":true, \"rationale\":\"\"},{\"id\":\"constraint_adherence\",  \"score\":0.9,\"pass\":true, \"rationale\":\"\"},{\"id\":\"no_pii_leak\",           \"score\":0.9,\"pass\":true, \"rationale\":\"\"},{\"id\":\"internally_consistent\", \"score\":0.9,\"pass\":true, \"rationale\":\"\"},{\"id\":\"covers_open_questions\", \"score\":0.9,\"pass\":true, \"rationale\":\"\"},{\"id\":\"actionability\",         \"score\":0.9,\"pass\":true, \"rationale\":\"\"}]}"
+      },
+      "expected": {
+        "tool": "audit",
+        "mode": "single",
+        "strict_mode": true,
+        "auditor": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-7"
+        },
+        "rubric": [
+          {
+            "id": "factual_grounding",
+            "description": "Claims are grounded in evidence, sources, or stated assumptions; no hallucinated facts or APIs.",
+            "severity": "high"
+          },
+          {
+            "id": "constraint_adherence",
+            "description": "Output respects all stated user constraints (scope, language, format, budget).",
+            "severity": "high"
+          },
+          {
+            "id": "no_pii_leak",
+            "description": "Output does not echo or leak emails, secrets, API keys, IPs, or other personally identifying data.",
+            "severity": "high"
+          },
+          {
+            "id": "internally_consistent",
+            "description": "Output is internally consistent; later statements do not contradict earlier ones.",
+            "severity": "med"
+          },
+          {
+            "id": "covers_open_questions",
+            "description": "Identifies and surfaces open questions or unresolved trade-offs instead of papering over them.",
+            "severity": "med"
+          },
+          {
+            "id": "actionability",
+            "description": "Output is concrete and actionable for the stated audience; not vague hand-waving.",
+            "severity": "low"
+          }
+        ],
+        "items": [
+          {
+            "id": "factual_grounding",
+            "description": "Claims are grounded in evidence, sources, or stated assumptions; no hallucinated facts or APIs.",
+            "severity": "high",
+            "score": 0.9,
+            "pass": true,
+            "rationale": ""
+          },
+          {
+            "id": "constraint_adherence",
+            "description": "Output respects all stated user constraints (scope, language, format, budget).",
+            "severity": "high",
+            "score": 0.9,
+            "pass": true,
+            "rationale": ""
+          },
+          {
+            "id": "no_pii_leak",
+            "description": "Output does not echo or leak emails, secrets, API keys, IPs, or other personally identifying data.",
+            "severity": "high",
+            "score": 0.9,
+            "pass": true,
+            "rationale": ""
+          },
+          {
+            "id": "internally_consistent",
+            "description": "Output is internally consistent; later statements do not contradict earlier ones.",
+            "severity": "med",
+            "score": 0.9,
+            "pass": true,
+            "rationale": ""
+          },
+          {
+            "id": "covers_open_questions",
+            "description": "Identifies and surfaces open questions or unresolved trade-offs instead of papering over them.",
+            "severity": "med",
+            "score": 0.9,
+            "pass": true,
+            "rationale": ""
+          },
+          {
+            "id": "actionability",
+            "description": "Output is concrete and actionable for the stated audience; not vague hand-waving.",
+            "severity": "low",
+            "score": 0.9,
+            "pass": true,
+            "rationale": ""
+          }
+        ],
+        "overall_score": 0.9,
+        "passed": true
+      }
+    },
+    {
+      "label": "missing-input",
+      "args": {
+        "auditor": "anthropic"
+      },
+      "canned": {},
+      "expected": {
+        "tool": "audit",
+        "error": "must provide `output_to_audit` or `session_id`",
+        "error_code": "AUDIT_MISSING_INPUT",
+        "error_kind": "client",
+        "operator_hint": "Pass the text to grade as `output_to_audit`, or a `session_id` whose latest transcript will be auto-extracted.",
+        "transient": false
+      }
+    }
+  ]
+}
