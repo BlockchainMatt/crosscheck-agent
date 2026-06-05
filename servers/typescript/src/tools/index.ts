@@ -16,6 +16,7 @@ import { SERVER_NAME, SERVER_VERSION } from "../server.js";
 import { runAudit } from "./audit.js";
 import { runConfer } from "./confer.js";
 import { runCoordinate } from "./coordinate.js";
+import { runCritique } from "./critique.js";
 import { runDebate } from "./debate.js";
 import { runPick } from "./pick.js";
 import { runPlan } from "./plan.js";
@@ -124,9 +125,44 @@ export function registerCoreTools(
     coordinateTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
     triangulateTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
     planTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
+    critiqueTool(o.providers ?? {}, o.providerAllowlist ?? null, o.bridge),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `critique` — native port of Python's tool_critique. Each panelist
+ *  lists weaknesses of a proposal via structured-output; results
+ *  merged + sorted by severity. v1 defers untrusted_input to bridge. */
+function critiqueTool(
+  providers: Readonly<Record<string, Provider>>,
+  allowlist: readonly string[] | null,
+  bridge: BridgeHandle | undefined,
+): Tool {
+  return {
+    name: "critique",
+    description:
+      "Have each LLM panelist list the top weaknesses of a proposed " +
+      "answer or approach (severity-rated). Returns per-provider " +
+      "weakness lists + a merged list ordered by severity.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        proposal:        { type: "string" },
+        question:        { type: "string" },
+        providers:       { type: "array", items: { type: "string" } },
+        max_per_provider: { type: "integer", minimum: 1 },
+        session_id:      { type: "string" },
+        untrusted_input: { type: "boolean" },
+      },
+      required: ["proposal"],
+    },
+    handler: (args) => runCritique(args, {
+      providers, allowlist,
+      ...(bridge ? { bridge } : {}),
+    }),
+  };
 }
 
 /** `plan` — native port of Python's tool_plan. Thin wrapper over

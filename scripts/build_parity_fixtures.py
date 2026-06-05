@@ -3146,6 +3146,154 @@ def fixture_plan_tool() -> dict:
     }
 
 
+def fixture_critique_tool() -> dict:
+    """critique_tool.json — Phase 5 part 11 parity gate.
+
+    Each panelist gets one structured-output call returning a weakness
+    list; results merged + severity-sorted. Cassette pattern: a single
+    canned response per provider (no rounds).
+
+    Stripped on both sides: budget, session, usage rollup, timing
+    rollup, run_summary, canary_leaks.
+    """
+    srv = _import_server()
+    cases = []
+
+    saved_ask_one        = srv._ask_one
+    saved_session_load   = srv._session_load
+    saved_log_usage      = srv.log_usage
+    saved_session_record = srv._session_record
+    saved_session_save   = srv._session_save
+
+    srv._session_load    = lambda _sid: None
+    srv.log_usage        = lambda *a, **kw: None
+    srv._session_record  = lambda *a, **kw: None
+    srv._session_save    = lambda *a, **kw: None
+
+    def sanitize(out: dict) -> dict:
+        copy = dict(out)
+        for k in ("budget", "session", "usage", "timing", "run_summary",
+                  "canary_leaks", "_suppress_run_summary"):
+            copy.pop(k, None)
+        return copy
+
+    def make_fake_ask_one(canned: dict[str, str]):
+        def fake(p, messages, deadline, max_tokens, purpose="worker"):
+            text = canned.get(p.name, "")
+            return {
+                "provider": p.name, "model": p.model,
+                "response": text,
+                "cache_hit": False, "elapsed_ms": 0, "cpu_ms": 0,
+                "attempts": 1,
+                "usage": {
+                    "provider": p.name, "model": p.model, "purpose": purpose,
+                    "prompt_tokens": 100, "completion_tokens": 50,
+                    "total_tokens": 150, "cached_tokens": 0,
+                    "cost_usd": 0.0, "estimated": False,
+                },
+                "timing": {"wall_ms": 0, "cpu_ms": 0},
+            }
+        return fake
+
+    def add(label, args, canned):
+        srv._ask_one = make_fake_ask_one(canned)
+        invoke_args = {**args, "providers": list(canned.keys())}
+        out = srv.tool_critique(invoke_args)
+        cases.append({
+            "label":   label,
+            "args":    invoke_args,
+            "canned":  canned,
+            "expected": sanitize(out),
+        })
+
+    try:
+        # Two providers, mixed severities (verifies sort order: high
+        # first, then med, then low, ties broken by provider name).
+        add(
+            "two-providers-mixed-severities",
+            {"proposal": "Ship gRPC v1 next sprint.",
+             "question": "Migrate API to gRPC?"},
+            {
+                "anthropic":
+                    '{"weaknesses":['
+                    '{"weakness":"No fallback for older clients","why_matters":"churn","severity":"high"},'
+                    '{"weakness":"Logging gap","why_matters":"obs","severity":"med"}'
+                    ']}',
+                "openai":
+                    '{"weaknesses":['
+                    '{"weakness":"Schema review skipped","why_matters":"drift","severity":"high"},'
+                    '{"weakness":"Docs lag","why_matters":"DX","severity":"low"}'
+                    ']}',
+            },
+        )
+
+        # Single provider, max_per_provider=2 truncates a 4-item list.
+        add(
+            "single-provider-truncate-to-max",
+            {"proposal": "Add ML to ranker.",
+             "max_per_provider": 2},
+            {
+                "anthropic":
+                    '{"weaknesses":['
+                    '{"weakness":"Cold start","severity":"high"},'
+                    '{"weakness":"Cost spike","severity":"med"},'
+                    '{"weakness":"Bias","severity":"low"},'
+                    '{"weakness":"Latency","severity":"med"}'
+                    ']}',
+            },
+        )
+
+        # Severity alias normalization ("medium" → "med").
+        add(
+            "severity-alias-medium-normalized",
+            {"proposal": "x"},
+            {
+                "anthropic":
+                    '{"weaknesses":['
+                    '{"weakness":"y","severity":"medium"}'
+                    ']}',
+            },
+        )
+
+        # Malformed JSON → status="parse_error".
+        add(
+            "malformed-response-parse-error",
+            {"proposal": "x"},
+            {"anthropic": "not JSON at all"},
+        )
+
+        # Empty weaknesses list (proposal is solid; quality > quota).
+        add(
+            "empty-weaknesses-list",
+            {"proposal": "Solid plan."},
+            {"anthropic": '{"weaknesses":[]}'},
+        )
+
+        # Missing proposal.
+        srv._ask_one = make_fake_ask_one({})
+        out = srv.tool_critique({"providers": ["anthropic"]})
+        cases.append({"label":   "missing-proposal-error",
+                      "args":    {"providers": ["anthropic"]},
+                      "canned":  {},
+                      "expected": sanitize(out)})
+
+    finally:
+        srv._ask_one = saved_ask_one
+        srv._session_load = saved_session_load
+        srv.log_usage = saved_log_usage
+        srv._session_record = saved_session_record
+        srv._session_save = saved_session_save
+
+    return {
+        "module":      "critique_tool",
+        "description": "Native tool_critique parity — single-call per "
+                       "panelist, severity-sorted merged list, alias "
+                       "normalization, parse-error handling.",
+        "case_count":  len(cases),
+        "cases":       cases,
+    }
+
+
 BUILDERS = {
     "budgets":      fixture_budgets,
     "pricing":      fixture_pricing,
@@ -3170,6 +3318,7 @@ BUILDERS = {
     "coordinate_tool":  fixture_coordinate_tool,
     "triangulate_tool": fixture_triangulate_tool,
     "plan_tool":        fixture_plan_tool,
+    "critique_tool":    fixture_critique_tool,
 }
 
 

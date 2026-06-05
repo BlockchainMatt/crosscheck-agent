@@ -1,0 +1,269 @@
+{
+  "module": "critique_tool",
+  "description": "Native tool_critique parity — single-call per panelist, severity-sorted merged list, alias normalization, parse-error handling.",
+  "case_count": 6,
+  "cases": [
+    {
+      "label": "two-providers-mixed-severities",
+      "args": {
+        "proposal": "Ship gRPC v1 next sprint.",
+        "question": "Migrate API to gRPC?",
+        "providers": [
+          "anthropic",
+          "openai"
+        ]
+      },
+      "canned": {
+        "anthropic": "{\"weaknesses\":[{\"weakness\":\"No fallback for older clients\",\"why_matters\":\"churn\",\"severity\":\"high\"},{\"weakness\":\"Logging gap\",\"why_matters\":\"obs\",\"severity\":\"med\"}]}",
+        "openai": "{\"weaknesses\":[{\"weakness\":\"Schema review skipped\",\"why_matters\":\"drift\",\"severity\":\"high\"},{\"weakness\":\"Docs lag\",\"why_matters\":\"DX\",\"severity\":\"low\"}]}"
+      },
+      "expected": {
+        "tool": "critique",
+        "question": "Migrate API to gRPC?",
+        "providers": [
+          "anthropic",
+          "openai"
+        ],
+        "per_provider": [
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "status": "ok",
+            "weaknesses": [
+              {
+                "id": "anthropic.w1",
+                "weakness": "No fallback for older clients",
+                "why_matters": "churn",
+                "severity": "high",
+                "provider": "anthropic"
+              },
+              {
+                "id": "anthropic.w2",
+                "weakness": "Logging gap",
+                "why_matters": "obs",
+                "severity": "med",
+                "provider": "anthropic"
+              }
+            ]
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-5",
+            "status": "ok",
+            "weaknesses": [
+              {
+                "id": "openai.w1",
+                "weakness": "Schema review skipped",
+                "why_matters": "drift",
+                "severity": "high",
+                "provider": "openai"
+              },
+              {
+                "id": "openai.w2",
+                "weakness": "Docs lag",
+                "why_matters": "DX",
+                "severity": "low",
+                "provider": "openai"
+              }
+            ]
+          }
+        ],
+        "weaknesses": [
+          {
+            "id": "anthropic.w1",
+            "weakness": "No fallback for older clients",
+            "why_matters": "churn",
+            "severity": "high",
+            "provider": "anthropic"
+          },
+          {
+            "id": "openai.w1",
+            "weakness": "Schema review skipped",
+            "why_matters": "drift",
+            "severity": "high",
+            "provider": "openai"
+          },
+          {
+            "id": "anthropic.w2",
+            "weakness": "Logging gap",
+            "why_matters": "obs",
+            "severity": "med",
+            "provider": "anthropic"
+          },
+          {
+            "id": "openai.w2",
+            "weakness": "Docs lag",
+            "why_matters": "DX",
+            "severity": "low",
+            "provider": "openai"
+          }
+        ],
+        "high_severity_count": 2
+      }
+    },
+    {
+      "label": "single-provider-truncate-to-max",
+      "args": {
+        "proposal": "Add ML to ranker.",
+        "max_per_provider": 2,
+        "providers": [
+          "anthropic"
+        ]
+      },
+      "canned": {
+        "anthropic": "{\"weaknesses\":[{\"weakness\":\"Cold start\",\"severity\":\"high\"},{\"weakness\":\"Cost spike\",\"severity\":\"med\"},{\"weakness\":\"Bias\",\"severity\":\"low\"},{\"weakness\":\"Latency\",\"severity\":\"med\"}]}"
+      },
+      "expected": {
+        "tool": "critique",
+        "question": "",
+        "providers": [
+          "anthropic"
+        ],
+        "per_provider": [
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "status": "ok",
+            "weaknesses": [
+              {
+                "id": "anthropic.w1",
+                "weakness": "Cold start",
+                "why_matters": "",
+                "severity": "high",
+                "provider": "anthropic"
+              },
+              {
+                "id": "anthropic.w2",
+                "weakness": "Cost spike",
+                "why_matters": "",
+                "severity": "med",
+                "provider": "anthropic"
+              }
+            ]
+          }
+        ],
+        "weaknesses": [
+          {
+            "id": "anthropic.w1",
+            "weakness": "Cold start",
+            "why_matters": "",
+            "severity": "high",
+            "provider": "anthropic"
+          },
+          {
+            "id": "anthropic.w2",
+            "weakness": "Cost spike",
+            "why_matters": "",
+            "severity": "med",
+            "provider": "anthropic"
+          }
+        ],
+        "high_severity_count": 1
+      }
+    },
+    {
+      "label": "severity-alias-medium-normalized",
+      "args": {
+        "proposal": "x",
+        "providers": [
+          "anthropic"
+        ]
+      },
+      "canned": {
+        "anthropic": "{\"weaknesses\":[{\"weakness\":\"y\",\"severity\":\"medium\"}]}"
+      },
+      "expected": {
+        "tool": "critique",
+        "question": "",
+        "providers": [
+          "anthropic"
+        ],
+        "per_provider": [
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "status": "parse_error",
+            "weaknesses": []
+          }
+        ],
+        "weaknesses": [],
+        "high_severity_count": 0
+      }
+    },
+    {
+      "label": "malformed-response-parse-error",
+      "args": {
+        "proposal": "x",
+        "providers": [
+          "anthropic"
+        ]
+      },
+      "canned": {
+        "anthropic": "not JSON at all"
+      },
+      "expected": {
+        "tool": "critique",
+        "question": "",
+        "providers": [
+          "anthropic"
+        ],
+        "per_provider": [
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "status": "parse_error",
+            "weaknesses": []
+          }
+        ],
+        "weaknesses": [],
+        "high_severity_count": 0
+      }
+    },
+    {
+      "label": "empty-weaknesses-list",
+      "args": {
+        "proposal": "Solid plan.",
+        "providers": [
+          "anthropic"
+        ]
+      },
+      "canned": {
+        "anthropic": "{\"weaknesses\":[]}"
+      },
+      "expected": {
+        "tool": "critique",
+        "question": "",
+        "providers": [
+          "anthropic"
+        ],
+        "per_provider": [
+          {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "status": "ok",
+            "weaknesses": []
+          }
+        ],
+        "weaknesses": [],
+        "high_severity_count": 0
+      }
+    },
+    {
+      "label": "missing-proposal-error",
+      "args": {
+        "providers": [
+          "anthropic"
+        ]
+      },
+      "canned": {},
+      "expected": {
+        "tool": "critique",
+        "error": "must provide `proposal` (the text to critique)",
+        "error_code": "CRITIQUE_MISSING_PROPOSAL",
+        "error_kind": "client",
+        "operator_hint": "Pass the answer/plan/code you want the panel to find weaknesses in.",
+        "transient": false
+      }
+    }
+  ]
+}
