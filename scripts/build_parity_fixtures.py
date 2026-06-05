@@ -1830,21 +1830,161 @@ def fixture_verify() -> dict:
     }
 
 
+def fixture_extract_json() -> dict:
+    """extract_json.json — Python's _extract_json parity grid.
+
+    Pure-function port — same input string should produce the same
+    parsed value (or None) on both sides.
+    """
+    srv = _import_server()
+    cases = []
+
+    def add(label, text, expected_kind=None):
+        out = srv._extract_json(text)
+        cases.append({"label": label, "text": text, "expected": out})
+        if expected_kind:
+            assert {None: type(None), "dict": dict, "list": list,
+                    "str": str, "int": int}[expected_kind] is type(out), \
+                f"{label}: unexpected kind"
+
+    add("direct-object",   '{"a": 1, "b": 2}')
+    add("direct-array",    '[1, 2, 3]')
+    add("direct-scalar-string", '"hello"')
+    add("direct-scalar-int",    '42')
+    add("direct-scalar-null",   'null')
+    add("empty-string",         '')
+    add("whitespace-only",      '   \n\t  ')
+    add("garbage",              'this is not json')
+    add("fenced-json",     '```json\n{"a": 1}\n```')
+    add("fenced-no-lang",  '```\n{"a": 1}\n```')
+    add("fenced-with-prose",
+        'Sure, here you go:\n```json\n{"answer": "42"}\n```\nLet me know!')
+    add("balanced-object-in-prose",
+        'I think the answer is {"x": 10} and that\'s final.')
+    add("balanced-array-in-prose",
+        'Here are the items: [1, 2, 3] in order.')
+    add("nested-braces-inside-string",
+        '{"s": "value with {braces} and [brackets]", "n": 1}')
+    add("escaped-quote-in-string",
+        '{"a": "she said \\"hi\\""}')
+    add("unbalanced-braces",
+        '{"a": 1')                       # incomplete
+    add("trailing-prose-after-object",
+        '{"a": 1}\n\nThat was the JSON.')
+    add("multiple-objects-takes-first",
+        '{"a": 1} and then {"b": 2}')
+    add("number-only",     ' 3.14 ')
+
+    return {
+        "module":      "extract_json",
+        "description": "_extract_json parity grid (direct + fenced + balanced + edge)",
+        "case_count":  len(cases),
+        "cases":       cases,
+    }
+
+
+def fixture_json_schema() -> dict:
+    """json_schema.json — Python's _validate parity grid.
+
+    Each case: (value, schema) -> list[str] errors. Empty list = valid.
+    Error STRINGS are part of the parity assertion (we test that
+    Python's f"…{v!r}…" interpolations byte-equal the TS port).
+    """
+    srv = _import_server()
+    cases = []
+
+    def add(label, value, schema):
+        errs = srv._validate(value, schema)
+        cases.append({"label": label, "value": value, "schema": schema,
+                      "expected_errors": errs})
+
+    # Type checks
+    add("type-string-ok",    "hello",      {"type": "string"})
+    add("type-string-bad",   42,           {"type": "string"})
+    add("type-integer-ok",   42,           {"type": "integer"})
+    add("type-integer-bool-rejected", True, {"type": "integer"})  # bool isn't int
+    add("type-number-ok-float",  3.14,     {"type": "number"})
+    add("type-boolean-ok",   True,         {"type": "boolean"})
+    add("type-null-ok",      None,         {"type": "null"})
+    add("type-array-ok",     [1, 2, 3],    {"type": "array"})
+    add("type-object-ok",    {"a": 1},     {"type": "object"})
+    add("type-multi-ok",     "x",          {"type": ["string", "null"]})
+    add("type-multi-fail",   42,           {"type": ["string", "null"]})
+
+    # const + enum
+    add("const-ok",   "yes",  {"const": "yes"})
+    add("const-fail", "no",   {"const": "yes"})
+    add("enum-ok",    "a",    {"type": "string", "enum": ["a", "b", "c"]})
+    add("enum-fail",  "z",    {"type": "string", "enum": ["a", "b", "c"]})
+
+    # numeric bounds
+    add("min-ok",     5,      {"type": "integer", "minimum": 0})
+    add("min-fail",   -1,     {"type": "integer", "minimum": 0})
+    add("max-ok",     5,      {"type": "integer", "maximum": 10})
+    add("max-fail",   11,     {"type": "integer", "maximum": 10})
+
+    # string length
+    add("minlength-ok",   "abcde", {"type": "string", "minLength": 3})
+    add("minlength-fail", "ab",    {"type": "string", "minLength": 3})
+
+    # array items + minItems
+    add("array-items-ok", [1, 2, 3],
+        {"type": "array", "items": {"type": "integer"}})
+    add("array-items-bad-element", [1, "two", 3],
+        {"type": "array", "items": {"type": "integer"}})
+    add("minitems-fail", [1],
+        {"type": "array", "minItems": 2, "items": {"type": "integer"}})
+
+    # object props + required + additionalProperties
+    add("object-required-ok",  {"a": 1, "b": 2},
+        {"type": "object", "properties": {"a": {"type": "integer"},
+                                           "b": {"type": "integer"}},
+         "required": ["a", "b"]})
+    add("object-required-missing", {"a": 1},
+        {"type": "object", "properties": {"a": {"type": "integer"},
+                                           "b": {"type": "integer"}},
+         "required": ["a", "b"]})
+    add("object-add-props-false", {"a": 1, "x": "extra"},
+        {"type": "object", "properties": {"a": {"type": "integer"}},
+         "additionalProperties": False})
+    add("object-nested-error", {"outer": {"inner": "wrong-type"}},
+        {"type": "object",
+         "properties": {"outer": {"type": "object",
+                                   "properties": {"inner": {"type": "integer"}}}}})
+
+    # anyOf / oneOf
+    add("anyof-ok",   42,   {"anyOf": [{"type": "string"}, {"type": "integer"}]})
+    add("anyof-fail", True, {"anyOf": [{"type": "string"}, {"type": "integer"}]})
+    add("oneof-ok-exactly-one", 5,
+        {"oneOf": [{"type": "integer"}, {"type": "string"}]})
+    add("oneof-fail-multiple", 5,
+        {"oneOf": [{"type": "integer"}, {"type": "number"}]})
+
+    return {
+        "module":      "json_schema",
+        "description": "_validate parity grid — keywords + error strings",
+        "case_count":  len(cases),
+        "cases":       cases,
+    }
+
+
 BUILDERS = {
-    "budgets":   fixture_budgets,
-    "pricing":   fixture_pricing,
-    "injection": fixture_injection,
-    "canary":    fixture_canary,
-    "redact":    fixture_redact,
-    "prompts":   fixture_prompts,
-    "error":     fixture_error,
-    "usage":     fixture_usage,
-    "router":    fixture_router,
-    "tiers":     fixture_tiers,
-    "audit":     fixture_audit,
-    "worker":    fixture_worker,
-    "utils":     fixture_utils,
-    "verify":    fixture_verify,
+    "budgets":      fixture_budgets,
+    "pricing":      fixture_pricing,
+    "injection":    fixture_injection,
+    "canary":       fixture_canary,
+    "redact":       fixture_redact,
+    "prompts":      fixture_prompts,
+    "error":        fixture_error,
+    "usage":        fixture_usage,
+    "router":       fixture_router,
+    "tiers":        fixture_tiers,
+    "audit":        fixture_audit,
+    "worker":       fixture_worker,
+    "utils":        fixture_utils,
+    "verify":       fixture_verify,
+    "extract_json": fixture_extract_json,
+    "json_schema":  fixture_json_schema,
 }
 
 

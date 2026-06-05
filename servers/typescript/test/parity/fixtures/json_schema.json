@@ -1,0 +1,421 @@
+{
+  "module": "json_schema",
+  "description": "_validate parity grid — keywords + error strings",
+  "case_count": 32,
+  "cases": [
+    {
+      "label": "type-string-ok",
+      "value": "hello",
+      "schema": {
+        "type": "string"
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "type-string-bad",
+      "value": 42,
+      "schema": {
+        "type": "string"
+      },
+      "expected_errors": [
+        "<root>: expected type string, got int"
+      ]
+    },
+    {
+      "label": "type-integer-ok",
+      "value": 42,
+      "schema": {
+        "type": "integer"
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "type-integer-bool-rejected",
+      "value": true,
+      "schema": {
+        "type": "integer"
+      },
+      "expected_errors": [
+        "<root>: expected type integer, got bool"
+      ]
+    },
+    {
+      "label": "type-number-ok-float",
+      "value": 3.14,
+      "schema": {
+        "type": "number"
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "type-boolean-ok",
+      "value": true,
+      "schema": {
+        "type": "boolean"
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "type-null-ok",
+      "value": null,
+      "schema": {
+        "type": "null"
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "type-array-ok",
+      "value": [
+        1,
+        2,
+        3
+      ],
+      "schema": {
+        "type": "array"
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "type-object-ok",
+      "value": {
+        "a": 1
+      },
+      "schema": {
+        "type": "object"
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "type-multi-ok",
+      "value": "x",
+      "schema": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "type-multi-fail",
+      "value": 42,
+      "schema": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "expected_errors": [
+        "<root>: expected type ['string', 'null'], got int"
+      ]
+    },
+    {
+      "label": "const-ok",
+      "value": "yes",
+      "schema": {
+        "const": "yes"
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "const-fail",
+      "value": "no",
+      "schema": {
+        "const": "yes"
+      },
+      "expected_errors": [
+        "<root>: expected const 'yes', got 'no'"
+      ]
+    },
+    {
+      "label": "enum-ok",
+      "value": "a",
+      "schema": {
+        "type": "string",
+        "enum": [
+          "a",
+          "b",
+          "c"
+        ]
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "enum-fail",
+      "value": "z",
+      "schema": {
+        "type": "string",
+        "enum": [
+          "a",
+          "b",
+          "c"
+        ]
+      },
+      "expected_errors": [
+        "<root>: value 'z' not in enum"
+      ]
+    },
+    {
+      "label": "min-ok",
+      "value": 5,
+      "schema": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "min-fail",
+      "value": -1,
+      "schema": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "expected_errors": [
+        "<root>: -1 < minimum 0"
+      ]
+    },
+    {
+      "label": "max-ok",
+      "value": 5,
+      "schema": {
+        "type": "integer",
+        "maximum": 10
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "max-fail",
+      "value": 11,
+      "schema": {
+        "type": "integer",
+        "maximum": 10
+      },
+      "expected_errors": [
+        "<root>: 11 > maximum 10"
+      ]
+    },
+    {
+      "label": "minlength-ok",
+      "value": "abcde",
+      "schema": {
+        "type": "string",
+        "minLength": 3
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "minlength-fail",
+      "value": "ab",
+      "schema": {
+        "type": "string",
+        "minLength": 3
+      },
+      "expected_errors": [
+        "<root>: shorter than minLength 3"
+      ]
+    },
+    {
+      "label": "array-items-ok",
+      "value": [
+        1,
+        2,
+        3
+      ],
+      "schema": {
+        "type": "array",
+        "items": {
+          "type": "integer"
+        }
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "array-items-bad-element",
+      "value": [
+        1,
+        "two",
+        3
+      ],
+      "schema": {
+        "type": "array",
+        "items": {
+          "type": "integer"
+        }
+      },
+      "expected_errors": [
+        "[1]: expected type integer, got str"
+      ]
+    },
+    {
+      "label": "minitems-fail",
+      "value": [
+        1
+      ],
+      "schema": {
+        "type": "array",
+        "minItems": 2,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "expected_errors": [
+        "<root>: fewer items than minItems 2"
+      ]
+    },
+    {
+      "label": "object-required-ok",
+      "value": {
+        "a": 1,
+        "b": 2
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "integer"
+          },
+          "b": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "a",
+          "b"
+        ]
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "object-required-missing",
+      "value": {
+        "a": 1
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "integer"
+          },
+          "b": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "a",
+          "b"
+        ]
+      },
+      "expected_errors": [
+        "<root>: missing required key 'b'"
+      ]
+    },
+    {
+      "label": "object-add-props-false",
+      "value": {
+        "a": 1,
+        "x": "extra"
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false
+      },
+      "expected_errors": [
+        "<root>: unknown key 'x'"
+      ]
+    },
+    {
+      "label": "object-nested-error",
+      "value": {
+        "outer": {
+          "inner": "wrong-type"
+        }
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "outer": {
+            "type": "object",
+            "properties": {
+              "inner": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      },
+      "expected_errors": [
+        "outer.inner: expected type integer, got str"
+      ]
+    },
+    {
+      "label": "anyof-ok",
+      "value": 42,
+      "schema": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer"
+          }
+        ]
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "anyof-fail",
+      "value": true,
+      "schema": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer"
+          }
+        ]
+      },
+      "expected_errors": [
+        "<root>: did not match anyOf"
+      ]
+    },
+    {
+      "label": "oneof-ok-exactly-one",
+      "value": 5,
+      "schema": {
+        "oneOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "string"
+          }
+        ]
+      },
+      "expected_errors": []
+    },
+    {
+      "label": "oneof-fail-multiple",
+      "value": 5,
+      "schema": {
+        "oneOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "number"
+          }
+        ]
+      },
+      "expected_errors": [
+        "<root>: matched 2 of oneOf, expected 1"
+      ]
+    }
+  ]
+}

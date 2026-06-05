@@ -1,0 +1,130 @@
+{
+  "module": "extract_json",
+  "description": "_extract_json parity grid (direct + fenced + balanced + edge)",
+  "case_count": 19,
+  "cases": [
+    {
+      "label": "direct-object",
+      "text": "{\"a\": 1, \"b\": 2}",
+      "expected": {
+        "a": 1,
+        "b": 2
+      }
+    },
+    {
+      "label": "direct-array",
+      "text": "[1, 2, 3]",
+      "expected": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "label": "direct-scalar-string",
+      "text": "\"hello\"",
+      "expected": "hello"
+    },
+    {
+      "label": "direct-scalar-int",
+      "text": "42",
+      "expected": 42
+    },
+    {
+      "label": "direct-scalar-null",
+      "text": "null",
+      "expected": null
+    },
+    {
+      "label": "empty-string",
+      "text": "",
+      "expected": null
+    },
+    {
+      "label": "whitespace-only",
+      "text": "   \n\t  ",
+      "expected": null
+    },
+    {
+      "label": "garbage",
+      "text": "this is not json",
+      "expected": null
+    },
+    {
+      "label": "fenced-json",
+      "text": "```json\n{\"a\": 1}\n```",
+      "expected": {
+        "a": 1
+      }
+    },
+    {
+      "label": "fenced-no-lang",
+      "text": "```\n{\"a\": 1}\n```",
+      "expected": {
+        "a": 1
+      }
+    },
+    {
+      "label": "fenced-with-prose",
+      "text": "Sure, here you go:\n```json\n{\"answer\": \"42\"}\n```\nLet me know!",
+      "expected": {
+        "answer": "42"
+      }
+    },
+    {
+      "label": "balanced-object-in-prose",
+      "text": "I think the answer is {\"x\": 10} and that's final.",
+      "expected": {
+        "x": 10
+      }
+    },
+    {
+      "label": "balanced-array-in-prose",
+      "text": "Here are the items: [1, 2, 3] in order.",
+      "expected": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "label": "nested-braces-inside-string",
+      "text": "{\"s\": \"value with {braces} and [brackets]\", \"n\": 1}",
+      "expected": {
+        "s": "value with {braces} and [brackets]",
+        "n": 1
+      }
+    },
+    {
+      "label": "escaped-quote-in-string",
+      "text": "{\"a\": \"she said \\\"hi\\\"\"}",
+      "expected": {
+        "a": "she said \"hi\""
+      }
+    },
+    {
+      "label": "unbalanced-braces",
+      "text": "{\"a\": 1",
+      "expected": null
+    },
+    {
+      "label": "trailing-prose-after-object",
+      "text": "{\"a\": 1}\n\nThat was the JSON.",
+      "expected": {
+        "a": 1
+      }
+    },
+    {
+      "label": "multiple-objects-takes-first",
+      "text": "{\"a\": 1} and then {\"b\": 2}",
+      "expected": {
+        "a": 1
+      }
+    },
+    {
+      "label": "number-only",
+      "text": " 3.14 ",
+      "expected": 3.14
+    }
+  ]
+}
