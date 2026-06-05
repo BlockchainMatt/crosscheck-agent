@@ -11,7 +11,9 @@
 import { z } from "zod";
 
 import type { BridgeHandle } from "../bridge/index.js";
+import type { Provider } from "../providers/types.js";
 import { SERVER_NAME, SERVER_VERSION } from "../server.js";
+import { runPick } from "./pick.js";
 import { runVerify } from "./verify.js";
 
 /** A registered MCP tool. `inputSchema` is the JSON-Schema surfaced via
@@ -76,19 +78,95 @@ function zodToJsonSchema(schema: z.ZodType<unknown>): unknown {
   return {};
 }
 
+/** Options threaded into the tool registry. Lets the server pass
+ *  native providers + the bridge (for sub-feature fallback) into
+ *  individual tool handlers via closure capture. */
+export interface RegisterCoreToolsOptions {
+  /** Optional Python bridge for sub-feature deferral (verify's
+   *  shell/url_head; future: tools-not-yet-native). */
+  bridge?: BridgeHandle;
+  /** Native LLM providers, keyed by lowercased name (e.g. "anthropic").
+   *  When absent, LLM tools (pick, …) reject calls or — once cutover —
+   *  fall back to the bridge. */
+  providers?: Readonly<Record<string, Provider>>;
+  /** Optional provider allowlist. null/undefined = no allowlist. */
+  providerAllowlist?: readonly string[] | null;
+}
+
 /** Build the native tool surface. Returns a name -> Tool map.
- *
- *  `bridge` is optional. When supplied, tools that have sub-features
- *  not yet ported natively can defer those calls to Python. Without a
- *  bridge those calls return a clear error pointing at bridge mode.
  *
  *  Native entries take precedence over bridge proxies of the same name
  *  (see server.ts buildToolRegistry). */
-export function registerCoreTools(bridge?: BridgeHandle): Map<string, Tool> {
+export function registerCoreTools(
+  opts: RegisterCoreToolsOptions | BridgeHandle = {},
+): Map<string, Tool> {
+  // Accept both the legacy single-arg `BridgeHandle` form and the new
+  // options bag. Discriminate by the presence of `toolNames`.
+  const o: RegisterCoreToolsOptions =
+    opts && typeof opts === "object" && "toolNames" in opts
+      ? { bridge: opts as BridgeHandle }
+      : (opts as RegisterCoreToolsOptions);
+
   const tools = new Map<string, Tool>();
-  const list: Tool[] = [pingTool(), verifyTool(bridge)];
+  const list: Tool[] = [
+    pingTool(),
+    verifyTool(o.bridge),
+    pickTool(o.providers ?? {}, o.providerAllowlist ?? null),
+  ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `pick` — native port of Python's tool_pick. Closes over the
+ *  available providers (and optional allowlist) so the handler can
+ *  dispatch by name. */
+function pickTool(
+  providers: Readonly<Record<string, Provider>>,
+  allowlist: readonly string[] | null,
+): Tool {
+  return {
+    name: "pick",
+    description:
+      "Score a set of options across criteria using one or more LLM " +
+      "providers, then rank by weighted-mean and surface dissent. " +
+      "Deterministic given fixed provider outputs.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        decision: { type: "string" },
+        options:  {
+          type: "array", minItems: 2,
+          items: {
+            anyOf: [
+              { type: "string" },
+              { type: "object",
+                properties: { name: { type: "string" },
+                              description: { type: "string" } },
+                required: ["name"] },
+            ],
+          },
+        },
+        criteria: {
+          type: "array", minItems: 1,
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              weight: { type: "number" },
+              description: { type: "string" },
+            },
+            required: ["name"],
+          },
+        },
+        providers:           { type: "array", items: { type: "string" } },
+        session_id:          { type: "string" },
+        max_dissent_deltas:  { type: "integer", minimum: 1 },
+      },
+      required: ["decision", "options", "criteria"],
+    },
+    handler: (args) => runPick(args, { providers, allowlist }),
+  };
 }
 
 /** `verify` — native port of Python's deterministic property-check

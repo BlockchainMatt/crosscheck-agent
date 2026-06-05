@@ -1968,6 +1968,223 @@ def fixture_json_schema() -> dict:
     }
 
 
+def fixture_pick() -> dict:
+    """pick.json — Phase 5 part 3 parity gate.
+
+    We patch srv._ask_one to return canned response text per provider,
+    then call srv.tool_pick(args). Recorded fixture shape:
+      {label, args, canned: {provider_name: response_text}, expected}
+
+    The TS test builds synthetic Providers whose .send() returns the
+    same canned text + matched Usage, then calls runPick(args, opts)
+    and canonicalize-compares to `expected` after stripping fields
+    that depend on session/usage/timing/run_summary subsystems we
+    haven't ported yet.
+    """
+    srv = _import_server()
+    cases = []
+
+    saved_ask_one = srv._ask_one
+    saved_session_load = srv._session_load
+    saved_log_usage = srv.log_usage
+
+    # Disable session/usage_log side effects so the fixture builds
+    # cleanly on any environment.
+    srv._session_load = lambda _sid: None
+    srv.log_usage = lambda *a, **kw: None
+
+    # Strip the same tail fields the TS test will strip.
+    def sanitize(out: dict) -> dict:
+        copy = dict(out)
+        for k in ("usage", "timing", "run_summary", "budget", "session",
+                  "_suppress_run_summary"):
+            copy.pop(k, None)
+        return copy
+
+    def make_fake_ask_one(canned: dict[str, str]):
+        def fake(p, messages, deadline, max_tokens, purpose="worker"):
+            text = canned.get(p.name, "")
+            return {
+                "provider": p.name,
+                "model":    p.model,
+                "response": text,
+                "cache_hit": False,
+                "elapsed_ms": 0,
+                "cpu_ms": 0,
+                "attempts": 1,
+                "usage": {
+                    "provider": p.name, "model": p.model, "purpose": purpose,
+                    "prompt_tokens": 100, "completion_tokens": 50,
+                    "total_tokens": 150, "cached_tokens": 0,
+                    "cost_usd": 0.0, "estimated": False,
+                },
+                "timing": {"wall_ms": 0, "cpu_ms": 0},
+            }
+        return fake
+
+    def add(label, args, canned):
+        # Force the call onto exactly the providers in `canned`, in that
+        # order — bypasses environment-dependent ALL_PROVIDERS.
+        srv._ask_one = make_fake_ask_one(canned)
+        invoke_args = {**args, "providers": list(canned.keys())}
+        out = srv.tool_pick(invoke_args)
+        cases.append({
+            "label":   label,
+            "args":    invoke_args,
+            "canned":  canned,
+            "expected": sanitize(out),
+        })
+
+    try:
+        # ----- Case 1: 2 options, 1 criterion, 2 providers, agree.
+        add(
+            "two-options-one-criterion-two-providers-agree",
+            {"decision": "Where to eat?",
+             "options": ["Pizza", "Sushi"],
+             "criteria": [{"name": "speed", "weight": 1.0}]},
+            {
+                "anthropic": '{"scores":[{"option":"Pizza","overall":0.9,'
+                             '"by_criterion":[{"criterion":"speed","score":0.9,"rationale":"fast"}]},'
+                             '{"option":"Sushi","overall":0.4,'
+                             '"by_criterion":[{"criterion":"speed","score":0.4,"rationale":"slow"}]}]}',
+                "openai":    '{"scores":[{"option":"Pizza","overall":0.85,'
+                             '"by_criterion":[{"criterion":"speed","score":0.85,"rationale":"quick"}]},'
+                             '{"option":"Sushi","overall":0.35,'
+                             '"by_criterion":[{"criterion":"speed","score":0.35,"rationale":"prep heavy"}]}]}',
+            },
+        )
+
+        # ----- Case 2: 3 options, 2 criteria, 2 providers, contested.
+        add(
+            "three-options-two-criteria-two-providers-contested",
+            {"decision": "Best framework?",
+             "options": [{"name": "React", "description": "ui"},
+                         {"name": "Vue"},
+                         {"name": "Svelte", "description": "fast"}],
+             "criteria": [{"name": "popularity", "weight": 2.0},
+                          {"name": "perf",       "weight": 1.0}]},
+            {
+                "anthropic":
+                    '{"scores":['
+                    '{"option":"React","overall":0.8,"by_criterion":['
+                    '{"criterion":"popularity","score":0.95,"rationale":"huge ecosystem"},'
+                    '{"criterion":"perf","score":0.6,"rationale":"vdom overhead"}]},'
+                    '{"option":"Vue","overall":0.7,"by_criterion":['
+                    '{"criterion":"popularity","score":0.7,"rationale":"large but smaller"},'
+                    '{"criterion":"perf","score":0.7,"rationale":"good defaults"}]},'
+                    '{"option":"Svelte","overall":0.75,"by_criterion":['
+                    '{"criterion":"popularity","score":0.5,"rationale":"growing"},'
+                    '{"criterion":"perf","score":0.95,"rationale":"compiled"}]}]}',
+                "openai":
+                    '{"scores":['
+                    '{"option":"React","overall":0.55,"by_criterion":['
+                    '{"criterion":"popularity","score":0.95,"rationale":"king"},'
+                    '{"criterion":"perf","score":0.4,"rationale":"slowest of 3"}]},'
+                    '{"option":"Vue","overall":0.65,"by_criterion":['
+                    '{"criterion":"popularity","score":0.6,"rationale":"niche-ish"},'
+                    '{"criterion":"perf","score":0.7,"rationale":"solid"}]},'
+                    '{"option":"Svelte","overall":0.9,"by_criterion":['
+                    '{"criterion":"popularity","score":0.55,"rationale":"trending"},'
+                    '{"criterion":"perf","score":0.98,"rationale":"unbeatable"}]}]}',
+            },
+        )
+
+        # ----- Case 3: single provider (deterministic dissent_deltas — empty).
+        add(
+            "single-provider-no-dissent",
+            {"decision": "Which database?",
+             "options": ["Postgres", "Mysql"],
+             "criteria": [{"name": "robustness", "weight": 1.0}]},
+            {"anthropic":
+                '{"scores":[{"option":"Postgres","overall":0.9,'
+                '"by_criterion":[{"criterion":"robustness","score":0.9,"rationale":"battle tested"}]},'
+                '{"option":"Mysql","overall":0.7,'
+                '"by_criterion":[{"criterion":"robustness","score":0.7,"rationale":"solid"}]}]}'},
+        )
+
+        # ----- Case 4: option not in our list → ignored (per-option filter).
+        add(
+            "provider-suggests-unknown-option-ignored",
+            {"decision": "Which color?",
+             "options": ["Red", "Blue"],
+             "criteria": [{"name": "vibrance", "weight": 1.0}]},
+            {"anthropic":
+                '{"scores":[{"option":"Red","overall":0.7,'
+                '"by_criterion":[{"criterion":"vibrance","score":0.7,"rationale":"bold"}]},'
+                '{"option":"Blue","overall":0.6,'
+                '"by_criterion":[{"criterion":"vibrance","score":0.6,"rationale":"calm"}]},'
+                '{"option":"Yellow","overall":0.99,'
+                '"by_criterion":[{"criterion":"vibrance","score":0.99,"rationale":"YELLOW"}]}]}'},
+        )
+
+        # ----- Case 5: malformed response — provider returns garbage.
+        # _request_structured will fail parse → retry → fail again → null obj.
+        # The pick aggregator should treat null as "no data" gracefully.
+        add(
+            "malformed-provider-response",
+            {"decision": "X or Y?",
+             "options": ["X", "Y"],
+             "criteria": [{"name": "fitness", "weight": 1.0}]},
+            {"anthropic": "this is not JSON at all"},
+        )
+
+        # ----- Case 6: empty decision string. Python does NOT guard
+        # against this — it just proceeds with whatever the model
+        # returns. We feed a single provider with empty canned text
+        # so retries exhaust → null scores → ranking with all zeros.
+        # Explicit providers arg keeps this portable across boxes.
+        add(
+            "empty-decision-empty-canned",
+            {"decision": "",
+             "options": ["a", "b"],
+             "criteria": [{"name": "x"}]},
+            {"anthropic": ""},
+        )
+
+        # ----- Case 7: fewer than 2 options. Returns early — no
+        # provider calls, no canned dict needed. We pass `providers`
+        # explicitly so the fixture is portable, but it's ignored.
+        srv._ask_one = make_fake_ask_one({})
+        out = srv.tool_pick({"decision": "x",
+                             "options": ["only-one"],
+                             "criteria": [{"name": "x"}],
+                             "providers": ["anthropic"]})
+        cases.append({"label": "fewer-than-2-options",
+                      "args":  {"decision": "x",
+                                "options": ["only-one"],
+                                "criteria": [{"name": "x"}],
+                                "providers": ["anthropic"]},
+                      "canned": {},
+                      "expected": sanitize(out)})
+
+        # ----- Case 8: no criteria. Returns early like case 7.
+        out = srv.tool_pick({"decision": "x",
+                             "options": ["a", "b"],
+                             "criteria": [],
+                             "providers": ["anthropic"]})
+        cases.append({"label": "no-criteria",
+                      "args":  {"decision": "x",
+                                "options": ["a", "b"],
+                                "criteria": [],
+                                "providers": ["anthropic"]},
+                      "canned": {},
+                      "expected": sanitize(out)})
+
+    finally:
+        srv._ask_one = saved_ask_one
+        srv._session_load = saved_session_load
+        srv.log_usage = saved_log_usage
+
+    return {
+        "module":      "pick",
+        "description": "Native tool_pick parity — sanitized for the tail "
+                       "fields (budget/session/usage/timing/run_summary) "
+                       "that need their own subsystems ported first.",
+        "case_count":  len(cases),
+        "cases":       cases,
+    }
+
+
 BUILDERS = {
     "budgets":      fixture_budgets,
     "pricing":      fixture_pricing,
@@ -1985,6 +2202,7 @@ BUILDERS = {
     "verify":       fixture_verify,
     "extract_json": fixture_extract_json,
     "json_schema":  fixture_json_schema,
+    "pick":         fixture_pick,
 }
 
 

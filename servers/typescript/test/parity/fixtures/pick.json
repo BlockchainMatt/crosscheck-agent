@@ -1,0 +1,905 @@
+{
+  "module": "pick",
+  "description": "Native tool_pick parity — sanitized for the tail fields (budget/session/usage/timing/run_summary) that need their own subsystems ported first.",
+  "case_count": 8,
+  "cases": [
+    {
+      "label": "two-options-one-criterion-two-providers-agree",
+      "args": {
+        "decision": "Where to eat?",
+        "options": [
+          "Pizza",
+          "Sushi"
+        ],
+        "criteria": [
+          {
+            "name": "speed",
+            "weight": 1.0
+          }
+        ],
+        "providers": [
+          "anthropic",
+          "openai"
+        ]
+      },
+      "canned": {
+        "anthropic": "{\"scores\":[{\"option\":\"Pizza\",\"overall\":0.9,\"by_criterion\":[{\"criterion\":\"speed\",\"score\":0.9,\"rationale\":\"fast\"}]},{\"option\":\"Sushi\",\"overall\":0.4,\"by_criterion\":[{\"criterion\":\"speed\",\"score\":0.4,\"rationale\":\"slow\"}]}]}",
+        "openai": "{\"scores\":[{\"option\":\"Pizza\",\"overall\":0.85,\"by_criterion\":[{\"criterion\":\"speed\",\"score\":0.85,\"rationale\":\"quick\"}]},{\"option\":\"Sushi\",\"overall\":0.35,\"by_criterion\":[{\"criterion\":\"speed\",\"score\":0.35,\"rationale\":\"prep heavy\"}]}]}"
+      },
+      "expected": {
+        "tool": "pick",
+        "decision": "Where to eat?",
+        "options": [
+          "Pizza",
+          "Sushi"
+        ],
+        "criteria": [
+          {
+            "name": "speed",
+            "weight": 1.0
+          }
+        ],
+        "ranking": [
+          {
+            "option": "Pizza",
+            "weighted_score": 0.875,
+            "mean_overall": 0.875,
+            "by_criterion": [
+              {
+                "criterion": "speed",
+                "mean_score": 0.875,
+                "stddev": 0.025,
+                "weight": 1.0
+              }
+            ],
+            "n_provider_scores": 2,
+            "rank": 1
+          },
+          {
+            "option": "Sushi",
+            "weighted_score": 0.375,
+            "mean_overall": 0.375,
+            "by_criterion": [
+              {
+                "criterion": "speed",
+                "mean_score": 0.375,
+                "stddev": 0.025,
+                "weight": 1.0
+              }
+            ],
+            "n_provider_scores": 2,
+            "rank": 2
+          }
+        ],
+        "dissent_deltas": [
+          {
+            "option": "Pizza",
+            "criterion": "speed",
+            "stddev": 0.025,
+            "spread": 0.05,
+            "providers": [
+              {
+                "provider": "anthropic",
+                "score": 0.9,
+                "rationale": "fast"
+              },
+              {
+                "provider": "openai",
+                "score": 0.85,
+                "rationale": "quick"
+              }
+            ]
+          },
+          {
+            "option": "Sushi",
+            "criterion": "speed",
+            "stddev": 0.025,
+            "spread": 0.05,
+            "providers": [
+              {
+                "provider": "anthropic",
+                "score": 0.4,
+                "rationale": "slow"
+              },
+              {
+                "provider": "openai",
+                "score": 0.35,
+                "rationale": "prep heavy"
+              }
+            ]
+          }
+        ],
+        "scores_by_provider": {
+          "anthropic": {
+            "scores": [
+              {
+                "option": "Pizza",
+                "overall": 0.9,
+                "by_criterion": [
+                  {
+                    "criterion": "speed",
+                    "score": 0.9,
+                    "rationale": "fast"
+                  }
+                ]
+              },
+              {
+                "option": "Sushi",
+                "overall": 0.4,
+                "by_criterion": [
+                  {
+                    "criterion": "speed",
+                    "score": 0.4,
+                    "rationale": "slow"
+                  }
+                ]
+              }
+            ]
+          },
+          "openai": {
+            "scores": [
+              {
+                "option": "Pizza",
+                "overall": 0.85,
+                "by_criterion": [
+                  {
+                    "criterion": "speed",
+                    "score": 0.85,
+                    "rationale": "quick"
+                  }
+                ]
+              },
+              {
+                "option": "Sushi",
+                "overall": 0.35,
+                "by_criterion": [
+                  {
+                    "criterion": "speed",
+                    "score": 0.35,
+                    "rationale": "prep heavy"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "providers_used": [
+          "anthropic",
+          "openai"
+        ]
+      }
+    },
+    {
+      "label": "three-options-two-criteria-two-providers-contested",
+      "args": {
+        "decision": "Best framework?",
+        "options": [
+          {
+            "name": "React",
+            "description": "ui"
+          },
+          {
+            "name": "Vue"
+          },
+          {
+            "name": "Svelte",
+            "description": "fast"
+          }
+        ],
+        "criteria": [
+          {
+            "name": "popularity",
+            "weight": 2.0
+          },
+          {
+            "name": "perf",
+            "weight": 1.0
+          }
+        ],
+        "providers": [
+          "anthropic",
+          "openai"
+        ]
+      },
+      "canned": {
+        "anthropic": "{\"scores\":[{\"option\":\"React\",\"overall\":0.8,\"by_criterion\":[{\"criterion\":\"popularity\",\"score\":0.95,\"rationale\":\"huge ecosystem\"},{\"criterion\":\"perf\",\"score\":0.6,\"rationale\":\"vdom overhead\"}]},{\"option\":\"Vue\",\"overall\":0.7,\"by_criterion\":[{\"criterion\":\"popularity\",\"score\":0.7,\"rationale\":\"large but smaller\"},{\"criterion\":\"perf\",\"score\":0.7,\"rationale\":\"good defaults\"}]},{\"option\":\"Svelte\",\"overall\":0.75,\"by_criterion\":[{\"criterion\":\"popularity\",\"score\":0.5,\"rationale\":\"growing\"},{\"criterion\":\"perf\",\"score\":0.95,\"rationale\":\"compiled\"}]}]}",
+        "openai": "{\"scores\":[{\"option\":\"React\",\"overall\":0.55,\"by_criterion\":[{\"criterion\":\"popularity\",\"score\":0.95,\"rationale\":\"king\"},{\"criterion\":\"perf\",\"score\":0.4,\"rationale\":\"slowest of 3\"}]},{\"option\":\"Vue\",\"overall\":0.65,\"by_criterion\":[{\"criterion\":\"popularity\",\"score\":0.6,\"rationale\":\"niche-ish\"},{\"criterion\":\"perf\",\"score\":0.7,\"rationale\":\"solid\"}]},{\"option\":\"Svelte\",\"overall\":0.9,\"by_criterion\":[{\"criterion\":\"popularity\",\"score\":0.55,\"rationale\":\"trending\"},{\"criterion\":\"perf\",\"score\":0.98,\"rationale\":\"unbeatable\"}]}]}"
+      },
+      "expected": {
+        "tool": "pick",
+        "decision": "Best framework?",
+        "options": [
+          "React",
+          "Vue",
+          "Svelte"
+        ],
+        "criteria": [
+          {
+            "name": "popularity",
+            "weight": 2.0
+          },
+          {
+            "name": "perf",
+            "weight": 1.0
+          }
+        ],
+        "ranking": [
+          {
+            "option": "React",
+            "weighted_score": 0.8,
+            "mean_overall": 0.675,
+            "by_criterion": [
+              {
+                "criterion": "popularity",
+                "mean_score": 0.95,
+                "stddev": 0.0,
+                "weight": 2.0
+              },
+              {
+                "criterion": "perf",
+                "mean_score": 0.5,
+                "stddev": 0.1,
+                "weight": 1.0
+              }
+            ],
+            "n_provider_scores": 4,
+            "rank": 1
+          },
+          {
+            "option": "Svelte",
+            "weighted_score": 0.6717,
+            "mean_overall": 0.825,
+            "by_criterion": [
+              {
+                "criterion": "popularity",
+                "mean_score": 0.525,
+                "stddev": 0.025,
+                "weight": 2.0
+              },
+              {
+                "criterion": "perf",
+                "mean_score": 0.965,
+                "stddev": 0.015,
+                "weight": 1.0
+              }
+            ],
+            "n_provider_scores": 4,
+            "rank": 2
+          },
+          {
+            "option": "Vue",
+            "weighted_score": 0.6667,
+            "mean_overall": 0.675,
+            "by_criterion": [
+              {
+                "criterion": "popularity",
+                "mean_score": 0.65,
+                "stddev": 0.05,
+                "weight": 2.0
+              },
+              {
+                "criterion": "perf",
+                "mean_score": 0.7,
+                "stddev": 0.0,
+                "weight": 1.0
+              }
+            ],
+            "n_provider_scores": 4,
+            "rank": 3
+          }
+        ],
+        "dissent_deltas": [
+          {
+            "option": "React",
+            "criterion": "perf",
+            "stddev": 0.1,
+            "spread": 0.2,
+            "providers": [
+              {
+                "provider": "anthropic",
+                "score": 0.6,
+                "rationale": "vdom overhead"
+              },
+              {
+                "provider": "openai",
+                "score": 0.4,
+                "rationale": "slowest of 3"
+              }
+            ]
+          },
+          {
+            "option": "Vue",
+            "criterion": "popularity",
+            "stddev": 0.05,
+            "spread": 0.1,
+            "providers": [
+              {
+                "provider": "anthropic",
+                "score": 0.7,
+                "rationale": "large but smaller"
+              },
+              {
+                "provider": "openai",
+                "score": 0.6,
+                "rationale": "niche-ish"
+              }
+            ]
+          },
+          {
+            "option": "Svelte",
+            "criterion": "popularity",
+            "stddev": 0.025,
+            "spread": 0.05,
+            "providers": [
+              {
+                "provider": "anthropic",
+                "score": 0.5,
+                "rationale": "growing"
+              },
+              {
+                "provider": "openai",
+                "score": 0.55,
+                "rationale": "trending"
+              }
+            ]
+          },
+          {
+            "option": "Svelte",
+            "criterion": "perf",
+            "stddev": 0.015,
+            "spread": 0.03,
+            "providers": [
+              {
+                "provider": "anthropic",
+                "score": 0.95,
+                "rationale": "compiled"
+              },
+              {
+                "provider": "openai",
+                "score": 0.98,
+                "rationale": "unbeatable"
+              }
+            ]
+          },
+          {
+            "option": "React",
+            "criterion": "popularity",
+            "stddev": 0.0,
+            "spread": 0.0,
+            "providers": [
+              {
+                "provider": "anthropic",
+                "score": 0.95,
+                "rationale": "huge ecosystem"
+              },
+              {
+                "provider": "openai",
+                "score": 0.95,
+                "rationale": "king"
+              }
+            ]
+          }
+        ],
+        "scores_by_provider": {
+          "anthropic": {
+            "scores": [
+              {
+                "option": "React",
+                "overall": 0.8,
+                "by_criterion": [
+                  {
+                    "criterion": "popularity",
+                    "score": 0.95,
+                    "rationale": "huge ecosystem"
+                  },
+                  {
+                    "criterion": "perf",
+                    "score": 0.6,
+                    "rationale": "vdom overhead"
+                  }
+                ]
+              },
+              {
+                "option": "Vue",
+                "overall": 0.7,
+                "by_criterion": [
+                  {
+                    "criterion": "popularity",
+                    "score": 0.7,
+                    "rationale": "large but smaller"
+                  },
+                  {
+                    "criterion": "perf",
+                    "score": 0.7,
+                    "rationale": "good defaults"
+                  }
+                ]
+              },
+              {
+                "option": "Svelte",
+                "overall": 0.75,
+                "by_criterion": [
+                  {
+                    "criterion": "popularity",
+                    "score": 0.5,
+                    "rationale": "growing"
+                  },
+                  {
+                    "criterion": "perf",
+                    "score": 0.95,
+                    "rationale": "compiled"
+                  }
+                ]
+              }
+            ]
+          },
+          "openai": {
+            "scores": [
+              {
+                "option": "React",
+                "overall": 0.55,
+                "by_criterion": [
+                  {
+                    "criterion": "popularity",
+                    "score": 0.95,
+                    "rationale": "king"
+                  },
+                  {
+                    "criterion": "perf",
+                    "score": 0.4,
+                    "rationale": "slowest of 3"
+                  }
+                ]
+              },
+              {
+                "option": "Vue",
+                "overall": 0.65,
+                "by_criterion": [
+                  {
+                    "criterion": "popularity",
+                    "score": 0.6,
+                    "rationale": "niche-ish"
+                  },
+                  {
+                    "criterion": "perf",
+                    "score": 0.7,
+                    "rationale": "solid"
+                  }
+                ]
+              },
+              {
+                "option": "Svelte",
+                "overall": 0.9,
+                "by_criterion": [
+                  {
+                    "criterion": "popularity",
+                    "score": 0.55,
+                    "rationale": "trending"
+                  },
+                  {
+                    "criterion": "perf",
+                    "score": 0.98,
+                    "rationale": "unbeatable"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "providers_used": [
+          "anthropic",
+          "openai"
+        ]
+      }
+    },
+    {
+      "label": "single-provider-no-dissent",
+      "args": {
+        "decision": "Which database?",
+        "options": [
+          "Postgres",
+          "Mysql"
+        ],
+        "criteria": [
+          {
+            "name": "robustness",
+            "weight": 1.0
+          }
+        ],
+        "providers": [
+          "anthropic"
+        ]
+      },
+      "canned": {
+        "anthropic": "{\"scores\":[{\"option\":\"Postgres\",\"overall\":0.9,\"by_criterion\":[{\"criterion\":\"robustness\",\"score\":0.9,\"rationale\":\"battle tested\"}]},{\"option\":\"Mysql\",\"overall\":0.7,\"by_criterion\":[{\"criterion\":\"robustness\",\"score\":0.7,\"rationale\":\"solid\"}]}]}"
+      },
+      "expected": {
+        "tool": "pick",
+        "decision": "Which database?",
+        "options": [
+          "Postgres",
+          "Mysql"
+        ],
+        "criteria": [
+          {
+            "name": "robustness",
+            "weight": 1.0
+          }
+        ],
+        "ranking": [
+          {
+            "option": "Postgres",
+            "weighted_score": 0.9,
+            "mean_overall": 0.9,
+            "by_criterion": [
+              {
+                "criterion": "robustness",
+                "mean_score": 0.9,
+                "stddev": 0.0,
+                "weight": 1.0
+              }
+            ],
+            "n_provider_scores": 1,
+            "rank": 1
+          },
+          {
+            "option": "Mysql",
+            "weighted_score": 0.7,
+            "mean_overall": 0.7,
+            "by_criterion": [
+              {
+                "criterion": "robustness",
+                "mean_score": 0.7,
+                "stddev": 0.0,
+                "weight": 1.0
+              }
+            ],
+            "n_provider_scores": 1,
+            "rank": 2
+          }
+        ],
+        "dissent_deltas": [],
+        "scores_by_provider": {
+          "anthropic": {
+            "scores": [
+              {
+                "option": "Postgres",
+                "overall": 0.9,
+                "by_criterion": [
+                  {
+                    "criterion": "robustness",
+                    "score": 0.9,
+                    "rationale": "battle tested"
+                  }
+                ]
+              },
+              {
+                "option": "Mysql",
+                "overall": 0.7,
+                "by_criterion": [
+                  {
+                    "criterion": "robustness",
+                    "score": 0.7,
+                    "rationale": "solid"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "providers_used": [
+          "anthropic"
+        ]
+      }
+    },
+    {
+      "label": "provider-suggests-unknown-option-ignored",
+      "args": {
+        "decision": "Which color?",
+        "options": [
+          "Red",
+          "Blue"
+        ],
+        "criteria": [
+          {
+            "name": "vibrance",
+            "weight": 1.0
+          }
+        ],
+        "providers": [
+          "anthropic"
+        ]
+      },
+      "canned": {
+        "anthropic": "{\"scores\":[{\"option\":\"Red\",\"overall\":0.7,\"by_criterion\":[{\"criterion\":\"vibrance\",\"score\":0.7,\"rationale\":\"bold\"}]},{\"option\":\"Blue\",\"overall\":0.6,\"by_criterion\":[{\"criterion\":\"vibrance\",\"score\":0.6,\"rationale\":\"calm\"}]},{\"option\":\"Yellow\",\"overall\":0.99,\"by_criterion\":[{\"criterion\":\"vibrance\",\"score\":0.99,\"rationale\":\"YELLOW\"}]}]}"
+      },
+      "expected": {
+        "tool": "pick",
+        "decision": "Which color?",
+        "options": [
+          "Red",
+          "Blue"
+        ],
+        "criteria": [
+          {
+            "name": "vibrance",
+            "weight": 1.0
+          }
+        ],
+        "ranking": [
+          {
+            "option": "Red",
+            "weighted_score": 0.7,
+            "mean_overall": 0.7,
+            "by_criterion": [
+              {
+                "criterion": "vibrance",
+                "mean_score": 0.7,
+                "stddev": 0.0,
+                "weight": 1.0
+              }
+            ],
+            "n_provider_scores": 1,
+            "rank": 1
+          },
+          {
+            "option": "Blue",
+            "weighted_score": 0.6,
+            "mean_overall": 0.6,
+            "by_criterion": [
+              {
+                "criterion": "vibrance",
+                "mean_score": 0.6,
+                "stddev": 0.0,
+                "weight": 1.0
+              }
+            ],
+            "n_provider_scores": 1,
+            "rank": 2
+          }
+        ],
+        "dissent_deltas": [],
+        "scores_by_provider": {
+          "anthropic": {
+            "scores": [
+              {
+                "option": "Red",
+                "overall": 0.7,
+                "by_criterion": [
+                  {
+                    "criterion": "vibrance",
+                    "score": 0.7,
+                    "rationale": "bold"
+                  }
+                ]
+              },
+              {
+                "option": "Blue",
+                "overall": 0.6,
+                "by_criterion": [
+                  {
+                    "criterion": "vibrance",
+                    "score": 0.6,
+                    "rationale": "calm"
+                  }
+                ]
+              },
+              {
+                "option": "Yellow",
+                "overall": 0.99,
+                "by_criterion": [
+                  {
+                    "criterion": "vibrance",
+                    "score": 0.99,
+                    "rationale": "YELLOW"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "providers_used": [
+          "anthropic"
+        ]
+      }
+    },
+    {
+      "label": "malformed-provider-response",
+      "args": {
+        "decision": "X or Y?",
+        "options": [
+          "X",
+          "Y"
+        ],
+        "criteria": [
+          {
+            "name": "fitness",
+            "weight": 1.0
+          }
+        ],
+        "providers": [
+          "anthropic"
+        ]
+      },
+      "canned": {
+        "anthropic": "this is not JSON at all"
+      },
+      "expected": {
+        "tool": "pick",
+        "decision": "X or Y?",
+        "options": [
+          "X",
+          "Y"
+        ],
+        "criteria": [
+          {
+            "name": "fitness",
+            "weight": 1.0
+          }
+        ],
+        "ranking": [
+          {
+            "option": "X",
+            "weighted_score": 0.0,
+            "mean_overall": 0.0,
+            "by_criterion": [
+              {
+                "criterion": "fitness",
+                "mean_score": 0.0,
+                "stddev": 0.0,
+                "weight": 1.0
+              }
+            ],
+            "n_provider_scores": 0,
+            "rank": 1
+          },
+          {
+            "option": "Y",
+            "weighted_score": 0.0,
+            "mean_overall": 0.0,
+            "by_criterion": [
+              {
+                "criterion": "fitness",
+                "mean_score": 0.0,
+                "stddev": 0.0,
+                "weight": 1.0
+              }
+            ],
+            "n_provider_scores": 0,
+            "rank": 2
+          }
+        ],
+        "dissent_deltas": [],
+        "scores_by_provider": {
+          "anthropic": null
+        },
+        "providers_used": [
+          "anthropic"
+        ],
+        "scoring_errors": {
+          "anthropic": [
+            "could not parse JSON from response"
+          ]
+        }
+      }
+    },
+    {
+      "label": "empty-decision-empty-canned",
+      "args": {
+        "decision": "",
+        "options": [
+          "a",
+          "b"
+        ],
+        "criteria": [
+          {
+            "name": "x"
+          }
+        ],
+        "providers": [
+          "anthropic"
+        ]
+      },
+      "canned": {
+        "anthropic": ""
+      },
+      "expected": {
+        "tool": "pick",
+        "decision": "",
+        "options": [
+          "a",
+          "b"
+        ],
+        "criteria": [
+          {
+            "name": "x",
+            "weight": 1.0
+          }
+        ],
+        "ranking": [
+          {
+            "option": "a",
+            "weighted_score": 0.0,
+            "mean_overall": 0.0,
+            "by_criterion": [
+              {
+                "criterion": "x",
+                "mean_score": 0.0,
+                "stddev": 0.0,
+                "weight": 1.0
+              }
+            ],
+            "n_provider_scores": 0,
+            "rank": 1
+          },
+          {
+            "option": "b",
+            "weighted_score": 0.0,
+            "mean_overall": 0.0,
+            "by_criterion": [
+              {
+                "criterion": "x",
+                "mean_score": 0.0,
+                "stddev": 0.0,
+                "weight": 1.0
+              }
+            ],
+            "n_provider_scores": 0,
+            "rank": 2
+          }
+        ],
+        "dissent_deltas": [],
+        "scores_by_provider": {
+          "anthropic": null
+        },
+        "providers_used": [
+          "anthropic"
+        ],
+        "scoring_errors": {
+          "anthropic": [
+            "could not parse JSON from response"
+          ]
+        }
+      }
+    },
+    {
+      "label": "fewer-than-2-options",
+      "args": {
+        "decision": "x",
+        "options": [
+          "only-one"
+        ],
+        "criteria": [
+          {
+            "name": "x"
+          }
+        ],
+        "providers": [
+          "anthropic"
+        ]
+      },
+      "canned": {},
+      "expected": {
+        "error": "pick needs at least 2 options"
+      }
+    },
+    {
+      "label": "no-criteria",
+      "args": {
+        "decision": "x",
+        "options": [
+          "a",
+          "b"
+        ],
+        "criteria": [],
+        "providers": [
+          "anthropic"
+        ]
+      },
+      "canned": {},
+      "expected": {
+        "error": "pick needs at least 1 criterion"
+      }
+    }
+  ]
+}
