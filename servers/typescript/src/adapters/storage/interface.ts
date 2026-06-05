@@ -269,6 +269,22 @@ export interface StorageRead {
     requester: string,
   ): Promise<number>;
   countDelegationsBySession(sessionId: string): Promise<number>;
+  /** Aggregate delegations grouped by (requester, accepted). Used by
+   *  scoreboard to count per-requester acceptances vs refusals. */
+  listDelegationAggregatesByRequester(): Promise<
+    readonly { requester: string; accepted: 0 | 1; count: number }[]
+  >;
+
+  // global counts (scoreboard / observability)
+  /** Return the four global row counts in one transaction. Each count
+   *  degrades to 0 if the table is missing (matches Python's
+   *  best-effort behavior). */
+  countScoreboardTotals(): Promise<{
+    sessions:    number;
+    claims:      number;
+    claim_links: number;
+    delegations: number;
+  }>;
 
   // session_memory
   listSessionMemory(

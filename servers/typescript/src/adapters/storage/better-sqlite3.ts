@@ -566,6 +566,51 @@ class BetterSqliteStorage implements Storage {
     return Number(r.n);
   }
 
+  async listDelegationAggregatesByRequester(): Promise<
+    readonly { requester: string; accepted: 0 | 1; count: number }[]
+  > {
+    const rows = this.cached(
+      "delegation-agg-requester",
+      "SELECT requester, accepted, COUNT(*) AS n FROM delegations " +
+        "WHERE requester IS NOT NULL GROUP BY requester, accepted",
+    ).all() as { requester: string; accepted: number; n: number }[];
+    return rows.map((r) => ({
+      requester: String(r.requester),
+      accepted:  (r.accepted === 1 ? 1 : 0) as 0 | 1,
+      count:     Number(r.n),
+    }));
+  }
+
+  // ==================================================================
+  // global counts (scoreboard / observability)
+  // ==================================================================
+
+  async countScoreboardTotals(): Promise<{
+    sessions:    number;
+    claims:      number;
+    claim_links: number;
+    delegations: number;
+  }> {
+    // Best-effort per-table count; missing tables degrade to 0 to
+    // match Python's `try/except sqlite3.OperationalError` handling.
+    const countOne = (table: string): number => {
+      try {
+        const r = this.db
+          .prepare(`SELECT COUNT(*) AS n FROM ${table}`)
+          .get() as { n: number } | undefined;
+        return r ? Number(r.n) : 0;
+      } catch {
+        return 0;
+      }
+    };
+    return {
+      sessions:    countOne("sessions"),
+      claims:      countOne("claims"),
+      claim_links: countOne("claim_links"),
+      delegations: countOne("delegations"),
+    };
+  }
+
   // ==================================================================
   // session_memory
   // ==================================================================

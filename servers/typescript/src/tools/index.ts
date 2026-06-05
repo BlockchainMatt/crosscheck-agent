@@ -23,6 +23,7 @@ import { runPick } from "./pick.js";
 import { runPlan } from "./plan.js";
 import { runRecall } from "./recall.js";
 import { runReview } from "./review.js";
+import { runScoreboard } from "./scoreboard.js";
 import { runSessionMemory } from "./session-memory.js";
 import { runTriangulate } from "./triangulate.js";
 import { runVerify } from "./verify.js";
@@ -115,6 +116,9 @@ export interface RegisterCoreToolsOptions {
    *  tools (recall, scoreboard, session_memory, explain) run natively.
    *  When absent, they defer to the bridge (or return an error). */
   storage?: Storage;
+  /** Path to the events.jsonl file used by scoreboard's
+   *  `recent_events` tail. When unset, that field is always empty. */
+  eventsPath?: string;
 }
 
 /** Build the native tool surface. Returns a name -> Tool map.
@@ -147,9 +151,41 @@ export function registerCoreTools(
     listProvidersTool(o.providers ?? {}, o.activeProviders ?? null, o.moderatorDefault ?? "anthropic"),
     recallTool(o.storage, o.bridge),
     sessionMemoryTool(o.storage, o.bridge),
+    scoreboardTool(o.storage, o.bridge, o.eventsPath),
   ];
   for (const t of list) tools.set(t.name, t);
   return tools;
+}
+
+/** `scoreboard` — native port of Python's tool_scoreboard. Aggregates
+ *  ballot stats + delegation counts + table totals across the whole
+ *  DB. Optionally tails an events.jsonl file for `recent_events`. */
+function scoreboardTool(
+  storage: Storage | undefined,
+  bridge: BridgeHandle | undefined,
+  eventsPath: string | undefined,
+): Tool {
+  return {
+    name: "scoreboard",
+    description:
+      "Aggregate provider ballot stats + delegation counts + table " +
+      "totals. Supports top_k (rank limit) and recent_limit (tail of " +
+      "events.jsonl when configured). Requires a wired Storage " +
+      "adapter; falls back to the Python bridge when not available.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        top_k:        { type: "integer", minimum: 1 },
+        recent_limit: { type: "integer", minimum: 0 },
+      },
+    },
+    handler: (args) => runScoreboard(args, {
+      ...(storage     ? { storage }     : {}),
+      ...(bridge      ? { bridge }      : {}),
+      ...(eventsPath  ? { eventsPath }  : {}),
+    }),
+  };
 }
 
 /** `session_memory` — native port of Python's tool_session_memory.
