@@ -1,0 +1,382 @@
+{
+  "module": "tiers",
+  "description": "tierLadder + typicalCallCost + selectForDifficulty parity",
+  "case_count": 17,
+  "pricing_doc": {
+    "openai": {
+      "gpt-cheap": {
+        "prompt_per_1k": 0.0001,
+        "completion_per_1k": 0.0003,
+        "cached_per_1k": 5e-05
+      },
+      "gpt-mid": {
+        "prompt_per_1k": 0.001,
+        "completion_per_1k": 0.003,
+        "cached_per_1k": 0.0005
+      },
+      "gpt-prem": {
+        "prompt_per_1k": 0.01,
+        "completion_per_1k": 0.03,
+        "cached_per_1k": 0.005
+      }
+    },
+    "anthropic": {
+      "claude-tiny": {
+        "prompt_per_1k": 0.0001,
+        "completion_per_1k": 0.0003,
+        "cached_per_1k": 5e-05
+      },
+      "claude-mid": {
+        "prompt_per_1k": 0.003,
+        "completion_per_1k": 0.015,
+        "cached_per_1k": 0.0003
+      },
+      "claude-big": {
+        "prompt_per_1k": 0.015,
+        "completion_per_1k": 0.075,
+        "cached_per_1k": 0.0015
+      }
+    },
+    "xai": {
+      "grok": {
+        "prompt_per_1k": 0.005,
+        "completion_per_1k": 0.015,
+        "cached_per_1k": 0.0025
+      }
+    },
+    "_tiers": {
+      "low": {
+        "models": [
+          {
+            "provider": "openai",
+            "model": "gpt-cheap"
+          },
+          {
+            "provider": "anthropic",
+            "model": "claude-tiny"
+          }
+        ]
+      },
+      "med": {
+        "models": [
+          {
+            "provider": "openai",
+            "model": "gpt-mid"
+          },
+          {
+            "provider": "anthropic",
+            "model": "claude-mid"
+          },
+          {
+            "provider": "xai",
+            "model": "grok"
+          }
+        ]
+      },
+      "high": {
+        "models": [
+          {
+            "provider": "openai",
+            "model": "gpt-prem"
+          },
+          {
+            "provider": "anthropic",
+            "model": "claude-big"
+          }
+        ]
+      }
+    }
+  },
+  "ladder_expected": {
+    "low": [
+      {
+        "provider": "openai",
+        "model": "gpt-cheap"
+      },
+      {
+        "provider": "anthropic",
+        "model": "claude-tiny"
+      }
+    ],
+    "med": [
+      {
+        "provider": "openai",
+        "model": "gpt-mid"
+      },
+      {
+        "provider": "anthropic",
+        "model": "claude-mid"
+      },
+      {
+        "provider": "xai",
+        "model": "grok"
+      }
+    ],
+    "high": [
+      {
+        "provider": "openai",
+        "model": "gpt-prem"
+      },
+      {
+        "provider": "anthropic",
+        "model": "claude-big"
+      }
+    ]
+  },
+  "typical_cases": [
+    {
+      "label": "typical::low::openai::gpt-cheap",
+      "provider": "openai",
+      "model": "gpt-cheap",
+      "expected": 0.00017680000000000001
+    },
+    {
+      "label": "typical::low::anthropic::claude-tiny",
+      "provider": "anthropic",
+      "model": "claude-tiny",
+      "expected": 0.00017680000000000001
+    },
+    {
+      "label": "typical::med::openai::gpt-mid",
+      "provider": "openai",
+      "model": "gpt-mid",
+      "expected": 0.001768
+    },
+    {
+      "label": "typical::med::anthropic::claude-mid",
+      "provider": "anthropic",
+      "model": "claude-mid",
+      "expected": 0.006840000000000001
+    },
+    {
+      "label": "typical::med::xai::grok",
+      "provider": "xai",
+      "model": "grok",
+      "expected": 0.00884
+    },
+    {
+      "label": "typical::high::openai::gpt-prem",
+      "provider": "openai",
+      "model": "gpt-prem",
+      "expected": 0.01768
+    },
+    {
+      "label": "typical::high::anthropic::claude-big",
+      "provider": "anthropic",
+      "model": "claude-big",
+      "expected": 0.034199999999999994
+    }
+  ],
+  "select_cases": [
+    {
+      "label": "select::low-default",
+      "tier": "low",
+      "exclude": null,
+      "allow_only": null,
+      "available": [
+        "anthropic",
+        "openai",
+        "xai"
+      ],
+      "weights": {
+        "openai": 0.7,
+        "anthropic": 0.85,
+        "xai": 0.5
+      },
+      "expected": {
+        "pick": {
+          "provider": "anthropic",
+          "model": "claude-tiny"
+        },
+        "reason": null
+      }
+    },
+    {
+      "label": "select::med-default",
+      "tier": "med",
+      "exclude": null,
+      "allow_only": null,
+      "available": [
+        "anthropic",
+        "openai",
+        "xai"
+      ],
+      "weights": {
+        "openai": 0.7,
+        "anthropic": 0.85,
+        "xai": 0.5
+      },
+      "expected": {
+        "pick": {
+          "provider": "openai",
+          "model": "gpt-mid"
+        },
+        "reason": null
+      }
+    },
+    {
+      "label": "select::high-default",
+      "tier": "high",
+      "exclude": null,
+      "allow_only": null,
+      "available": [
+        "anthropic",
+        "openai",
+        "xai"
+      ],
+      "weights": {
+        "openai": 0.7,
+        "anthropic": 0.85,
+        "xai": 0.5
+      },
+      "expected": {
+        "pick": {
+          "provider": "openai",
+          "model": "gpt-prem"
+        },
+        "reason": null
+      }
+    },
+    {
+      "label": "select::low-exclude-openai",
+      "tier": "low",
+      "exclude": [
+        "openai"
+      ],
+      "allow_only": null,
+      "available": [
+        "anthropic",
+        "openai",
+        "xai"
+      ],
+      "weights": {
+        "openai": 0.7,
+        "anthropic": 0.85,
+        "xai": 0.5
+      },
+      "expected": {
+        "pick": {
+          "provider": "anthropic",
+          "model": "claude-tiny"
+        },
+        "reason": null
+      }
+    },
+    {
+      "label": "select::med-only-xai-survives",
+      "tier": "med",
+      "exclude": [
+        "openai",
+        "anthropic"
+      ],
+      "allow_only": null,
+      "available": [
+        "anthropic",
+        "openai",
+        "xai"
+      ],
+      "weights": {
+        "openai": 0.7,
+        "anthropic": 0.85,
+        "xai": 0.5
+      },
+      "expected": {
+        "pick": {
+          "provider": "xai",
+          "model": "grok"
+        },
+        "reason": null
+      }
+    },
+    {
+      "label": "select::med-allow-only-xai",
+      "tier": "med",
+      "exclude": null,
+      "allow_only": [
+        "xai"
+      ],
+      "available": [
+        "anthropic",
+        "openai",
+        "xai"
+      ],
+      "weights": {
+        "openai": 0.7,
+        "anthropic": 0.85,
+        "xai": 0.5
+      },
+      "expected": {
+        "pick": {
+          "provider": "xai",
+          "model": "grok"
+        },
+        "reason": null
+      }
+    },
+    {
+      "label": "select::high-nothing-left",
+      "tier": "high",
+      "exclude": [
+        "openai",
+        "anthropic"
+      ],
+      "allow_only": null,
+      "available": [
+        "anthropic",
+        "openai",
+        "xai"
+      ],
+      "weights": {
+        "openai": 0.7,
+        "anthropic": 0.85,
+        "xai": 0.5
+      },
+      "expected": {
+        "pick": null,
+        "reason": "no available provider in tier 'high' (after exclude=['anthropic', 'openai'], allow_only=None)"
+      }
+    },
+    {
+      "label": "select::low-allow-only-unknown",
+      "tier": "low",
+      "exclude": null,
+      "allow_only": [
+        "mistral"
+      ],
+      "available": [
+        "anthropic",
+        "openai",
+        "xai"
+      ],
+      "weights": {
+        "openai": 0.7,
+        "anthropic": 0.85,
+        "xai": 0.5
+      },
+      "expected": {
+        "pick": null,
+        "reason": "no available provider in tier 'low' (after exclude=[], allow_only=['mistral'])"
+      }
+    },
+    {
+      "label": "select::unknown-tier",
+      "tier": "bogus",
+      "exclude": null,
+      "allow_only": null,
+      "available": [
+        "anthropic",
+        "openai",
+        "xai"
+      ],
+      "weights": {
+        "openai": 0.7,
+        "anthropic": 0.85,
+        "xai": 0.5
+      },
+      "expected": {
+        "pick": null,
+        "reason": "unknown difficulty: 'bogus'"
+      }
+    }
+  ]
+}

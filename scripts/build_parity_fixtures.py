@@ -971,6 +971,136 @@ def fixture_router() -> dict:
 
 
 # ----------------------------------------------------------------------
+# tiers.json — tierLadder + typicalCallCost + selectForDifficulty
+# ----------------------------------------------------------------------
+def fixture_tiers() -> dict:
+    srv = _import_server()
+
+    pricing_doc = {
+        "openai":    {"gpt-cheap":  {"prompt_per_1k": 0.0001, "completion_per_1k": 0.0003, "cached_per_1k": 0.00005},
+                       "gpt-mid":    {"prompt_per_1k": 0.001,  "completion_per_1k": 0.003,  "cached_per_1k": 0.0005},
+                       "gpt-prem":   {"prompt_per_1k": 0.01,   "completion_per_1k": 0.03,   "cached_per_1k": 0.005}},
+        "anthropic": {"claude-tiny": {"prompt_per_1k": 0.0001, "completion_per_1k": 0.0003, "cached_per_1k": 0.00005},
+                       "claude-mid":  {"prompt_per_1k": 0.003,  "completion_per_1k": 0.015,  "cached_per_1k": 0.0003},
+                       "claude-big":  {"prompt_per_1k": 0.015,  "completion_per_1k": 0.075,  "cached_per_1k": 0.0015}},
+        "xai":       {"grok":        {"prompt_per_1k": 0.005,  "completion_per_1k": 0.015,  "cached_per_1k": 0.0025}},
+        "_tiers": {
+            "low":  {"models": [
+                {"provider": "openai",    "model": "gpt-cheap"},
+                {"provider": "anthropic", "model": "claude-tiny"},
+            ]},
+            "med":  {"models": [
+                {"provider": "openai",    "model": "gpt-mid"},
+                {"provider": "anthropic", "model": "claude-mid"},
+                {"provider": "xai",       "model": "grok"},
+            ]},
+            "high": {"models": [
+                {"provider": "openai",    "model": "gpt-prem"},
+                {"provider": "anthropic", "model": "claude-big"},
+            ]},
+        },
+    }
+
+    # Wire the pricing doc into the loader so _tier_ladder picks it up.
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "pricing.json"
+        p.write_text(json.dumps(pricing_doc))
+        os.environ["CROSSCHECK_PRICING_PATH"] = str(p)
+        srv.PRICING_PATH = p
+        srv._PRICING_CACHE = None
+
+        # ---- tierLadder() golden ----
+        ladder_expected = srv._tier_ladder()
+
+        # ---- typicalCallCost golden ----
+        # Same arithmetic as Python's `_select_for_difficulty`:
+        #   typ = prompt_per_1k + 0.256 * completion_per_1k
+        typical_cases = []
+        flat = []
+        for tier_name in ("low", "med", "high"):
+            for entry in ladder_expected.get(tier_name, []):
+                flat.append((tier_name, entry["provider"], entry["model"]))
+        for tier_name, provider, model in flat:
+            rates = srv._model_pricing(provider, model) or {
+                "prompt_per_1k": 0.0, "completion_per_1k": 0.0, "cached_per_1k": 0.0}
+            typ = rates["prompt_per_1k"] + 0.256 * rates["completion_per_1k"]
+            typical_cases.append({
+                "label":    f"typical::{tier_name}::{provider}::{model}",
+                "provider": provider,
+                "model":    model,
+                "expected": typ,
+            })
+
+        # ---- selectForDifficulty golden ----
+        # Mock ALL_PROVIDERS + _provider_weight to drive the selector
+        # without hitting the registry. We snapshot the picks per
+        # (tier, exclude, allow_only) variation.
+        saved_providers = srv.ALL_PROVIDERS
+        saved_weight    = srv._provider_weight
+
+        class _FakeProv:
+            def __init__(self, name, model): self.name, self.model = name, model
+
+        # Synthetic available registry + weights — used by every variant
+        # below so the fixture is reproducible.
+        avail = {
+            "openai":    _FakeProv("openai",    "gpt-prem"),  # default model irrelevant
+            "anthropic": _FakeProv("anthropic", "claude-big"),
+            "xai":       _FakeProv("xai",       "grok"),
+        }
+        weights = {"openai": 0.7, "anthropic": 0.85, "xai": 0.5}
+
+        srv.ALL_PROVIDERS    = avail
+        srv._provider_weight = lambda p: weights.get(p, 0.0)
+
+        select_inputs = [
+            # (tier, exclude, allow_only, label)
+            ("low",  None,        None,        "low-default"),
+            ("med",  None,        None,        "med-default"),
+            ("high", None,        None,        "high-default"),
+            ("low",  ["openai"],  None,        "low-exclude-openai"),
+            ("med",  ["openai", "anthropic"], None, "med-only-xai-survives"),
+            ("med",  None,        ["xai"],     "med-allow-only-xai"),
+            ("high", ["openai", "anthropic"], None, "high-nothing-left"),
+            ("low",  None,        ["mistral"], "low-allow-only-unknown"),
+            ("bogus", None,       None,        "unknown-tier"),
+        ]
+        select_cases = []
+        for tier, exclude, allow, label in select_inputs:
+            prov, picked, reason = srv._select_for_difficulty(
+                tier, exclude_providers=exclude, allow_only=allow,
+            )
+            expected = {
+                "pick": None if prov is None
+                        else {"provider": prov.name, "model": picked},
+                "reason": reason,
+            }
+            select_cases.append({
+                "label":          f"select::{label}",
+                "tier":           tier,
+                "exclude":        exclude,
+                "allow_only":     allow,
+                "available":      sorted(avail.keys()),
+                "weights":        dict(weights),
+                "expected":       expected,
+            })
+
+        # Restore.
+        srv.ALL_PROVIDERS    = saved_providers
+        srv._provider_weight = saved_weight
+
+    return {
+        "module":         "tiers",
+        "description":    "tierLadder + typicalCallCost + selectForDifficulty parity",
+        "case_count":     1 + len(typical_cases) + len(select_cases),
+        "pricing_doc":    pricing_doc,
+        "ladder_expected": ladder_expected,
+        "typical_cases":  typical_cases,
+        "select_cases":   select_cases,
+    }
+
+
+# ----------------------------------------------------------------------
 # Wiring
 # ----------------------------------------------------------------------
 BUILDERS = {
@@ -983,6 +1113,7 @@ BUILDERS = {
     "error":     fixture_error,
     "usage":     fixture_usage,
     "router":    fixture_router,
+    "tiers":     fixture_tiers,
 }
 
 
